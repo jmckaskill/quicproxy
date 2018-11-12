@@ -17,7 +17,8 @@ build $obj/server/server.o: cc src/server/server.c
 build $bin/qproxy-server.exe: clink $
  $obj/server/server.o $
  $obj/cutils.lib $
-
+ $obj/bearssl.lib $
+ $obj/quic.lib $
 
 build $obj/client/client.o: cc src/client/client.c
 build $bin/qproxy-client.exe: clink $

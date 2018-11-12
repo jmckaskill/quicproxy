@@ -13,6 +13,11 @@ typedef struct qstream qstream_t;
 typedef struct qconnection_id qconnection_id_t;
 typedef struct qconnection_addr qconnection_addr_t;
 
+enum qstate {
+	QC_WAIT_FOR_INITIAL,
+	QC_SERVER_HANDSHAKE,
+};
+
 struct qconnection_id {
 	uint8_t len;
 	uint8_t id[18];
@@ -24,6 +29,8 @@ struct qconnection_addr {
 };
 
 struct qconnection {
+	enum qstate state;
+
 	int(*send)(void *user, const void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t *sent);
 	void *user;
 
@@ -41,14 +48,13 @@ struct qconnection {
 	} server_name;
 };
 
-void qc_init_client(qconnection_t *c);
-void qc_init_server(qconnection_t *c, const struct sockaddr *sa, size_t sasz, const void *localid, size_t lsz, const void *peerid, size_t psz);
+void qc_init(qconnection_t *c);
 int qc_lookup_peer_name(qconnection_t *c, const char *server_name, const char *svc_name);
 void qc_add_peer_address(qconnection_t *c, const struct sockaddr *sa, size_t sasz);
 int qc_seed_prng(qconnection_t *c, br_prng_seeder seedfn);
 void qc_generate_ids(qconnection_t *c);
 void qc_set_stopwatch(qconnection_t *c, stopwatch_t *w);
 void qc_set_trust_anchors(qconnection_t *c, const br_x509_trust_anchor *ta, size_t num);
-int qc_process(qconnection_t *c, const void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);
+int qc_process(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);
 int qc_send_client_hello(qconnection_t *c);
 

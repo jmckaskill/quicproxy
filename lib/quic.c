@@ -3,8 +3,108 @@
 #include <cutils/char-array.h>
 #include <assert.h>
 
-#define QUIC_INITIAL 0xFF
 #define QUIC_VERSION UINT32_C(0xFF00000F)
+#define DEFAULT_SERVER_ID_LEN 8
+
+// packet types
+#define LONG_HEADER_FLAG 0x80
+#define INITIAL 0xFF
+
+// frame types
+#define PADDING 0
+#define RST_STREAM 1
+#define CONNECTION_CLOSE 2
+#define APPLICATION_CLOSE 3
+#define MAX_DATA 4
+#define MAX_STREAM_DATA 5
+#define MAX_STREAM_ID 6
+#define PING 7
+#define BLOCKED 8
+#define STREAM_BLOCKED 9
+#define STREAM_ID_BLOCKED 0x0A
+#define NEW_CONNECTION_ID 0x0B
+#define STOP_SENDING 0x0C
+#define RETIRE_CONNECTION_ID 0x0D
+#define PATH_CHALLENGE 0x0E
+#define PATH_RESPONSE 0x0F
+#define STREAM 0x10
+#define STREAM_OFF_FLAG 4
+#define STREAM_LEN_FLAG 2
+#define STREAM_FIN_FLAG 1
+#define STREAM_MASK 0xF8
+#define CRYPTO 0x18
+#define NEW_TOKEN 0x19
+#define ACK 0x1A
+#define ACK_MASK 0xFE
+#define ACK_ECN_FLAG 1
+
+// TLS records
+#define TLS_RECORD_HEADER_SIZE 4
+#define CLIENT_HELLO 1
+#define SERVER_HELLO 2
+#define NEW_SESSION_TICKET 4
+#define END_OF_EARLY_DATA 5
+#define ENCRYPTED_EXTENSIONS 6
+#define CERTIFICATE 11
+#define CERTIFICATE_REQUEST 13
+#define CERTIFICATE_VERIFY 15
+#define FINISHED 20
+#define KEY_UPDATE 24
+#define MESSAGE_HASH 254
+
+#define TLS_LEGACY_VERSION 0x303
+#define TLS_VERSION 0x304
+#define TLS_HELLO_RANDOM_SIZE 20
+
+// TLS ciphers
+#define TLS_AES_128_GCM_SHA256 0x1301
+
+#define EC_KEY_UNCOMPRESSED 4
+
+// TLS compression methods
+#define TLS_COMPRESSION_NULL 0
+
+// TLS signature algorithms
+#define RSA_PKCS1_SHA256 0x0401
+#define RSA_PKCS1_SHA384 0x0501
+#define RSA_PKCS1_SHA512 0x0601
+#define ECDSA_SECP256R1_SHA256 0x0403
+#define ECDSA_SECP384R1_SHA384 0x0503
+#define ECDSA_SECP512R1_SHA512 0x0603
+#define ED25519 0x0807
+#define ED448 0x0808
+#define RSA_PSS_SHA256 0x0809
+#define RSA_PSS_SHA384 0x080A
+#define RSA_PSS_SHA512 0x080B
+
+// TLS extensions
+#define TLS_EXTENSION_HEADER_SIZE 4
+#define SERVER_NAME 0
+#define MAX_FRAGMENT_LENGTH 1
+#define STATUS_REQUEST 5
+#define SUPPORTED_GROUPS 10
+#define SIGNATURE_ALGORITHMS 13
+#define USE_SRTP 14
+#define HEARTBEAT 15
+#define APP_PROTOCOL 16
+#define SIGNED_CERTIFICATE_TIMESTAMP 18
+#define CLIENT_CERTIFICATE_TYPE 19
+#define SERVER_CERTIFICATE_TYPE 20
+#define TLS_PADDING 21
+#define PRE_SHARED_KEY 41
+#define EARLY_DATA 42
+#define SUPPORTED_VERSIONS 43
+#define COOKIE 44
+#define PSK_KEY_EXCHANGE_MODES 45
+#define CERTIFICATE_AUTHORITIES 47
+#define OID_FILTERS 48
+#define POST_HANDSHAKE_AUTH 49
+#define SIGNATURE_ALGORITHMS_CERT 50
+#define KEY_SHARE 51
+#define QUIC_TRANSPORT_PARAMETERS 0xFFA5
+
+// server name
+#define HOST_NAME_TYPE 0
 
 static const char prng_nonce[] = "quic-proxy prng nonce";
 static const uint8_t initial_salt[] = {
@@ -18,7 +118,7 @@ static inline size_t digest_size(const br_hash_class *digest_class) {
 		& BR_HASHDESC_OUT_MASK;
 }
 
-void qc_init_client(qconnection_t *c) {
+void qc_init(qconnection_t *c) {
 	memset(c, 0, sizeof(*c));
 	br_hmac_drbg_init(&c->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
 }
@@ -59,8 +159,8 @@ int qc_seed_prng(qconnection_t *c, br_prng_seeder seedfn) {
 }
 
 static void generate_id(const br_prng_class **prng, qconnection_id_t *id) {
-	id->len = 8;
-	(*prng)->generate(prng, id->id, 8);
+	id->len = DEFAULT_SERVER_ID_LEN;
+	(*prng)->generate(prng, id->id, DEFAULT_SERVER_ID_LEN);
 }
 
 void qc_generate_ids(qconnection_t *c) {
@@ -178,8 +278,12 @@ static void generate_initial_secrets(const qconnection_id_t *id, struct aead_aes
 	derive_keys(&br_sha256_vtable, server->secret, server->data_key, server->pn_key, sizeof(server->data_key), server->iv, sizeof(server->iv));
 }
 
-static uint8_t encoded_id_len(qconnection_id_t *id) {
+static uint8_t encode_id_len(qconnection_id_t *id) {
 	return id->len ? (id->len - 3) : 0;
+}
+
+static uint8_t decode_id_len(uint8_t val) {
+	return val ? (val + 3) : 0;
 }
 
 static uint8_t *encode_varint_backwards(uint8_t *p, uint64_t val) {
@@ -195,10 +299,63 @@ static uint8_t *encode_varint_backwards(uint8_t *p, uint64_t val) {
 	return p;
 }
 
+static int64_t decode_varint(uint8_t **p, uint8_t *e) {
+	if (*p == e) {
+		return -1;
+	}
+	uint8_t *s = (*p)++;
+	uint8_t hdr = *s;
+	switch (hdr >> 6) {
+	case 0:
+		return hdr;
+	case 1:
+		if (*p == e) {
+			return -1;
+		}
+		*p += 1;
+		return big_16(s) & 0x3FFF;
+	case 2:
+		if (*p + 3 > e) {
+			return -1;
+		}
+		*p += 3;
+		return big_32(s) & UINT32_C(0x3FFFFFFF);
+	default:
+		if (*p + 7 > e) {
+			return -1;
+		}
+		*p += 7;
+		return big_64(s) & UINT64_C(0x3FFFFFFFFFFFFFFF);
+	}
+}
+
 static uint8_t *encode_packet_number_backwards(uint8_t *p, uint64_t val) {
 	// for now just use the 4B form
 	p -= 4; write_big_32(p, (uint32_t)val | UINT32_C(0xC0000000));
 	return p;
+}
+
+static int64_t decode_packet_number(uint8_t **p, uint8_t *e, int64_t base) {
+	if (*p == e) {
+		return -1;
+	}
+	uint8_t *s = (*p)++;
+	uint8_t hdr = *s;
+	switch (hdr >> 6) {
+	default:
+		return (base & UINT64_C(0xFFFFFFFFFFFFFF80)) | (hdr & 0x7F);
+	case 2:
+		if (*p == e) {
+			return -1;
+		}
+		return (base & UINT64_C(0xFFFFFFFFFFFFC000)) | ((uint16_t)hdr & 0x3F) | *((*p)++);
+	case 3:
+		if (*p + 3 > e) {
+			return -1;
+		}
+		*p += 3;
+		return (base & UINT64_C(0xFFFFFFFFC0000000)) | (big_32(s) & UINT32_C(0x3FFFFFFF));
+	}
 }
 
 #define PKT_NUM_KEYSZ 16
@@ -219,23 +376,140 @@ int qc_send_client_hello(qconnection_t *c) {
 	init_aead_aes_128_gcm(&client);
 
 	uint8_t packet[1600];
+	uint8_t *e = packet + sizeof(packet);
 	// start with encoding the data and then add the header in front of it
 	// header is variable length due to the length field
-	uint8_t *payload = packet + 1 + 4 + 1 + 18 + 18 + 8 + 4;
-	uint8_t *p = payload;
-	memset(p, 0, 1200); p += 1200;
+	uint8_t *data = p = packet
+		+ 1 // packet type
+		+ 4 // version
+		+ 1 // dcil/scil
+		+ 18 // destination id
+		+ 18 // source id
+		+ 4 // length
+		+ 4 // packet number
+		+ 1 // crypto frame
+		+ 1 // crypto offset
+		+ 4; // crypto length
+
+	// client hello record header - will fill out later
+	uint8_t *client_hello = p;
+	p += TLS_RECORD_HEADER_SIZE;
+
+	// legacy version
+	write_big_16(p, TLS_LEGACY_VERSION); p += 2;
+
+	// random field
+	c->rand.vtable->generate(&c->rand.vtable, p, TLS_HELLO_RANDOM_SIZE);
+	p += TLS_HELLO_RANDOM_SIZE;
+
+	// legacy session ID - not used in QUIC
+	*p++ = 0;
+
+	// cipher suites
+	write_big_16(p, 2); p += 2;
+	write_big_16(p, TLS_AES_128_GCM_SHA256); p += 2;
+
+	// compression methods
+	*p++ = 1;
+	*p++ = TLS_COMPRESSION_NULL;
+
+	// extensions size in bytes - will fill out later
+	uint8_t *extensions = p; p += 2;
+
+	// server name
+	uint8_t *sni = p;
+	p += 2 + 2 + 2 + 1 + 2 + c->server_name.len;
+	if (p > e) {
+		return -1;
+	}
+	write_big_16(sni, SERVER_NAME);
+	write_big_16(sni+2, c->server_name.len + 2 + 1 + 2);
+	write_big_16(sni+4, c->server_name.len + 2 + 1);
+	sni[5] = HOST_NAME_TYPE;
+	write_big_16(sni+7, c->server_name.len);
+	memcpy(sni+9, c->server_name.c_str, c->server_name.len);
+
+	// supported groups
+	uint8_t *ecc = p;
+	size_t num_groups = 1;
+	p += 2 + 2 + 2 + (2 * num_groups);
+	if (p > e) {
+		return -1;
+	}
+	write_big_16(ecc, SUPPORTED_GROUPS);
+	write_big_16(ecc + 2, 2 + (2 * num_groups));
+	write_big_16(ecc + 4, 2 * num_groups);
+	write_big_16(ecc + 6, BR_EC_curve25519);
+
+	// signature algorithms
+	uint8_t *sig = p;
+	size_t num_algos = 2;
+	p += 2 + 2 + 2 + (2 * num_algos);
+	if (p > e) {
+		return -1;
+	}
+	write_big_16(sig, SIGNATURE_ALGORITHMS);
+	write_big_16(sig + 2, 2 + (2 * num_algos));
+	write_big_16(sig + 4, 2 * num_algos);
+	write_big_16(sig + 6, ED25519);
+	write_big_16(sig + 8, RSA_PKCS1_SHA256);
+
+	// supported versions
+	uint8_t *ver = p;
+	size_t num_versions = 2;
+	p += 2 + (2 * num_versions);
+	if (p > e) {
+		return -1;
+	}
+	write_big_16(ver, SUPPORTED_VERSIONS);
+	write_big_16(ver + 2, 2 * num_versions);
+	write_big_16(ver + 4, 0x3A3A); // grease
+	write_big_16(ver + 6, TLS_VERSION);
+
+	// key share
+	const br_ec_impl *ec = br_ec_get_default();
+	uint8_t key25519[BR_EC_KBUF_PRIV_MAX_SIZE];
+	uint8_t pub25519[BR_EC_KBUF_PUB_MAX_SIZE];
+	br_ec_private_key sk_25519;
+	br_ec_public_key pk_25519;
+	br_ec_keygen(&c->rand.vtable, ec, &sk_25519, key25519, BR_EC_curve25519);
+	br_ec_compute_pub(ec, &pk_25519, pub25519, &sk_25519);
+	size_t key_share_size = 0;
+	key_share_size += 2 + 2 + 1 + pk_25519.qlen;
+	uint8_t *ks = p;
+	p += TLS_RECORD_HEADER_SIZE + 2 + key_share_size;
+	if (p > e) {
+		return -1;
+	}
+	write_big_16(ks, KEY_SHARE);
+	write_big_16(ks + 2, key_share_size);
+	ks += 4;
+	write_big_16(ks, BR_EC_curve25519);
+	write_big_16(ks + 2, 1 + pk_25519.qlen);
+	ks[2] = EC_KEY_UNCOMPRESSED;
+	memcpy(ks + 3, pk_25519.q, pk_25519.qlen);
+
+	client_hello[0] = CLIENT_HELLO;
+	write_big_24(client_hello + 1, p - client_hello - TLS_RECORD_HEADER_SIZE);
+
+	// add some padding
+	if (p < data + 1200) {
+		memset(p, 0, data + 1200 - p);
+		p = data + 1200;
+	}
+
 	uint8_t *tag = p; p += AEAD_TAG_SIZE; // fill out the tag later
 	uint8_t *end = p;
 
-	p = payload;
+	p = data;
 	uint8_t *pktnum = p = encode_packet_number_backwards(p, 0);
 	p = encode_varint_backwards(p, end - p); // packet length
 	p = encode_varint_backwards(p, 0); // token length
 	p -= c->local_id->len; memcpy(p, c->local_id->id, c->local_id->len);
 	p -= c->peer_id->len; memcpy(p, c->peer_id->id, c->peer_id->len);
-	*(--p) = (encoded_id_len(c->peer_id) << 4) | encoded_id_len(c->local_id);
+	*(--p) = (encode_id_len(c->peer_id) << 4) | encode_id_len(c->local_id);
 	p -= 4; write_big_32(p, QUIC_VERSION);
-	*(--p) = QUIC_INITIAL;
+	*(--p) = PACKET_INITIAL;
 
 	reset_aead_aes_128_gcm(&client, 0);
 	br_gcm_aad_inject(&client.gcm, p, payload - p);
@@ -257,3 +531,124 @@ int qc_send_client_hello(qconnection_t *c) {
 	return did_send ? 0 : -1;
 }
 
+static int process_frames(qconnection_t *c, uint8_t *p, uint8_t *e) {
+	while (p < e) {
+		// We only support frame types < 0x40. We should error on any type not supported.
+		// The standard requires shortest varint form. Thus we can ignore the varint encoding
+		uint8_t frame_type = *(p++);
+		if ((frame_type & STREAM_MASK) == STREAM) {
+
+		} else if ((frame_type & ACK_MASK) == ACK) {
+
+		} else {
+			switch (frame_type) {
+			case PADDING:
+				while (p < e && *p) {
+					p++;
+				}
+				break;
+			default:
+				return -1;
+			}
+		}
+	}
+	return 0;
+}
+
+int qc_process(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime) {
+	
+	uint8_t *p = buf;
+	uint8_t *e = p + len;
+
+	while (p < e) {
+		if (p[0] & LONG_HEADER_FLAG) {
+			if (e - p < 6) {
+				return -1;
+			}
+			uint32_t version = big_32(p + 1);
+			if (version != QUIC_VERSION) {
+				// TODO send version negotiation
+				return -1;
+			}
+			uint8_t dcil = decode_id_len(p[5] >> 4);
+			uint8_t scil = decode_id_len(p[5] & 0xF);
+			if (dcil != DEFAULT_SERVER_ID_LEN) {
+				return -1;
+			}
+			p += 6;
+
+			switch (p[0]) {
+			case INITIAL: {
+				c->local_id = &c->local_ids[0];
+				c->local_id->len = dcil;
+				memcpy(c->local_id->id, p, dcil);
+				p += dcil;
+				c->peer_id = &c->peer_ids[0];
+				c->peer_id->len = scil;
+				memcpy(c->peer_id->id, p, scil);
+				p += scil;
+
+				struct aead_aes_128_gcm client, server;
+				generate_initial_secrets(c->local_id, &client, &server);
+				init_aead_aes_128_gcm(&client);
+
+				int64_t toksz = decode_varint(&p, e);
+				if (toksz < 0 || toksz >(int64_t)(e - p)) {
+					return -1;
+				}
+				p += (size_t)toksz; // skip over token
+
+				int64_t paysz = decode_varint(&p, e);
+				if (paysz < 0 || paysz >(int64_t)(e - p)) {
+					return -1;
+				}
+
+				// copy out the encrypted packet number
+				// this way we can assume a 4B packet number
+				// and copy the payload bytes 
+				uint8_t *pkte = p + paysz;
+				uint8_t tmp[4];
+				memcpy(tmp, p, 4);
+				protect_packet_number(&client, p, p + 4, pkte);
+				uint8_t *payload = p;
+				int64_t pktnum = decode_packet_number(&p, pkte, 0); // TODO: offset from last packet num
+				if (pktnum < 0) {
+					return -1;
+				}
+				memcpy(p, tmp + (p - payload), 4 - (p - payload));
+
+				if (pkte - p < AEAD_TAG_SIZE) {
+					return -1;
+				}
+				reset_aead_aes_128_gcm(&client, (uint64_t)pktnum);
+				br_gcm_aad_inject(&client.gcm, buf, p - (uint8_t*)buf);
+				br_gcm_flip(&client.gcm);
+				br_gcm_run(&client.gcm, 0, p, pkte - p - AEAD_TAG_SIZE);
+				if (!br_gcm_check_tag(&client.gcm, pkte - AEAD_TAG_SIZE)) {
+					return -1;
+				}
+
+				if (process_frames(c, p, pkte - AEAD_TAG_SIZE)) {
+					return -1;
+				}
+
+				p = pkte;
+				continue;
+			}
+			}
+		} else {
+			// short header
+			if (e - p < 1 + DEFAULT_SERVER_ID_LEN) {
+				return -1;
+			}
+		}
+		switch (c->state) {
+		case QC_WAIT_FOR_INITIAL: {
+		}
+		default:
+			return -1;
+		}
+	}
+
+	return 0;
+}

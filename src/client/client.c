@@ -35,8 +35,8 @@ static int do_send(void *user, const void *buf, size_t len, const struct sockadd
 int main(int argc, const char *argv[]) {
 	log_t *debug = &stderr_log;
 
-	const char *port = "443";
-	const char *host = "192.168.1.1";
+	const char *port = "8443";
+	const char *host = "localhost";
 	flag_string(&port, 0, "port", "NUM", "Port to connect to");
 	flag_string(&host, 0, "host", "NAME", "Hostname to connect to");
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
@@ -56,14 +56,14 @@ int main(int argc, const char *argv[]) {
 	cc.fd6 = (int) socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 	struct sockaddr_in6 in6 = { 0 };
 	in6.sin6_family = AF_INET6;
-	if (bind(cc.fd6, (struct sockaddr*)&in6, sizeof(in6))) {
+	if (set_ipv6_only(cc.fd6, true) || bind(cc.fd6, (struct sockaddr*)&in6, sizeof(in6))) {
 		LOG(debug, "failed to bind IP6");
 		closesocket(cc.fd6);
 		cc.fd6 = -1;
 	}
 
 	qconnection_t qc;
-	qc_init_client(&qc);
+	qc_init(&qc);
 	qc.send = &do_send;
 	qc.user = &cc;
 
