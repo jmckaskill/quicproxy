@@ -1,0 +1,11 @@
+SRC_NINJA = src.ninja
+TOOLCHAIN_DIR = clang-toolchain
+INCLUDES = -I . -I ext/cutils/inc -I ext/BearSSL/inc -I ext/BearSSL/src
+CLANG_DIR = bin/clang
+LIB = bin/libarm/armv7
+
+include $TOOLCHAIN_DIR/host-msvc.ninja
+subninja $TOOLCHAIN_DIR/target-armv7-release.ninja
+subninja $TOOLCHAIN_DIR/target-msvc-release.ninja
+include $TOOLCHAIN_DIR/target-msvc-debug.ninja
+

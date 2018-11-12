@@ -1,0 +1,6 @@
+bin/ninja, https://github.com/ninja-build/ninja/releases/download/v1.8.2/ninja-mac.zip, mac
+bin/ninja, https://github.com/ninja-build/ninja/releases/download/v1.8.2/ninja-win.zip, windows
+
+bin/clang, https://storage.googleapis.com/ctct-clang-toolchain/host-win64-2018-02-14.tar.xz, windows
+bin/libarm, https://storage.googleapis.com/ctct-clang-toolchain/libarm-2018-03-02-2.txz
+

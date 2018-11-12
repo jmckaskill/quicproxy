@@ -1,0 +1,9 @@
+/bin
+/x64
+/obj
+*.db
+*.opendb
+download.done
+.ninja_deps
+.ninja_log
+.vs

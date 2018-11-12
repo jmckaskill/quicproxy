@@ -1,0 +1,9 @@
+[submodule "clang-toolchain"]
+	path = clang-toolchain
+	url = https://github.com/jmckaskill/clang-toolchain.git
+[submodule "ext/cutils"]
+	path = ext/cutils
+	url = https://github.com/jmckaskill/cutils.git
+[submodule "ext/BearSSL"]
+	path = ext/BearSSL
+	url = https://www.bearssl.org/git/BearSSL

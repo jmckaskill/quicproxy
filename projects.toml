@@ -1,0 +1,96 @@
+solution = "quicproxy.sln"
+generate = "$(SolutionDir)\\generate-vcxproj.exe $(SolutionDir)"
+ninja = "bin\\ninja\\ninja.exe -f msvc.ninja"
+includes =  [
+	".",
+	"ext/cutils/inc",
+	"ext/BearSSL/inc",
+	"ext/BearSSL/src",
+]
+defines = []
+
+[[target]]
+vs = "Debug"
+ninja = "msvc-debug"
+default = "msvc-debug check-msvc-debug"
+defines = [
+	"WIN32",
+	"DEBUG",
+]
+
+[[target]]
+vs = "Release"
+ninja = "msvc-release"
+default = "msvc-release check-msvc-release"
+defines = [
+	"WIN32",
+	"NDEBUG",
+]
+
+[[target]]
+vs = "Arm-Release"
+ninja = "armv7-release"
+default = "armv7-release"
+defines = [
+	"__linux__",
+	"NDEBUG",
+]
+includes = [
+	"bin/libarm/armv7/include",
+	"bin/clang/lib/clang/5.0.1/include",
+]
+
+[[project]]
+name =  "lib - cutils"
+file = "ext/cutils.vcxproj"
+target = "bin/obj/{TGT}/cutils.lib"
+dirs = [
+	"ext/cutils/src",
+	"ext/cutils/src/rand",
+	"ext/cutils/inc/cutils",
+]
+
+[[project]]
+name =  "lib - quic"
+file = "lib/quic.vcxproj"
+target = "bin/obj/{TGT}/quic.lib"
+dirs = [
+	"lib"
+]
+
+[[project]]
+name =  "bin - qproxy-server"
+file = "src/server/server.vcxproj"
+target = "bin/{TGT}/qproxy-server.exe"
+dirs = [
+	"src/server"
+]
+
+[[project]]
+name =  "bin - qproxy-client"
+file = "src/client/client.vcxproj"
+target = "bin/{TGT}/qproxy-client.exe"
+dirs = [
+	"src/client"
+]
+
+[[project]]
+name = "lib - bearssl"
+file = "ext/bearssl.vcxproj"
+target = "bin/obj/{TGT}/bearssl.lib"
+dirs = [
+        "ext/BearSSL/inc",
+        "ext/BearSSL/src/aead",
+        "ext/BearSSL/src/codec",
+        "ext/BearSSL/src/ec",
+        "ext/BearSSL/src/hash",
+        "ext/BearSSL/src/int",
+		"ext/BearSSL/src/kdf",
+        "ext/BearSSL/src/mac",
+        "ext/BearSSL/src/rand",
+        "ext/BearSSL/src/rsa",
+        "ext/BearSSL/src/ssl",
+        "ext/BearSSL/src/symcipher",
+        "ext/BearSSL/src/x509",
+        "ext/BearSSL/src",
+]

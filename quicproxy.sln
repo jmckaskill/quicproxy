@@ -1,0 +1,70 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.25420.1
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "_BUILD_ALL", "_BUILD_ALL.vcxproj", "{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "_GENERATE_VCXPROJ", "_GENERATE_VCXPROJ.vcxproj", "{EBF61EF1-9FDD-536D-A602-53A8E81FC5BE}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - cutils", "ext\cutils.vcxproj", "{A83AD043-4538-5550-9C87-61AA1B9E20E9}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - quic", "lib\quic.vcxproj", "{E5E2965E-2023-5CA9-A020-142BD4B32C0A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-server", "src\server\server.vcxproj", "{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-client", "src\client\client.vcxproj", "{92623FB8-4F1B-5BBD-93C2-DDA902688894}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - bearssl", "ext\bearssl.vcxproj", "{2F5708D1-9D06-5AE7-89B8-A704AF116264}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ALL = Debug|ALL
+		Release|ALL = Release|ALL
+		Arm-Release|ALL = Arm-Release|ALL
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Debug|ALL.ActiveCfg = Debug|x64
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Debug|ALL.Build.0 = Debug|x64
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Release|ALL.ActiveCfg = Release|x64
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Release|ALL.Build.0 = Release|x64
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{A83AD043-4538-5550-9C87-61AA1B9E20E9}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Debug|ALL.ActiveCfg = Debug|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Debug|ALL.Build.0 = Debug|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Release|ALL.ActiveCfg = Release|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Release|ALL.Build.0 = Release|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Debug|ALL.ActiveCfg = Debug|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Debug|ALL.Build.0 = Debug|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Release|ALL.ActiveCfg = Release|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Release|ALL.Build.0 = Release|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Debug|ALL.ActiveCfg = Debug|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Debug|ALL.Build.0 = Debug|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|ALL.ActiveCfg = Release|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|ALL.Build.0 = Release|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Debug|ALL.ActiveCfg = Debug|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Debug|ALL.Build.0 = Debug|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Release|ALL.ActiveCfg = Release|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Release|ALL.Build.0 = Release|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{EBF61EF1-9FDD-536D-A602-53A8E81FC5BE}.Debug|ALL.ActiveCfg = Debug|x64
+		{EBF61EF1-9FDD-536D-A602-53A8E81FC5BE}.Release|ALL.ActiveCfg = Release|x64
+		{EBF61EF1-9FDD-536D-A602-53A8E81FC5BE}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Debug|ALL.ActiveCfg = Debug|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Debug|ALL.Build.0 = Debug|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Release|ALL.ActiveCfg = Release|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Release|ALL.Build.0 = Release|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{FE12F84D-0E5E-5887-AEB5-9ED71CD9C65B}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,140 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Arm-Release|x64">
+      <Configuration>Arm-Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="cutils\src\file.c" />
+    <ClCompile Include="cutils\src\flag.c" />
+    <ClCompile Include="cutils\src\flag_test.c" />
+    <ClCompile Include="cutils\src\hash.c" />
+    <ClCompile Include="cutils\src\hash_test.c" />
+    <ClCompile Include="cutils\src\heap.c" />
+    <ClCompile Include="cutils\src\heap_test.c" />
+    <ClCompile Include="cutils\src\log.c" />
+    <ClCompile Include="cutils\src\mapped-file_posix.c" />
+    <ClCompile Include="cutils\src\mapped-file_win.c" />
+    <ClCompile Include="cutils\src\rbtree.c" />
+    <ClCompile Include="cutils\src\rbtree_test.c" />
+    <ClCompile Include="cutils\src\socket.c" />
+    <ClCompile Include="cutils\src\stopwatch.c" />
+    <ClCompile Include="cutils\src\str.c" />
+    <ClCompile Include="cutils\src\str_test.c" />
+    <ClCompile Include="cutils\src\test.c" />
+    <ClCompile Include="cutils\src\test_test.c" />
+    <ClCompile Include="cutils\src\timer.c" />
+    <ClCompile Include="cutils\src\utf.c" />
+    <ClCompile Include="cutils\src\vector.c" />
+    <ClCompile Include="cutils\src\zip-writer.c" />
+    <ClCompile Include="cutils\src\rand\mersenne-twister.c" />
+    <ClCompile Include="cutils\src\rand\test-bench.cpp" />
+    <ClCompile Include="cutils\src\rand\test-mt.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="cutils\inc\cutils\char-array.h" />
+    <ClInclude Include="cutils\inc\cutils\endian.h" />
+    <ClInclude Include="cutils\inc\cutils\file.h" />
+    <ClInclude Include="cutils\inc\cutils\flag.h" />
+    <ClInclude Include="cutils\inc\cutils\hash.h" />
+    <ClInclude Include="cutils\inc\cutils\heap.h" />
+    <ClInclude Include="cutils\inc\cutils\log.h" />
+    <ClInclude Include="cutils\inc\cutils\mersenne-twister.h" />
+    <ClInclude Include="cutils\inc\cutils\rbtree.h" />
+    <ClInclude Include="cutils\inc\cutils\socket.h" />
+    <ClInclude Include="cutils\inc\cutils\stopwatch.h" />
+    <ClInclude Include="cutils\inc\cutils\str.h" />
+    <ClInclude Include="cutils\inc\cutils\stream.h" />
+    <ClInclude Include="cutils\inc\cutils\test.h" />
+    <ClInclude Include="cutils\inc\cutils\timer.h" />
+    <ClInclude Include="cutils\inc\cutils\utf.h" />
+    <ClInclude Include="cutils\inc\cutils\vector.h" />
+    <ClInclude Include="cutils\inc\cutils\zip-writer.h" />
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A83AD043-4538-5550-9C87-61AA1B9E20E9}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <ProjectName>lib - cutils</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\msvc-debug\cutils.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/msvc-debug/cutils.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/msvc-debug/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/msvc-debug/cutils.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/msvc-debug/cutils.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\msvc-release\cutils.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/msvc-release/cutils.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/msvc-release/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/msvc-release/cutils.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/msvc-release/cutils.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\armv7-release\cutils.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>__linux__;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/cutils.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/cutils.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/cutils.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src;$(SolutionDir)\bin\libarm\armv7\include;$(SolutionDir)\bin\clang\lib\clang\5.0.1\include</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
