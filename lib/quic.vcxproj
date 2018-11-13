@@ -15,10 +15,12 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="packets.c" />
     <ClCompile Include="quic.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bearssl_wrapper.h" />
+    <ClInclude Include="packets.h" />
     <ClInclude Include="quic.h" />
   </ItemGroup>
   <ItemGroup>

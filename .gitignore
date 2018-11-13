@@ -7,3 +7,4 @@ download.done
 .ninja_deps
 .ninja_log
 .vs
+*.vcxproj.user

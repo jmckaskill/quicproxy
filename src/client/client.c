@@ -66,6 +66,7 @@ int main(int argc, const char *argv[]) {
 	qc_init(&qc);
 	qc.send = &do_send;
 	qc.user = &cc;
+	qc.debug = &stderr_log;
 
 	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
 	if (!seedfn || qc_seed_prng(&qc, seedfn)) {
@@ -77,7 +78,7 @@ int main(int argc, const char *argv[]) {
 		FATAL(debug, "failed to lookup %s:%s", host, port);
 	}
 
-	if (qc_send_client_hello(&qc)) {
+	if (qc_start_connect(&qc)) {
 		FATAL(debug, "failed to send hello");
 	}
 

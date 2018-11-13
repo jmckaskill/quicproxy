@@ -3,6 +3,7 @@
 #include <cutils/socket.h>
 #include <cutils/stopwatch.h>
 #include <cutils/log.h>
+#include <cutils/char-array.h>
 #include "bearssl_wrapper.h"
 
 #define QUIC_MAX_IDS 8
@@ -28,6 +29,20 @@ struct qconnection_addr {
 	struct sockaddr_storage ss;
 };
 
+enum qcrypto_level {
+	QC_INITIAL,
+	QC_HANDSHAKE,
+	QC_PROTECTED,
+};
+
+struct qcrypto_buffer {
+	enum qcrypto_level level;
+	uint64_t off;
+	uint8_t *ptr, *end;
+	size_t used, have;
+	uint8_t buffer[4096];
+};
+
 struct qconnection {
 	enum qstate state;
 
@@ -42,6 +57,16 @@ struct qconnection {
 	qconnection_id_t local_ids[QUIC_MAX_IDS];
 	qconnection_addr_t *peer_addr;
 	qconnection_addr_t peer_addrs[3];
+
+	slice_t groups;
+	slice_t algorithms;
+	slice_t ciphers;
+
+	enum qcrypto_level tx_level;
+	uint64_t tx_next_packet;
+	uint64_t tx_crypto_offset;
+	struct qcrypto_buffer rx_crypto;
+
 	struct {
 		size_t len;
 		char c_str[256];
@@ -56,5 +81,5 @@ void qc_generate_ids(qconnection_t *c);
 void qc_set_stopwatch(qconnection_t *c, stopwatch_t *w);
 void qc_set_trust_anchors(qconnection_t *c, const br_x509_trust_anchor *ta, size_t num);
 int qc_process(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);
-int qc_send_client_hello(qconnection_t *c);
+int qc_start_connect(qconnection_t *c);
 
