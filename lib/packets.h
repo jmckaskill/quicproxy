@@ -1,11 +1,11 @@
 #pragma once
 #include "bearssl_wrapper.h"
+#include "quic.h"
 #include <cutils/char-array.h>
 #include <stdint.h>
 
 #define QUIC_VERSION UINT32_C(0xFF00000F)
 #define DEFAULT_SERVER_ID_LEN 8
-#define TLS_MAX_KEY_SHARE 8
 
 #define VARINT_16 UINT16_C(0x4000)
 #define VARINT_32 UINT32_C(0x80000000)
@@ -113,25 +113,23 @@
 
 uint8_t encode_id_len(uint8_t len);
 uint8_t decode_id_len(uint8_t val);
-uint8_t *encode_varint_backwards(uint8_t *p, uint64_t val);
 uint8_t *encode_varint(uint8_t *p, uint64_t val);
-int64_t decode_varint(uint8_t **p, uint8_t *e);
-uint8_t *encode_packet_number_backwards(uint8_t *p, uint64_t val);
+int64_t decode_varint(qslice_t *s);
 uint8_t *encode_packet_number(uint8_t *p, uint64_t val, uint64_t base);
-int64_t decode_packet_number(uint8_t **p, uint8_t *e, int64_t base);
+int64_t decode_packet_number(qslice_t *s, int64_t base);
 
 struct client_hello {
 	const uint8_t *random;
-	slice_t server_name;
-	slice_t ciphers;
-	slice_t groups;
-	slice_t algorithms;
+	qslice_t server_name;
+	qslice_t ciphers;
+	qslice_t groups;
+	qslice_t algorithms;
 	size_t key_num;
-	br_ec_public_key keys[TLS_MAX_KEY_SHARE];
+	br_ec_public_key keys[QUIC_MAX_KEYSHARE];
 };
 
-int encode_client_hello(uint8_t **p, uint8_t *e, const struct client_hello *h);
-int decode_client_hello(uint8_t *p, uint8_t *e, struct client_hello *h);
+int encode_client_hello(qslice_t *s, const struct client_hello *h);
+int decode_client_hello(qslice_t s, struct client_hello *h);
 
 struct server_hello {
 	const uint8_t *random;
@@ -139,10 +137,13 @@ struct server_hello {
 	br_ec_public_key key;
 };
 
-int encode_server_hello(uint8_t **p, uint8_t *e, const struct server_hello *h);
-int decode_server_hello(uint8_t *p, uint8_t *e, struct server_hello *h);
+int encode_server_hello(qslice_t *s, const struct server_hello *h);
+int decode_server_hello(qslice_t s, struct server_hello *h);
 
-
+static inline void *append(void *to, const void *from, size_t sz) {
+	memcpy(to, from, sz);
+	return (uint8_t*)to + sz;
+}
 
 
 

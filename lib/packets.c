@@ -2,6 +2,7 @@
 #include <cutils/endian.h>
 #include <stdbool.h>
 
+
 uint8_t encode_id_len(uint8_t len) {
 	return len ? (len - 3) : 0;
 }
@@ -23,46 +24,33 @@ uint8_t *encode_varint(uint8_t *p, uint64_t val) {
 	}
 }
 
-uint8_t * encode_varint_backwards(uint8_t *p, uint64_t val) {
-	if (val < 0x40) {
-		*(--p) = (uint8_t)val;
-	} else if (val < 0x4000) {
-		p -= 2;	write_big_16(p, (uint16_t)val | VARINT_16);
-	} else if (val < 0x40000000) {
-		p -= 4; write_big_32(p, (uint32_t)val | VARINT_32);
-	} else {
-		p -= 8; write_big_64(p, val | VARINT_64);
-	}
-	return p;
-}
-
-int64_t decode_varint(uint8_t **p, uint8_t *e) {
-	if (*p == e) {
+int64_t decode_varint(qslice_t *s) {
+	if (s->p == s->e) {
 		return -1;
 	}
-	uint8_t *s = (*p)++;
-	uint8_t hdr = *s;
+	uint8_t *p = s->p++;
+	uint8_t hdr = *p;
 	switch (hdr >> 6) {
 	case 0:
 		return hdr;
 	case 1:
-		if (*p == e) {
+		if (s->p == s->e) {
 			return -1;
 		}
-		*p += 1;
-		return big_16(s) & 0x3FFF;
+		s->p += 1;
+		return big_16(p) & 0x3FFF;
 	case 2:
-		if (*p + 3 > e) {
+		if (s->p + 3 > s->e) {
 			return -1;
 		}
-		*p += 3;
-		return big_32(s) & UINT32_C(0x3FFFFFFF);
+		s->p += 3;
+		return big_32(p) & UINT32_C(0x3FFFFFFF);
 	default:
-		if (*p + 7 > e) {
+		if (s->p + 7 > s->e) {
 			return -1;
 		}
-		*p += 7;
-		return big_64(s) & UINT64_C(0x3FFFFFFFFFFFFFFF);
+		s->p += 7;
+		return big_64(p) & UINT64_C(0x3FFFFFFFFFFFFFFF);
 	}
 }
 
@@ -70,348 +58,344 @@ uint8_t *encode_packet_number(uint8_t *p, uint64_t val, uint64_t base) {
 	return write_big_32(p, (uint32_t)val | UINT32_C(0xC0000000));
 }
 
-uint8_t * encode_packet_number_backwards(uint8_t *p, uint64_t val) {
-	// for now just use the 4B form
-	p -= 4; write_big_32(p, (uint32_t)val | UINT32_C(0xC0000000));
-	return p;
-}
-
-int64_t decode_packet_number(uint8_t **p, uint8_t *e, int64_t base) {
-	if (*p == e) {
+int64_t decode_packet_number(qslice_t *s, int64_t base) {
+	if (s->p == s->e) {
 		return -1;
 	}
-	uint8_t *s = (*p)++;
-	uint8_t hdr = *s;
+	uint8_t *p = s->p++;
+	uint8_t hdr = *p;
 	switch (hdr >> 6) {
 	default:
 		return (base & UINT64_C(0xFFFFFFFFFFFFFF80)) | (hdr & 0x7F);
 	case 2:
-		if (*p == e) {
+		if (s->p == s->e) {
 			return -1;
 		}
-		return (base & UINT64_C(0xFFFFFFFFFFFFC000)) | ((uint16_t)hdr & 0x3F) | *((*p)++);
+		return (base & UINT64_C(0xFFFFFFFFFFFFC000)) | ((uint16_t)hdr & 0x3F) | *(s->p++);
 	case 3:
-		if (*p + 3 > e) {
+		if (s->p + 3 > s->e) {
 			return -1;
 		}
-		*p += 3;
-		return (base & UINT64_C(0xFFFFFFFFC0000000)) | (big_32(s) & UINT32_C(0x3FFFFFFF));
+		s->p += 3;
+		return (base & UINT64_C(0xFFFFFFFFC0000000)) | (big_32(p) & UINT32_C(0x3FFFFFFF));
 	}
 }
 
-static int append_slice(uint8_t **p, uint8_t *e, slice_t data) {
-	size_t have = *p - e;
-	if (have < data.len + 2) {
+static int append_slice(qslice_t *s, qslice_t data) {
+	size_t len = data.e - data.p;
+	size_t have = s->e - s->p;
+	if (len + 2 > have) {
 		return -1;
 	}
-	*p = write_big_16(*p, (uint16_t)data.len);
-	memcpy(*p, data.c_str, data.len);
-	*p += data.len;
+	s->p = write_big_16(s->p, (uint16_t)len);
+	s->p = append(s->p, data.p, len);
 	return 0;
 }
 
-static int decode_slice(uint8_t **p, uint8_t *e, slice_t *data) {
-	if (*p + 2 > e) {
+static int decode_slice(qslice_t *s, qslice_t *data) {
+	uint8_t *p = s->p + 2;
+	if (p > s->e) {
 		return -1;
 	}
-	data->len = big_16(*p);
-	*p += 2;
-	if (*p + data->len > e) {
+	uint8_t *e = p + big_16(s->p);
+	if (e > s->e) {
 		return -1;
 	}
-	data->c_str = (char*)*p;
-	*p += data->len;
+	data->p = p;
+	data->e = e;
+	s->p = e;
 	return 0;
 }
 
-int encode_server_hello(uint8_t **pp, uint8_t *e, const struct server_hello *h) {
-	// check fixed size headers - up to and including extensions list size
-	uint8_t *p = *pp;
-	if (p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 > e) {
+int encode_server_hello(qslice_t *ps, const struct server_hello *h) {
+	// check fixed size headers - up to and including extensions list size & tls version
+	qslice_t s = *ps;
+	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 + 2 + 2 + 2 > s.e) {
 		goto err;
 	}
 
 	// legacy version
-	p = write_big_16(p, TLS_LEGACY_VERSION);
+	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
 
 	// random field
-	memcpy(p, h->random, TLS_HELLO_RANDOM_SIZE);
-	p += TLS_HELLO_RANDOM_SIZE;
+	s.p = append(s.p, h->random, TLS_HELLO_RANDOM_SIZE);
 
 	// legacy session ID - not used in QUIC
-	*p++ = 0;
+	*(s.p++) = 0;
 
 	// cipher
-	p = write_big_16(p, h->cipher);
+	s.p = write_big_16(s.p, h->cipher);
 
 	// compression method
-	*p++ = TLS_COMPRESSION_NULL;
+	*(s.p++) = TLS_COMPRESSION_NULL;
 
 	// extensions
-	uint8_t *extensions = p;
-	p += 2;
+	s.p += 2;
+	uint8_t *ext_start = s.p;
 
 	// supported version
-	if (p + 6 > e) {
+	if (s.p + 6 > s.e) {
 		goto err;
 	}
-	p = write_big_16(p, SUPPORTED_VERSIONS);
-	p = write_big_16(p, 2); // extension data size
-	p = write_big_16(p, TLS_VERSION);
+	s.p = write_big_16(s.p, SUPPORTED_VERSIONS);
+	s.p = write_big_16(s.p, 2); // extension data size
+	s.p = write_big_16(s.p, TLS_VERSION);
 
 	// key share
 	if (h->key.curve) {
-		if ((size_t)(e-p) < 2 + 2 + 2 + 1 + h->key.qlen) {
+		if (s.p + 2 + 2 + 2 + 2 + 1 + h->key.qlen > s.e) {
 			goto err;
 		}
-		p = write_big_16(p, KEY_SHARE);
-		p = write_big_16(p, (uint16_t)(2 + 2 + 1 + h->key.qlen)); // extension data size
-		p = write_big_16(p, (uint16_t)h->key.curve);
-		p = write_big_16(p, (uint16_t)(1 + h->key.qlen)); // key length
-		*p++ = EC_KEY_UNCOMPRESSED;
-		memcpy(p, h->key.q, h->key.qlen);
-		p += h->key.qlen;
+		s.p = write_big_16(s.p, KEY_SHARE);
+		s.p = write_big_16(s.p, (uint16_t)(2 + 2 + 1 + h->key.qlen)); // extension data size
+		s.p = write_big_16(s.p, (uint16_t)h->key.curve);
+		s.p = write_big_16(s.p, (uint16_t)(1 + h->key.qlen)); // key length
+		*(s.p++) = EC_KEY_UNCOMPRESSED;
+		memcpy(s.p, h->key.q, h->key.qlen);
+		s.p += h->key.qlen;
 	}
 
-	write_big_16(extensions, (uint16_t)(p - extensions - 2));
-	*pp = p;
+	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
+	ps->p = s.p;
 	return 0;
 err:
 	return -1;
 }
 
-int encode_client_hello(uint8_t **pp, uint8_t *e, const struct client_hello *h) {
-	// check fixed size headers - up to and including cipher list size
-	uint8_t *p = *pp;
-	if (p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > e) {
+int encode_client_hello(qslice_t *ps, const struct client_hello *h) {
+	// check fixed entries - up to and including extension list size
+	qslice_t s = *ps;
+	size_t cipher_len = h->ciphers.e - h->ciphers.p;
+	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + cipher_len + 2 + 2 > s.e) {
 		goto err;
 	}
 
 	// legacy version
-	p = write_big_16(p, TLS_LEGACY_VERSION);
+	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
 
 	// random field
-	memcpy(p, h->random, TLS_HELLO_RANDOM_SIZE);
-	p += TLS_HELLO_RANDOM_SIZE;
+	memcpy(s.p, h->random, TLS_HELLO_RANDOM_SIZE);
+	s.p += TLS_HELLO_RANDOM_SIZE;
 
 	// legacy session ID - not used in QUIC
-	*p++ = 0;
+	*(s.p++) = 0;
 
 	// cipher suites
-	if (append_slice(&p, e, h->ciphers)) {
-		goto err;
-	}
+	s.p = write_big_16(s.p, (uint16_t)cipher_len);
+	memcpy(s.p, h->ciphers.p, cipher_len);
+	s.p += cipher_len;
 
 	// compression methods
-	if (p + 2 > e) {
-		goto err;
-	}
-	*p++ = 1;
-	*p++ = TLS_COMPRESSION_NULL;
+	*(s.p++) = 1;
+	*(s.p++) = TLS_COMPRESSION_NULL;
 
 	// extensions size in bytes - will fill out later
-	if (p + 2 > e) {
-		goto err;
-	}
-	uint8_t *extensions = p;
-	p += 2;
+	s.p += 2;
+	uint8_t *ext_start = s.p;
 
 	// server name
-	if (p + 5 > e) {
-		goto err;
-	}
-	p = write_big_16(p, SERVER_NAME);
-	p = write_big_16(p, (uint16_t)(2 + 1 + 2 + h->server_name.len));
-	p = write_big_16(p, (uint16_t)(1 + 2 + h->server_name.len));
-	*p++ = HOST_NAME_TYPE;
-	if (append_slice(&p, e, h->server_name)) {
-		goto err;
+	size_t name_len = h->server_name.e - h->server_name.p;
+	if (name_len) {
+		if (s.p + 2+2+2+1+2 + name_len > s.e) {
+			goto err;
+		}
+		s.p = write_big_16(s.p, SERVER_NAME);
+		s.p = write_big_16(s.p, (uint16_t)(2 + 1 + 2 + name_len));
+		s.p = write_big_16(s.p, (uint16_t)(1 + 2 + name_len));
+		*(s.p++) = HOST_NAME_TYPE;
+		s.p = write_big_16(s.p, (uint16_t)name_len);
+		memcpy(s.p, h->server_name.p, name_len);
+		s.p += name_len;
 	}
 
 	// supported groups
-	if (p + 4 > e) {
-		goto err;
-	}
-	p = write_big_16(p, SUPPORTED_GROUPS);
-	p = write_big_16(p, (uint16_t)(2 + h->groups.len));
-	if (append_slice(&p, e, h->groups)) {
-		goto err;
+	size_t group_len = h->groups.e - h->groups.p;
+	if (group_len) {
+		if (s.p + 2+2+2+group_len > s.e) {
+			goto err;
+		}
+		s.p = write_big_16(s.p, SUPPORTED_GROUPS);
+		s.p = write_big_16(s.p, (uint16_t)(2 + group_len));
+		s.p = write_big_16(s.p, (uint16_t)(group_len));
+		memcpy(s.p, h->groups.p, group_len);
+		s.p += group_len;
 	}
 
 	// signature algorithms
-	if (p + 4 > e) {
-		goto err;
-	}
-	p = write_big_16(p, SIGNATURE_ALGORITHMS);
-	p = write_big_16(p, (uint16_t)(2 + h->algorithms.len));
-	if (append_slice(&p, e, h->algorithms)) {
-		goto err;
+	size_t algo_len = h->algorithms.e - h->algorithms.p;
+	if (algo_len) {
+		if (s.p + 2 + 2 + 2 + algo_len > s.e) {
+			goto err;
+		}
+		s.p = write_big_16(s.p, SIGNATURE_ALGORITHMS);
+		s.p = write_big_16(s.p, (uint16_t)(2 + algo_len));
+		s.p = write_big_16(s.p, (uint16_t)(algo_len));
+		memcpy(s.p, h->algorithms.p, algo_len);
+		s.p += algo_len;
 	}
 
 	// supported versions
-	if (p + 9 > e) {
+	if (s.p + 2 + 2 + 1 + 2 + 2 > s.e) {
 		goto err;
 	}
-	p = write_big_16(p, SUPPORTED_VERSIONS);
-	p = write_big_16(p, 5); // extension length
-	*p++ = 4; // list of versions length
-	p = write_big_16(p, 0xFAFA); // grease
-	p = write_big_16(p, TLS_VERSION);
+	s.p = write_big_16(s.p, SUPPORTED_VERSIONS);
+	s.p = write_big_16(s.p, 5); // extension length
+	*(s.p++) = 4; // list of versions length
+	s.p = write_big_16(s.p, 0xFAFA); // grease
+	s.p = write_big_16(s.p, TLS_VERSION);
 
 	// key share
-	if (p + 6 > e) {
-		goto err;
-	}
-	uint8_t *ks = p; // fill out the header later once we know the length
-	p += 6;
-	for (const br_ec_public_key *k = h->keys; k < h->keys + h->key_num; k++) {
-		if (p + 2 + 2 + 1 + k->qlen > e) {
+	if (h->key_num) {
+		if (s.p + 6 > s.e) {
 			goto err;
 		}
-		p = write_big_16(p, (uint16_t)k->curve);
-		p = write_big_16(p, (uint16_t)(k->qlen + 1));
-		*p++ = EC_KEY_UNCOMPRESSED;
-		memcpy(p, k->q, k->qlen);
-		p += k->qlen;
+		uint8_t *ks = s.p;
+		s.p += 6; // fill out the header later once we know the length
+		for (const br_ec_public_key *k = h->keys; k < h->keys + h->key_num; k++) {
+			if (s.p + 2 + 2 + 1 + k->qlen > s.e) {
+				goto err;
+			}
+			s.p = write_big_16(s.p, (uint16_t)k->curve);
+			s.p = write_big_16(s.p, (uint16_t)(k->qlen + 1));
+			*(s.p++) = EC_KEY_UNCOMPRESSED;
+			memcpy(s.p, k->q, k->qlen);
+			s.p += k->qlen;
+		}
+		write_big_16(ks, KEY_SHARE);
+		write_big_16(ks + 2, (uint16_t)(s.p - ks - 4));
+		write_big_16(ks + 4, (uint16_t)(s.p - ks - 6));
 	}
-	write_big_16(ks, KEY_SHARE);
-	write_big_16(ks + 2, (uint16_t)(p - ks - 4));
-	write_big_16(ks + 4, (uint16_t)(p - ks - 6));
 	
-	write_big_16(extensions, (uint16_t)(p - extensions - 2));
-	*pp = p;
+	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
+	ps->p = s.p;
 	return 0;
 err:
 	return -1;
 }
 
-int decode_client_hello(uint8_t *p, uint8_t *e, struct client_hello *h) {
+bool next_extension(qslice_t *ext, uint16_t *ptype, qslice_t *pdata) {
+	uint8_t *data = ext->p + 4;
+	if (data > ext->e) {
+		return false;
+	}
+	uint16_t ext_type = big_16(ext->p);
+	size_t ext_len = big_16(ext->p + 2);
+	uint8_t *end = data + ext_len;
+	if (end > ext->e) {
+		return false;
+	}
+	ext->p = end;
+	*ptype = ext_type;
+	pdata->p = data;
+	pdata->e = end;
+	return true;
+}
+
+int decode_client_hello(qslice_t s, struct client_hello *h) {
+	memset(h, 0, sizeof(*h));
+
 	// check fixed size headers - up to and including cipher list size
-	if (p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > e) {
+	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
 		goto err;
 	}
-
-	h->algorithms.len = 0;
-	h->ciphers.len = 0;
-	h->groups.len = 0;
-	h->key_num = 0;
 
 	// legacy version
-	if (big_16(p) != TLS_LEGACY_VERSION) {
+	if (big_16(s.p) != TLS_LEGACY_VERSION) {
 		goto err;
 	}
-	p += 2;
+	s.p += 2;
 
 	// random nonce
-	h->random = p;
-	p += TLS_HELLO_RANDOM_SIZE;
-	if (p >= e) {
-		goto err;
-	}
+	h->random = s.p;
+	s.p += TLS_HELLO_RANDOM_SIZE;
 
-	// legacy session
-	uint8_t session_len = *(p++);
-	p += session_len;
-	if (p >= e) {
+	// legacy session - not supported in QUIC
+	if (*(s.p++) != 0) {
 		goto err;
 	}
 
 	// ciphers
-	if (decode_slice(&p, e, &h->ciphers)) {
+	if (decode_slice(&s, &h->ciphers)) {
 		goto err;
 	}
 
 	// only null compression allowed
-	if (p + 2 >= e || *(p++) != 1 || *(p++) != TLS_COMPRESSION_NULL) {
+	if (s.p + 2 > s.e || *(s.p++) != 1 || *(s.p++) != TLS_COMPRESSION_NULL) {
 		goto err;
 	}
 
-	slice_t ext;
-	if (decode_slice(&p, e, &ext)) {
+	qslice_t extensions;
+	if (decode_slice(&s, &extensions)) {
 		goto err;
 	}
-	uint8_t *ep = (uint8_t*)ext.c_str;
-	uint8_t *ee = ep + ext.len;
+
 	bool have_my_version = false;
 
-	while (ep < ee) {
-		if (ep + 2 > ee) {
-			goto err;
-		}
-		uint16_t ext_type = big_16(ep); ep += 2;
-		slice_t ext_data;
-		if (decode_slice(&ep, ee, &ext_data)) {
-			goto err;
-		}
-		uint8_t *dp = (uint8_t*)ext_data.c_str;
-		uint8_t *de = dp + ext_data.len;
-
-		switch (ext_type) {
+	uint16_t type;
+	qslice_t ext;
+	while (next_extension(&extensions, &type, &ext)) {
+		switch (type) {
 		case SERVER_NAME: {
-			slice_t names;
-			if (decode_slice(&dp, de, &names)) {
+			qslice_t names;
+			if (decode_slice(&ext, &names)) {
 				goto err;
 			}
-			uint8_t *np = (uint8_t*)names.c_str;
-			uint8_t *ne = np + names.len;
-			while (np < ne) {
-				uint8_t name_type = *(np++);
-				slice_t other_name;
-				if (decode_slice(&np, ne, (name_type == HOST_NAME_TYPE) ? &h->server_name : &other_name)) {
+			while (names.p < names.e) {
+				uint8_t name_type = *(names.p++);
+				qslice_t other_name;
+				if (decode_slice(&names, (name_type == HOST_NAME_TYPE) ? &h->server_name : &other_name)) {
 					goto err;
 				}
 			}
 			break;
 		}
 		case SUPPORTED_GROUPS:
-			if (decode_slice(&dp, de, &h->groups) || (h->groups.len & 1)) {
+			if (decode_slice(&ext, &h->groups) || ((h->groups.e - h->groups.p) & 1)) {
 				goto err;
 			}
 			break;
 		case SIGNATURE_ALGORITHMS:
-			if (decode_slice(&dp, de, &h->algorithms) || (h->algorithms.len & 1)) {
+			if (decode_slice(&ext, &h->algorithms) || ((h->algorithms.e - h->algorithms.p) & 1)) {
 				goto err;
 			}
 			break;
 		case SUPPORTED_VERSIONS: {
-			if (!ext_data.len) {
+			if (ext.p == ext.e) {
 				goto err;
 			}
-			uint8_t vlen = *(dp++);
-			if (dp + vlen > de || (vlen & 1)) {
+			uint8_t vlen = *(ext.p++);
+			if (ext.p + vlen > ext.e || (vlen & 1)) {
 				goto err;
 			}
 			for (size_t i = 0; i < vlen / 2; i++) {
-				if (big_16(&dp[2 * i]) == TLS_VERSION) {
+				if (big_16(ext.p + (2 * i)) == TLS_VERSION) {
 					have_my_version = true;
 				}
 			}
 			break;
 		}
 		case KEY_SHARE: {
-			slice_t key_data;
-			if (decode_slice(&dp, de, &key_data)) {
+			qslice_t keys;
+			if (decode_slice(&ext, &keys)) {
 				goto err;
 			}
-			uint8_t *kp = (uint8_t*)key_data.c_str;
-			uint8_t *ke = kp + key_data.len;
-			while (kp < ke && h->key_num < TLS_MAX_KEY_SHARE) {
-				if (kp + 2 > ke) {
+			while (keys.p < keys.e && h->key_num < QUIC_MAX_KEYSHARE) {
+				if (keys.p + 2 > keys.e) {
 					goto err;
 				}
-				uint16_t group = big_16(kp);
-				kp += 2;
-				slice_t key;
-				if (decode_slice(&kp, ke, &key)) {
+				uint16_t group = big_16(keys.p);
+				keys.p += 2;
+				qslice_t key;
+				if (decode_slice(&keys, &key)) {
 					goto err;
 				}
-				if (!key.len || key.c_str[0] != EC_KEY_UNCOMPRESSED) {
+				if (key.p == key.e || key.p[0] != EC_KEY_UNCOMPRESSED) {
 					continue;
 				}
 				br_ec_public_key *k = &h->keys[h->key_num++];
 				k->curve = group;
-				k->q = (uint8_t*)key.c_str + 1;
-				k->qlen = key.len - 1;
+				k->q = key.p + 1;
+				k->qlen = key.e - k->q;
 			}
 			break;
 		}
@@ -424,6 +408,77 @@ int decode_client_hello(uint8_t *p, uint8_t *e, struct client_hello *h) {
 
 	return 0;
 
+err:
+	return -1;
+}
+
+int decode_server_hello(qslice_t s, struct server_hello *h) {
+	memset(h, 0, sizeof(*h));
+
+	// check fixed size headers - up to and including extension list size
+	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
+		goto err;
+	}
+
+	// legacy version
+	if (big_16(s.p) != TLS_LEGACY_VERSION) {
+		goto err;
+	}
+	s.p += 2;
+
+	// random nonce
+	h->random = s.p;
+	s.p += TLS_HELLO_RANDOM_SIZE;
+
+	// legacy session - not supported in QUIC
+	if (*(s.p++) != 0) {
+		goto err;
+	}
+
+	// ciphers
+	h->cipher = big_16(s.p);
+	s.p += 2;
+
+	// only null compression allowed
+	if (*(s.p++) != TLS_COMPRESSION_NULL) {
+		goto err;
+	}
+
+	qslice_t extensions;
+	if (decode_slice(&s, &extensions)) {
+		goto err;
+	}
+
+	bool have_my_version = false;
+
+	uint16_t type;
+	qslice_t ext;
+	while (next_extension(&extensions, &type, &ext)) {
+		switch (type) {
+		case SUPPORTED_VERSIONS:
+			if (ext.p + 2 <= ext.e && big_16(ext.p) == TLS_VERSION) {
+				have_my_version = true;
+			}
+			break;
+		case KEY_SHARE:
+			if (ext.p + 2 + 2 <= ext.e) {
+				uint16_t curve = big_16(ext.p);
+				ext.p += 2;
+				qslice_t key;
+				if (decode_slice(&ext, &key)) {
+					goto err;
+				}
+				if (key.p < key.e && key.p[0] == EC_KEY_UNCOMPRESSED) {
+					h->key.curve = curve;
+					h->key.q = key.p + 1;
+					h->key.qlen = key.e - h->key.q;
+				}
+			}
+			break;
+		}
+	}
+
+	return 0;
 err:
 	return -1;
 }

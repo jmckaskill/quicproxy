@@ -3,16 +3,17 @@
 #include <cutils/socket.h>
 #include <cutils/stopwatch.h>
 #include <cutils/log.h>
-#include <cutils/char-array.h>
 #include "bearssl_wrapper.h"
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
+#define QUIC_MAX_KEYSHARE 2
 
 typedef struct qconnection qconnection_t;
 typedef struct qstream qstream_t;
 typedef struct qconnection_id qconnection_id_t;
 typedef struct qconnection_addr qconnection_addr_t;
+typedef struct qslice qslice_t;
 
 enum qstate {
 	QC_WAIT_FOR_INITIAL,
@@ -43,6 +44,11 @@ struct qcrypto_buffer {
 	uint8_t buffer[4096];
 };
 
+struct qslice {
+	uint8_t *p;
+	uint8_t *e;
+};
+
 struct qconnection {
 	enum qstate state;
 
@@ -58,14 +64,18 @@ struct qconnection {
 	qconnection_addr_t *peer_addr;
 	qconnection_addr_t peer_addrs[3];
 
-	slice_t groups;
-	slice_t algorithms;
-	slice_t ciphers;
+	qslice_t groups;
+	qslice_t algorithms;
+	qslice_t ciphers;
 
 	enum qcrypto_level tx_level;
 	uint64_t tx_next_packet;
 	uint64_t tx_crypto_offset;
 	struct qcrypto_buffer rx_crypto;
+
+	size_t key_num;
+	br_ec_private_key priv_key[QUIC_MAX_KEYSHARE];
+	uint8_t priv_key_data[QUIC_MAX_KEYSHARE][BR_EC_KBUF_PRIV_MAX_SIZE];
 
 	struct {
 		size_t len;
