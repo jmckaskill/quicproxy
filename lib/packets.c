@@ -37,8 +37,7 @@ int64_t decode_varint(qslice_t *s) {
 		if (s->p == s->e) {
 			return -1;
 		}
-		s->p += 1;
-		return big_16(p) & 0x3FFF;
+		return ((uint16_t)hdr & 0x3F) | *(s->p++);
 	case 2:
 		if (s->p + 3 > s->e) {
 			return -1;
@@ -54,11 +53,13 @@ int64_t decode_varint(qslice_t *s) {
 	}
 }
 
-uint8_t *encode_packet_number(uint8_t *p, uint64_t val, uint64_t base) {
+uint8_t *encode_packet_number(uint8_t *p, uint64_t val) {
+	// TODO use base correctly
 	return write_big_32(p, (uint32_t)val | UINT32_C(0xC0000000));
 }
 
-int64_t decode_packet_number(qslice_t *s, int64_t base) {
+int64_t decode_packet_number(qslice_t *s) {
+	// TODO use base correctly
 	if (s->p == s->e) {
 		return -1;
 	}
@@ -66,18 +67,18 @@ int64_t decode_packet_number(qslice_t *s, int64_t base) {
 	uint8_t hdr = *p;
 	switch (hdr >> 6) {
 	default:
-		return (base & UINT64_C(0xFFFFFFFFFFFFFF80)) | (hdr & 0x7F);
+		return (hdr & 0x7F);
 	case 2:
 		if (s->p == s->e) {
 			return -1;
 		}
-		return (base & UINT64_C(0xFFFFFFFFFFFFC000)) | ((uint16_t)hdr & 0x3F) | *(s->p++);
+		return ((uint16_t)hdr & 0x3F) | *(s->p++);
 	case 3:
 		if (s->p + 3 > s->e) {
 			return -1;
 		}
 		s->p += 3;
-		return (base & UINT64_C(0xFFFFFFFFC0000000)) | (big_32(p) & UINT32_C(0x3FFFFFFF));
+		return (big_32(p) & UINT32_C(0x3FFFFFFF));
 	}
 }
 

@@ -62,24 +62,18 @@ int main(int argc, const char *argv[]) {
 		cc.fd6 = -1;
 	}
 
+	uint8_t pktbuf[4096];
+	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
 	qconnection_t qc;
-	qc_init(&qc);
+	if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
+		FATAL(debug, "failed to initialize connection");
+	}
 	qc.send = &do_send;
 	qc.user = &cc;
 	qc.debug = &stderr_log;
 
-	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
-	if (!seedfn || qc_seed_prng(&qc, seedfn)) {
-		FATAL(debug, "system random number generator failed");
-	}
-	qc_generate_ids(&qc);
-
-	if (qc_lookup_peer_name(&qc, host, port)) {
-		FATAL(debug, "failed to lookup %s:%s", host, port);
-	}
-
-	if (qc_start_connect(&qc)) {
-		FATAL(debug, "failed to send hello");
+	if (qc_connect(&qc, host, port)) {
+		FATAL(debug, "failed to connect to %s:%s", host, port);
 	}
 
 	closesocket(cc.fd4);

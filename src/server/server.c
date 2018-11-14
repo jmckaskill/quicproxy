@@ -26,6 +26,7 @@ int main(int argc, const char *argv[]) {
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
 
 	int fd = must_open_server_socket(SOCK_DGRAM, host, port);
+	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
 
 	for (;;) {
 		struct sockaddr_storage ss;
@@ -41,13 +42,17 @@ int main(int argc, const char *argv[]) {
 		struct sockaddr_string in;
 		print_sockaddr(&in, sa, salen);
 		LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
+
+		uint8_t pktbuf[4096];
 		qconnection_t qc;
-		qc_init(&qc);
-		qc_add_peer_address(&qc, sa, salen);
+		if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
+			FATAL(debug, "failed to init connection");
+		}
+		qc_on_accept(&qc, sa, salen);
 		qc.debug = &stderr_log;
 		qc.send = &do_send;
 		qc.user = &fd;
-		qc_process(&qc, buf, sz, sa, salen, rxtime);
+		qc_on_recv(&qc, buf, sz, sa, salen, rxtime);
 	}
 
 	closesocket(fd);

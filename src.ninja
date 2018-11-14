@@ -10,9 +10,11 @@ rule run-test
 
 build $obj/quic/quic.o: cc lib/quic.c
 build $obj/quic/packets.o: cc lib/packets.c
+build $obj/quic/crypto.o: cc lib/crypto.c
 build $obj/quic.lib: lib $
  $obj/quic/quic.o $
  $obj/quic/packets.o $
+ $obj/quic/crypto.o $
 
 
 build $obj/server/server.o: cc src/server/server.c

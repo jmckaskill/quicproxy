@@ -13,7 +13,10 @@
 
 // packet types
 #define LONG_HEADER_FLAG 0x80
-#define INITIAL 0xFF
+#define INITIAL_PACKET 0xFF
+#define RETRY_PACKET 0xFE
+#define HANDSHAKE_PACKET 0xFD
+#define PROTECTED_PACKET 0xFC
 
 // frame types
 #define PADDING 0
@@ -115,8 +118,8 @@ uint8_t encode_id_len(uint8_t len);
 uint8_t decode_id_len(uint8_t val);
 uint8_t *encode_varint(uint8_t *p, uint64_t val);
 int64_t decode_varint(qslice_t *s);
-uint8_t *encode_packet_number(uint8_t *p, uint64_t val, uint64_t base);
-int64_t decode_packet_number(qslice_t *s, int64_t base);
+uint8_t *encode_packet_number(uint8_t *p, uint64_t val);
+int64_t decode_packet_number(qslice_t *s);
 
 struct client_hello {
 	const uint8_t *random;
