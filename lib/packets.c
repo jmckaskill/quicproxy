@@ -111,9 +111,14 @@ static int decode_slice(qslice_t *s, qslice_t *data) {
 int encode_server_hello(qslice_t *ps, const struct server_hello *h) {
 	// check fixed size headers - up to and including extensions list size & tls version
 	qslice_t s = *ps;
-	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 + 2 + 2 + 2 > s.e) {
+	if (s.p + 4 + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 + 2 + 2 + 2 > s.e) {
 		goto err;
 	}
+
+	// TLS header
+	*(s.p++) = SERVER_HELLO;
+	s.p += 3;
+	uint8_t *record_begin = s.p;
 
 	// legacy version
 	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
@@ -157,6 +162,7 @@ int encode_server_hello(qslice_t *ps, const struct server_hello *h) {
 	}
 
 	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
+	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
 	ps->p = s.p;
 	return 0;
 err:
@@ -167,9 +173,14 @@ int encode_client_hello(qslice_t *ps, const struct client_hello *h) {
 	// check fixed entries - up to and including extension list size
 	qslice_t s = *ps;
 	size_t cipher_len = h->ciphers.e - h->ciphers.p;
-	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + cipher_len + 2 + 2 > s.e) {
+	if (s.p + 4 + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + cipher_len + 2 + 2 > s.e) {
 		goto err;
 	}
+
+	// TLS record
+	*(s.p++) = CLIENT_HELLO;
+	s.p += 3;
+	uint8_t *record_begin = s.p;
 
 	// legacy version
 	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
@@ -268,6 +279,7 @@ int encode_client_hello(qslice_t *ps, const struct client_hello *h) {
 	}
 	
 	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
+	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
 	ps->p = s.p;
 	return 0;
 err:

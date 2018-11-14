@@ -8,8 +8,8 @@
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
 #define QUIC_MAX_KEYSHARE 2
-#define QUIC_TLS_BUF_SIZE 4096
-#define QUIC_HANDSHAKE_MAX_PACKETS 8
+#define QUIC_CRYPTO_BUF_SIZE 4096
+#define QUIC_HANDSHAKE_MAX_PACKETS 32 // must be a multiple of 32
 
 typedef struct qconnection_id qconnection_id_t;
 struct qconnection_id {
@@ -30,23 +30,6 @@ enum qcrypto_level {
 	QC_NUM_LEVELS,
 };
 
-typedef struct qrx_crypto qrx_crypto_t;
-struct qrx_crypto {
-	enum qcrypto_level level;
-	uint64_t off;
-	uint8_t *ptr, *end;
-	size_t used, have;
-	uint8_t buffer[4096];
-	uint32_t bitset;
-};
-
-typedef struct qtx_crypto qtx_crypto_t;
-struct qtx_crypto {
-	uint8_t next;
-	uint16_t offset;
-	uint16_t offsets[QUIC_HANDSHAKE_MAX_PACKETS];
-};
-
 typedef struct qslice qslice_t;
 struct qslice {
 	uint8_t *p;
@@ -57,17 +40,26 @@ typedef struct qtx_stream qtx_stream_t;
 struct qtx_stream {
 	int64_t id;
 	uint64_t offset;
-	const uint8_t *data;
-	size_t len;
+	const uint8_t *buffer;
+	size_t bufsz;
 	uint64_t max_data_allowed;
+};
+
+typedef struct qrx_stream qrx_stream_t;
+struct qrx_stream {
+	int64_t id;
+	uint64_t base;	 // offset into the stream the data pointer is up to
+	uint8_t *data;	 // the actual data bytes themselves
+	uint32_t *valid; // bitset of whether a byte is valid
+	size_t len;      // size left in bytes in the buffer
 };
 
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
-	uint64_t offset;
+	uint64_t offset;	// offset of this packet into the data stream
 	qtx_stream_t *stream;
-	size_t len;
-	tick_t sent;
+	size_t len;			// length of this packet
+	tick_t sent;		// when it was sent
 };
 
 #define QUIC_MAX_SECRET_SIZE 32
@@ -88,20 +80,20 @@ struct qkeyset {
 	size_t key_len;
 };
 
-typedef struct qtx_buffer qtx_buffer_t;
-struct qtx_buffer {
-	qtx_packet_t *buf;
-	size_t bufsz;
-	uint64_t base;
-	uint64_t next;
-};
-
-typedef struct qrx_buffer qrx_buffer_t;
-struct qrx_buffer {
-	uint32_t *buf; // bitset - one bit per packet
-	size_t bufsz; // in number of packets/bits
-	uint64_t base;
-	uint64_t next;
+typedef struct qpacket_buffer qpacket_buffer_t;
+struct qpacket_buffer {
+	qtx_packet_t *sent;	// packets sent for retries
+	size_t sent_len;	// number of packets in the send buffer
+	uint64_t received;	// receive bitset - one bit per packet
+	uint64_t rx_next;   // next packet to receive (highest received + 1)
+	uint64_t tx_next;   // next packet to send (highest sent + 1)
+	qkeyset_t tkey;
+	qkeyset_t rkey;
+	qtx_stream_t tx_crypto;
+	qrx_stream_t rx_crypto;
+	size_t rx_crypto_consumed;
+	uint8_t tx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
+	uint8_t rx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
 };
 
 typedef struct qconnection qconnection_t;
@@ -111,8 +103,6 @@ struct qconnection {
 
 	bool is_client;
 	log_t *debug;
-	br_hash_compat_context handshake_hash;
-	br_hmac_drbg_context rand;
 	qconnection_id_t *peer_id, *local_id;
 	qconnection_id_t peer_ids[QUIC_MAX_IDS];
 	qconnection_id_t local_ids[QUIC_MAX_IDS];
@@ -122,34 +112,28 @@ struct qconnection {
 	qslice_t groups;
 	qslice_t algorithms;
 	qslice_t ciphers;
+	uint16_t cipher;
 
 	size_t key_num;
 	br_ec_private_key priv_key[QUIC_MAX_KEYSHARE];
 	uint8_t priv_key_data[QUIC_MAX_KEYSHARE][BR_EC_KBUF_PRIV_MAX_SIZE];
-	br_hash_compat_context tls_hash;
 
-	qkeyset_t rkey[QC_NUM_LEVELS];
-	qkeyset_t tkey[QC_NUM_LEVELS];
 	uint8_t master_secret[QUIC_MAX_SECRET_SIZE];
+	br_hash_compat_context crypto_hash;
+	br_hmac_drbg_context rand;
 
-	qrx_buffer_t rx;
-	qtx_buffer_t tx;
+	qpacket_buffer_t pkts[QC_NUM_LEVELS];
 
 	struct {
 		size_t len;
 		char c_str[256];
 	} server_name;
-
-	qrx_crypto_t rx_crypto;
-	qtx_crypto_t tx_crypto[2];
-
-	size_t tx_crypto_len;
-	uint8_t tx_crypto_data[QUIC_TLS_BUF_SIZE];
 };
 
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
 void qc_set_stopwatch(qconnection_t *c, stopwatch_t *w);
 void qc_set_trust_anchors(qconnection_t *c, const br_x509_trust_anchor *ta, size_t num);
+void qc_set_
 
 int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);
 void qc_on_accept(qconnection_t *c, const struct sockaddr *sa, size_t sasz);
