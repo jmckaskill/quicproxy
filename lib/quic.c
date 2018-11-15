@@ -16,6 +16,20 @@ static const uint8_t def_algorithms[] = { 0x04, 0x01 };
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
 
+static void setup_level(qpacket_buffer_t *b, qtx_packet_t *sent, size_t sent_len) {
+	b->sent = sent;
+	b->sent_len = sent_len;
+
+	b->tx_crypto.id = -1;
+	b->tx_crypto.data = b->tx_crypto_buf;
+	b->tx_crypto.max_data_allowed = UINT64_MAX;
+
+	b->rx_crypto.id = -1;
+	b->rx_crypto.data = b->rx_crypto_buf;
+	b->rx_crypto.valid = b->rx_crypto_valid;
+	b->rx_crypto.len = sizeof(b->rx_crypto_buf);
+}
+
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
 	memset(c, 0, sizeof(*c));
 	br_hmac_drbg_init(&c->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
@@ -34,20 +48,15 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 	uint8_t *e = (uint8_t*)ALIGN_DOWN(uintptr_t, (uintptr_t)pktbuf + bufsz, 8);
 
 	size_t pktnum = (e-p) / sizeof(qtx_packet_t);
-	if (pktnum < 3 * QUIC_HANDSHAKE_MAX_PACKETS) {
+	if (pktnum < 3 * QUIC_CRYPTO_PACKETS) {
 		// insufficient buffer provided
 		return -1;
 	}
 
-	// qtx_packet_t has tighter alignment requirements so start with that
 	qtx_packet_t *sent = (qtx_packet_t*)p;
-	c->pkts[QC_INITIAL].sent = sent;
-	c->pkts[QC_HANDSHAKE].sent = sent + QUIC_HANDSHAKE_MAX_PACKETS;
-	c->pkts[QC_PROTECTED].sent = sent + 2*QUIC_HANDSHAKE_MAX_PACKETS;
-
-	c->pkts[QC_INITIAL].sent_len = QUIC_HANDSHAKE_MAX_PACKETS;
-	c->pkts[QC_HANDSHAKE].sent_len = QUIC_HANDSHAKE_MAX_PACKETS;
-	c->pkts[QC_PROTECTED].sent_len = pktnum - (2 * QUIC_HANDSHAKE_MAX_PACKETS);
+	setup_level(&c->pkts[QC_INITIAL], sent, QUIC_CRYPTO_PACKETS);
+	setup_level(&c->pkts[QC_HANDSHAKE], sent + QUIC_CRYPTO_PACKETS, QUIC_CRYPTO_PACKETS);
+	setup_level(&c->pkts[QC_PROTECTED], sent + 2 * QUIC_CRYPTO_PACKETS, pktnum - (2 * QUIC_CRYPTO_PACKETS));
 
 	return 0;
 }
@@ -129,27 +138,27 @@ static int receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
 }
 
 static int receive_data(qrx_stream_t *s, uint64_t offset, const uint8_t *data, size_t len) {
-	if (offset + len > s->base + s->len) {
+	if (offset + len > s->offset + s->len) {
 		// flow control error
 		return -1;
-	} else if (offset + len < s->base) {
+	} else if (offset + len < s->offset) {
 		// old data
 		return 0;
 	}
 
-	if (offset < s->base) {
+	if (offset < s->offset) {
 		// old start, but runs into new territory
-		size_t behind = (size_t)(s->base - offset);
+		size_t behind = (size_t)(s->offset - offset);
 		data += behind;
 		len -= behind;
 	}
 
 	// copy the data
-	memcpy(s->data + offset - s->base, data, len);
+	memcpy(s->data + offset - s->offset, data, len);
 
-	// start setting bits - s->base may not be aligned
-	size_t i = (size_t)(offset - ALIGN_DOWN(uint64_t, s->base, 32));
-	size_t end = (size_t)(offset - s->base) + len;
+	// start setting bits - s->offset may not be aligned
+	size_t i = (size_t)(offset - ALIGN_DOWN(uint64_t, s->offset, 32));
+	size_t end = (size_t)(offset - s->offset) + len;
 	size_t align_begin = ALIGN_UP(size_t, i, 32);
 	size_t align_end = ALIGN_DOWN(size_t, end, 32);
 
@@ -172,27 +181,27 @@ static int receive_data(qrx_stream_t *s, uint64_t offset, const uint8_t *data, s
 	// move the base and pointers forward
 
 	// deal with an unaligned base
-	if (*s->valid == UINT32_C(0xFFFFFFFF) && (s->base & 31)) {
-		uint64_t new_base = ALIGN_UP(uint64_t, s->base, 32);
-		s->data += new_base - s->base;
+	if (*s->valid == UINT32_C(0xFFFFFFFF) && (s->offset & 31)) {
+		uint64_t new_offset = ALIGN_UP(uint64_t, s->offset, 32);
+		s->data += new_offset - s->offset;
 		s->valid++;
-		s->base = new_base;
+		s->offset = new_offset;
 	}
 
 	// move the pointer forward in the aligned middle chunk
 	while (*s->valid == UINT32_C(0xFFFFFFFF)) {
 		s->data += 32;
-		s->base += 32;
+		s->offset += 32;
 		s->len -= 32;
 		s->valid++;
 	}
 
 	// deal with the unaligned tail
-	size_t shift = (size_t)(s->base - ALIGN_DOWN(uint64_t, s->base, 32));
+	size_t shift = (size_t)(s->offset - ALIGN_DOWN(uint64_t, s->offset, 32));
 	uint32_t valid = *s->valid >> shift;
 	while (valid & 1) {
 		s->data++;
-		s->base++;
+		s->offset++;
 		s->len--;
 		valid >>= 1;
 	}
@@ -223,8 +232,8 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 
 	// connection IDs
 	*(s->p++) = (encode_id_len(c->peer_id->len) << 4) | encode_id_len(c->local_id->len);
-	s->p = append(s->p, c->peer_id, c->peer_id->len);
-	s->p = append(s->p, c->local_id, c->local_id->len);
+	s->p = append(s->p, c->peer_id->id, c->peer_id->len);
+	s->p = append(s->p, c->local_id->id, c->local_id->len);
 
 	// token
 	if (level == QC_INITIAL) {
@@ -258,7 +267,7 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 		uint64_t rx = (pkts->received << shift) | (pkts->received >> (64 - shift));
 
 		// find the first block
-		size_t first_block = 0;
+		uint8_t first_block = 0;
 		while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) != 0) {
 			first_block++;
 			num_packets++;
@@ -267,14 +276,14 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 
 		while (num_blocks < 16 && num_packets < 64) {
 			// find the gap
-			size_t gap = 0;
+			uint8_t gap = 0;
 			while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) == 0) {
 				gap++;
 				num_packets++;
 			}
 
 			// find the block
-			size_t block = 0;
+			uint8_t block = 0;
 			while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) != 0) {
 				block++;
 				num_packets++;
@@ -292,11 +301,11 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 		*(s->p++) = (tx->id < 0) ? CRYPTO : (STREAM | STREAM_OFF_FLAG | STREAM_LEN_FLAG);
 		s->p = encode_varint(s->p, offset);
 		s->p = encode_varint(s->p, len);
-		s->p = append(s->p, tx->buffer + (size_t)(offset - tx->offset), len);
+		s->p = append(s->p, tx->data + (size_t)(offset - tx->offset), len);
 	}
 
-	if (s->p < pkt_begin + 1200) {
-		size_t pad = pkt_begin + 1200 - s->p;
+	if (s->p < packet_number + 1208-16) {
+		size_t pad = packet_number + 1208-16 - s->p;
 		memset(s->p, PADDING, pad);
 		s->p += pad;
 	}
@@ -354,14 +363,14 @@ int qc_connect(qconnection_t *c, const char *host_name, const char *svc_name) {
 	}
 
 	// encode the TLS record
-	uint8_t *tls_begin = tx->buffer + tx->bufsz;
-	qslice_t tls = { tls_begin, tx->buffer + sizeof(pkts->tx_crypto_buf) };
+	uint8_t *tls_begin = tx->data + tx->len;
+	qslice_t tls = { tls_begin, tx->data + sizeof(pkts->tx_crypto_buf) };
 	if (tls.p > tls.e || encode_client_hello(&tls, &ch)) {
 		return -1;
 	}
 	size_t tls_len = tls.p - tls_begin;
-	size_t tls_off = tx->bufsz;
-	tx->bufsz += tls_len;
+	size_t tls_off = tx->len;
+	tx->len += tls_len;
 
 	// encode the UDP packet
 	uint8_t buf[1500];
@@ -382,6 +391,15 @@ int qc_connect(qconnection_t *c, const char *host_name, const char *svc_name) {
 	return ret;
 }
 
+static br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
+	for (size_t i = 0; i < c->key_num; i++) {
+		if (c->priv_key[i].curve == curve) {
+			return &c->priv_key[i];
+		}
+	}
+	return NULL;
+}
+
 static int switch_to_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *pk) {
 	c->cipher = cipher;
 
@@ -393,11 +411,11 @@ static int switch_to_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_k
 	// generate the handshake secrets
 	const br_hash_class **hash = &c->crypto_hash.vtable;
 	if (c->is_client) {
-		(*hash)->update(hash, c->pkts[QC_INITIAL].tx_crypto_buf, c->pkts[QC_INITIAL].tx_crypto.bufsz);
-		(*hash)->update(hash, c->pkts[QC_INITIAL].rx_crypto_buf, c->pkts[QC_INITIAL].rx_crypto.base);
+		(*hash)->update(hash, c->pkts[QC_INITIAL].tx_crypto_buf, c->pkts[QC_INITIAL].tx_crypto.len);
+		(*hash)->update(hash, c->pkts[QC_INITIAL].rx_crypto_buf, c->pkts[QC_INITIAL].rx_crypto.offset);
 	} else {
-		(*hash)->update(hash, c->pkts[QC_INITIAL].rx_crypto_buf, c->pkts[QC_INITIAL].rx_crypto.base);
-		(*hash)->update(hash, c->pkts[QC_INITIAL].tx_crypto_buf, c->pkts[QC_INITIAL].tx_crypto.bufsz);
+		(*hash)->update(hash, c->pkts[QC_INITIAL].rx_crypto_buf, c->pkts[QC_INITIAL].rx_crypto.offset);
+		(*hash)->update(hash, c->pkts[QC_INITIAL].tx_crypto_buf, c->pkts[QC_INITIAL].tx_crypto.len);
 	}
 
 	qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
@@ -426,14 +444,14 @@ static int send_server_hello(qconnection_t *c, const struct client_hello *ch) {
 	br_ec_compute_pub(ec, &sh.key, pub_key, &c->priv_key[0]);
 
 	// encode the TLS record
-	uint8_t *tls_begin = tx->buffer + tx->bufsz;
-	qslice_t tls = { tls_begin, tx->buffer + sizeof(pkts->tx_crypto_buf) };
+	uint8_t *tls_begin = tx->data + tx->len;
+	qslice_t tls = { tls_begin, tx->data + sizeof(pkts->tx_crypto_buf) };
 	if (tls.p > tls.e || encode_server_hello(&tls, &sh)) {
 		return -1;
 	}
 	size_t tls_len = tls.p - tls_begin;
-	size_t tls_off = tx->bufsz;
-	tx->bufsz += tls_len;
+	size_t tls_off = tx->len;
+	tx->len += tls_len;
 
 	// encode the UDP packet and send it
 	uint8_t buf[1500];
@@ -448,21 +466,13 @@ static int send_server_hello(qconnection_t *c, const struct client_hello *ch) {
 		return -1;
 	}
 
-
-}
-
-static br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
-	for (size_t i = 0; i < c->key_num; i++) {
-		if (c->priv_key[i].curve == curve) {
-			return &c->priv_key[i];
-		}
-	}
-	return NULL;
+	// TODO encrypted extensions and finished
+	return 0;
 }
 
 static bool next_tls_record(qpacket_buffer_t *b, uint8_t *ptype, qslice_t *data) {
 	uint8_t *p = b->rx_crypto_buf + b->rx_crypto_consumed;
-	uint8_t *e = b->rx_crypto_buf + b->rx_crypto.base;
+	uint8_t *e = b->rx_crypto_buf + b->rx_crypto.offset;
 	if (p + 4 > e) {
 		return false;
 	}
@@ -550,7 +560,7 @@ static int process_initial_client(qconnection_t *c, qslice_t s) {
 						if (decode_server_hello(data, &sh)) {
 							LOG(c->debug, "server hello parse failure");
 						} else {
-							switch_to_handshake(c, &sh);
+							switch_to_handshake(c, sh.cipher, &sh.key);
 						}
 						break;
 					}
@@ -582,6 +592,34 @@ static int process_packet(qconnection_t *c, qslice_t data, enum qcrypto_level le
 		return c->is_client ? process_initial_client(c, data) : process_initial_server(c, data);
 	default:
 		return process_protected(c, data);
+	}
+}
+
+int qc_get_destination(void *buf, size_t len, uint8_t **p) {
+	uint8_t *u = buf;
+	if (!len) {
+		return -1;
+	}
+	if (*u & LONG_HEADER_FLAG) {
+		if (len < 6) {
+			return -1;
+		}
+		if (big_32(u + 1) != QUIC_VERSION) {
+			return -2;
+		}
+		uint8_t dcil = decode_id_len(u[5] >> 4);
+		if (len < 6 + dcil) {
+			return -1;
+		}
+		*p = u + 6;
+		return dcil;
+
+	} else {
+		if (len < 1 + DEFAULT_SERVER_ID_LEN) {
+			return -1;
+		}
+		*p = u + 1;
+		return DEFAULT_SERVER_ID_LEN;
 	}
 }
 
@@ -621,12 +659,14 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 				memcpy(c->peer_id->id, s.p, scil);
 				s.p += scil;
 
-				generate_initial_secrets(c->local_id, &c->rkey[QC_INITIAL], &c->tkey[QC_INITIAL]);
+				qpacket_buffer_t *pkts = &c->pkts[QC_INITIAL];
+				generate_initial_secrets(c->local_id, &pkts->rkey, &pkts->tkey);
 			} else {
 				s.p += dcil + scil;
 			}
 
 			enum qcrypto_level level;
+
 			switch (hdr) {
 			case INITIAL_PACKET: {
 				level = QC_INITIAL;
@@ -656,7 +696,7 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 			s.p += paysz;
 
 			qslice_t data;
-			int64_t pktnum = decrypt_packet(&c->rkey[level], pkt_begin, packet_number, s.p, &data);
+			int64_t pktnum = decrypt_packet(&c->pkts[level].rkey, pkt_begin, packet_number, s.p, &data);
 			if (pktnum < 0) {
 				return -1;
 			}
@@ -672,7 +712,7 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 				return -1;
 			}
 			qslice_t data;
-			int64_t pktnum = decrypt_packet(&c->rkey[QC_PROTECTED], pkt_begin, s.p, s.e, &data);
+			int64_t pktnum = decrypt_packet(&c->pkts[QC_PROTECTED].rkey, pkt_begin, s.p, s.e, &data);
 			if (pktnum < 0) {
 				return -1;
 			}

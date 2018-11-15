@@ -9,7 +9,7 @@
 #define QUIC_MAX_ADDR 3
 #define QUIC_MAX_KEYSHARE 2
 #define QUIC_CRYPTO_BUF_SIZE 4096
-#define QUIC_HANDSHAKE_MAX_PACKETS 32 // must be a multiple of 32
+#define QUIC_CRYPTO_PACKETS 8
 
 typedef struct qconnection_id qconnection_id_t;
 struct qconnection_id {
@@ -39,16 +39,16 @@ struct qslice {
 typedef struct qtx_stream qtx_stream_t;
 struct qtx_stream {
 	int64_t id;
-	uint64_t offset;
-	const uint8_t *buffer;
-	size_t bufsz;
 	uint64_t max_data_allowed;
+	uint64_t offset;
+	uint8_t *data;
+	size_t len;
 };
 
 typedef struct qrx_stream qrx_stream_t;
 struct qrx_stream {
 	int64_t id;
-	uint64_t base;	 // offset into the stream the data pointer is up to
+	uint64_t offset;	 // offset into the stream the data pointer is up to
 	uint8_t *data;	 // the actual data bytes themselves
 	uint32_t *valid; // bitset of whether a byte is valid
 	size_t len;      // size left in bytes in the buffer
@@ -92,6 +92,7 @@ struct qpacket_buffer {
 	qtx_stream_t tx_crypto;
 	qrx_stream_t rx_crypto;
 	size_t rx_crypto_consumed;
+	uint32_t rx_crypto_valid[QUIC_CRYPTO_BUF_SIZE / 32];
 	uint8_t tx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
 	uint8_t rx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
 };
@@ -133,8 +134,8 @@ struct qconnection {
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
 void qc_set_stopwatch(qconnection_t *c, stopwatch_t *w);
 void qc_set_trust_anchors(qconnection_t *c, const br_x509_trust_anchor *ta, size_t num);
-void qc_set_
 
+int qc_get_destination(void *buf, size_t len, uint8_t **p);
 int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);
 void qc_on_accept(qconnection_t *c, const struct sockaddr *sa, size_t sasz);
 int qc_connect(qconnection_t *c, const char *host_name, const char *svc_name);
