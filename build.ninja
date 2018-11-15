@@ -1,0 +1,11 @@
+SRC_NINJA = src.ninja
+TOOLCHAIN_DIR = clang-toolchain
+INCLUDES = -I . -I ext/cutils/inc -I ext/BearSSL/inc -I ext/BearSSL/src
+CLANG_DIR = bin/clang
+LIB = bin/libarm/armv7
+
+include $TOOLCHAIN_DIR/host-cc.ninja
+subninja $TOOLCHAIN_DIR/target-cc-debug.ninja
+
+default cc-debug
+

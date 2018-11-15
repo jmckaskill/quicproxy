@@ -112,10 +112,10 @@ static void generate_ids(qconnection_t *c) {
 	}
 }
 
-static int receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
+static void receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
 	if (pktnum < s->rx_next - 64) {
 		// old packet - ignore
-		return 0;
+		return;
 	}
 
 	// check to see if we should move the receive window forward
@@ -247,7 +247,7 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 	uint8_t *packet_number = s->p;
 	s->p = encode_packet_number(s->p, pkts->tx_next);
 	uint8_t *enc_begin = s->p;
-	
+
 	if (pkts->rx_next) {
 		*(s->p++) = ACK;
 
@@ -515,7 +515,7 @@ static int process_initial_server(qconnection_t *c, qslice_t s) {
 		case PADDING:
 			s.p = find_non_padding(s.p, s.e);
 			break;
-		case CRYPTO: 
+		case CRYPTO:
 			if (!decode_crypto(pkts, &s)) {
 				uint8_t type;
 				qslice_t data;
@@ -549,7 +549,7 @@ static int process_initial_client(qconnection_t *c, qslice_t s) {
 		case PADDING:
 			s.p = find_non_padding(s.p, s.e);
 			break;
-		case CRYPTO: 
+		case CRYPTO:
 			if (!decode_crypto(pkts, &s)) {
 				uint8_t type;
 				qslice_t data;
