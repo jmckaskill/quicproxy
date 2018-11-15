@@ -1,6 +1,11 @@
 #pragma once
 #include "quic.h"
 
+static inline size_t digest_size(const br_hash_class *digest_class) {
+	return (size_t)(digest_class->desc >> BR_HASHDESC_OUT_OFF)
+		& BR_HASHDESC_OUT_MASK;
+}
+
 void hkdf_extract(const br_hash_class *digest, const void *salt, size_t saltsz, const void *ikm, size_t ikmsz, void *out);
 void hkdf_expand(const br_hash_class *digest, const void *secret, const void *info, size_t infosz, void *out, size_t outsz);
 void hkdf_expand_label(const br_hash_class *digest, const void *secret, const char *label, const void *context, size_t ctxsz, void *out, size_t outsz);

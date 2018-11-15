@@ -8,8 +8,10 @@
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
 #define QUIC_MAX_KEYSHARE 2
+#define QUIC_MAX_CERTIFICATES 8
 #define QUIC_CRYPTO_BUF_SIZE 4096
 #define QUIC_CRYPTO_PACKETS 8
+#define QUIC_HELLO_RANDOM_SIZE 32
 
 typedef struct qconnection_id qconnection_id_t;
 struct qconnection_id {
@@ -56,10 +58,9 @@ struct qrx_stream {
 
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
-	uint64_t offset;	// offset of this packet into the data stream
+	uint64_t from, to;	// offset of this packet into the data stream
 	qtx_stream_t *stream;
-	size_t len;			// length of this packet
-	tick_t sent;		// when it was sent
+	tick_t sent;
 };
 
 #define QUIC_MAX_SECRET_SIZE 32
@@ -100,6 +101,7 @@ struct qpacket_buffer {
 typedef struct qconnection qconnection_t;
 struct qconnection {
 	int(*send)(void *user, const void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t *sent);
+	void(*keylog)(void *user, const char *label, const uint8_t *client_random, size_t randlen, const uint8_t *secret, size_t seclen);
 	void *user;
 
 	bool is_client;
@@ -120,8 +122,14 @@ struct qconnection {
 	uint8_t priv_key_data[QUIC_MAX_KEYSHARE][BR_EC_KBUF_PRIV_MAX_SIZE];
 
 	uint8_t master_secret[QUIC_MAX_SECRET_SIZE];
+	uint8_t client_random[QUIC_HELLO_RANDOM_SIZE];
 	br_hash_compat_context crypto_hash;
 	br_hmac_drbg_context rand;
+
+	const br_rsa_private_key *rsa;
+	const br_ec_private_key *ec;
+	const br_x509_certificate *certs;
+	size_t cert_num;
 
 	qpacket_buffer_t pkts[QC_NUM_LEVELS];
 
@@ -134,6 +142,9 @@ struct qconnection {
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
 void qc_set_stopwatch(qconnection_t *c, stopwatch_t *w);
 void qc_set_trust_anchors(qconnection_t *c, const br_x509_trust_anchor *ta, size_t num);
+void qc_set_server_rsa(qconnection_t *c, const br_x509_certificate *certs, size_t num, const br_rsa_private_key *key);
+void qc_set_server_mixed(qconnection_t *c, const br_x509_certificate *certs, size_t num, const br_ec_private_key *key);
+void qc_set_server_ec(qconnection_t *c, const br_x509_certificate *certs, size_t num, const br_ec_private_key *key);
 
 int qc_get_destination(void *buf, size_t len, uint8_t **p);
 int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime);

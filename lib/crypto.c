@@ -2,10 +2,6 @@
 #include "packets.h"
 #include <cutils/endian.h>
 
-static inline size_t digest_size(const br_hash_class *digest_class) {
-	return (size_t)(digest_class->desc >> BR_HASHDESC_OUT_OFF)
-		& BR_HASHDESC_OUT_MASK;
-}
 
 void hkdf_extract(const br_hash_class *digest, const void *salt, size_t saltsz, const void *ikm, size_t ikmsz, void *out) {
 	br_hmac_key_context kc;
@@ -29,10 +25,10 @@ void hkdf_expand(const br_hash_class *digest, const void *secret, const void *in
 }
 
 void hkdf_expand_label(const br_hash_class *digest, const void *secret, const char *label, const void *context, size_t ctxsz, void *out, size_t outsz) {
-	uint8_t hk_label[2 + 1 + 16 + 1 + 256], *p = hk_label;
+	uint8_t hk_label[2 + 1 + 32 + 1 + 32], *p = hk_label;
 	size_t labelsz = strlen(label);
-	assert(labelsz <= 16);
-	assert(ctxsz < 256);
+	assert(labelsz <= 32);
+	assert(ctxsz <= 32);
 	assert(outsz <= UINT16_MAX);
 	p = write_big_16(p, (uint16_t)outsz);
 	*(p++) = (uint8_t)labelsz;

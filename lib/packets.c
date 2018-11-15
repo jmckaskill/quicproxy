@@ -37,7 +37,7 @@ int64_t decode_varint(qslice_t *s) {
 		if (s->p == s->e) {
 			return -1;
 		}
-		return ((uint16_t)hdr & 0x3F) | *(s->p++);
+		return (((uint16_t)hdr & 0x3F) << 8) | *(s->p++);
 	case 2:
 		if (s->p + 3 > s->e) {
 			return -1;
@@ -72,7 +72,7 @@ int64_t decode_packet_number(qslice_t *s) {
 		if (s->p == s->e) {
 			return -1;
 		}
-		return ((uint16_t)hdr & 0x3F) | *(s->p++);
+		return (((uint16_t)hdr & 0x3F) << 8) | *(s->p++);
 	case 3:
 		if (s->p + 3 > s->e) {
 			return -1;
@@ -111,7 +111,7 @@ static int decode_slice(qslice_t *s, qslice_t *data) {
 int encode_server_hello(qslice_t *ps, const struct server_hello *h) {
 	// check fixed size headers - up to and including extensions list size & tls version
 	qslice_t s = *ps;
-	if (s.p + 4 + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 + 2 + 2 + 2 > s.e) {
+	if (s.p + 4 + 2 + QUIC_HELLO_RANDOM_SIZE + 1 + 2 + 1 + 2 + 2 + 2 + 2 > s.e) {
 		goto err;
 	}
 
@@ -124,7 +124,7 @@ int encode_server_hello(qslice_t *ps, const struct server_hello *h) {
 	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
 
 	// random field
-	s.p = append(s.p, h->random, TLS_HELLO_RANDOM_SIZE);
+	s.p = append(s.p, h->random, QUIC_HELLO_RANDOM_SIZE);
 
 	// legacy session ID - not used in QUIC
 	*(s.p++) = 0;
@@ -173,7 +173,7 @@ int encode_client_hello(qslice_t *ps, const struct client_hello *h) {
 	// check fixed entries - up to and including extension list size
 	qslice_t s = *ps;
 	size_t cipher_len = h->ciphers.e - h->ciphers.p;
-	if (s.p + 4 + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 + cipher_len + 2 + 2 > s.e) {
+	if (s.p + 4 + 2 + QUIC_HELLO_RANDOM_SIZE + 1 + 2 + cipher_len + 2 + 2 > s.e) {
 		goto err;
 	}
 
@@ -186,8 +186,8 @@ int encode_client_hello(qslice_t *ps, const struct client_hello *h) {
 	s.p = write_big_16(s.p, TLS_LEGACY_VERSION);
 
 	// random field
-	memcpy(s.p, h->random, TLS_HELLO_RANDOM_SIZE);
-	s.p += TLS_HELLO_RANDOM_SIZE;
+	memcpy(s.p, h->random, QUIC_HELLO_RANDOM_SIZE);
+	s.p += QUIC_HELLO_RANDOM_SIZE;
 
 	// legacy session ID - not used in QUIC
 	*(s.p++) = 0;
@@ -286,6 +286,39 @@ err:
 	return -1;
 }
 
+int encode_certificates(qslice_t *ps, const br_x509_certificate *certs, size_t num) {
+	qslice_t s = *ps;
+	if (s.p + 4 > s.e) {
+		return -1;
+	}
+
+	// TLS record
+	*(s.p++) = CERTIFICATE;
+	s.p += 3;
+	uint8_t *record_begin = s.p;
+
+	// request context
+	*(s.p++) = 0;
+
+	// cert list
+	s.p += 3;
+	uint8_t *list_begin = s.p;
+
+	for (size_t i = 0; i < num; i++) {
+		if (s.p + 3 + certs[i].data_len + 2 > s.e) {
+			return -1;
+		}
+		s.p = write_big_32(s.p, (uint32_t)certs[i].data_len);
+		s.p = append(s.p, certs[i].data, certs[i].data_len);
+		s.p = write_big_16(s.p, 0); // extensions
+	}
+
+	write_big_24(list_begin - 3, (uint32_t)(s.p - list_begin));
+	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
+	ps->p = s.p;
+	return 0;
+}
+
 bool next_extension(qslice_t *ext, uint16_t *ptype, qslice_t *pdata) {
 	uint8_t *data = ext->p + 4;
 	if (data > ext->e) {
@@ -308,7 +341,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 	memset(h, 0, sizeof(*h));
 
 	// check fixed size headers - up to and including cipher list size
-	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
+	if (s.p + 2 + QUIC_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
 		goto err;
 	}
 
@@ -320,7 +353,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 
 	// random nonce
 	h->random = s.p;
-	s.p += TLS_HELLO_RANDOM_SIZE;
+	s.p += QUIC_HELLO_RANDOM_SIZE;
 
 	// legacy session - not supported in QUIC
 	if (*(s.p++) != 0) {
@@ -429,7 +462,7 @@ int decode_server_hello(qslice_t s, struct server_hello *h) {
 	memset(h, 0, sizeof(*h));
 
 	// check fixed size headers - up to and including extension list size
-	if (s.p + 2 + TLS_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
+	if (s.p + 2 + QUIC_HELLO_RANDOM_SIZE + 1 + 2 > s.e) {
 		goto err;
 	}
 
@@ -441,7 +474,7 @@ int decode_server_hello(qslice_t s, struct server_hello *h) {
 
 	// random nonce
 	h->random = s.p;
-	s.p += TLS_HELLO_RANDOM_SIZE;
+	s.p += QUIC_HELLO_RANDOM_SIZE;
 
 	// legacy session - not supported in QUIC
 	if (*(s.p++) != 0) {

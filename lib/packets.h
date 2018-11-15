@@ -6,6 +6,8 @@
 
 #define QUIC_VERSION UINT32_C(0xFF00000F)
 #define DEFAULT_SERVER_ID_LEN 8
+#define HELLO_MIN_PACKET_SIZE 1200
+#define DEFAULT_PACKET_SIZE 1280
 
 #define VARINT_16 UINT16_C(0x4000)
 #define VARINT_32 UINT32_C(0x80000000)
@@ -62,7 +64,6 @@
 
 #define TLS_LEGACY_VERSION 0x303
 #define TLS_VERSION 0x304
-#define TLS_HELLO_RANDOM_SIZE 32
 
 // TLS ciphers
 #define TLS_AES_128_GCM_SHA256 0x1301
@@ -142,6 +143,13 @@ struct server_hello {
 
 int encode_server_hello(qslice_t *s, const struct server_hello *h);
 int decode_server_hello(qslice_t s, struct server_hello *h);
+
+struct encrypted_extensions {
+	char todo;
+};
+
+int encode_certificates(qslice_t *s, const br_x509_certificate *certs, size_t num);
+int decode_certificates(qslice_t s, br_x509_certificate *certs, size_t *num);
 
 static inline void *append(void *to, const void *from, size_t sz) {
 	memcpy(to, from, sz);

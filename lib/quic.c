@@ -61,6 +61,12 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 	return 0;
 }
 
+void qc_set_server_rsa(qconnection_t *c, const br_x509_certificate *certs, size_t num, const br_rsa_private_key *key) {
+	c->certs = certs;
+	c->cert_num = num;
+	c->rsa = key;
+}
+
 void qc_on_accept(qconnection_t *c, const struct sockaddr *sa, size_t sasz) {
 	for (int i = 0; i < QUIC_MAX_ADDR; i++) {
 		if (!c->peer_addrs[i].len) {
@@ -113,21 +119,20 @@ static void generate_ids(qconnection_t *c) {
 }
 
 static void receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
-	if (pktnum < s->rx_next - 64) {
+	if (s->rx_next > 64 && pktnum < s->rx_next - 64) {
 		// old packet - ignore
 		return;
 	}
 
 	// check to see if we should move the receive window forward
-	if (pktnum > s->rx_next + 64) {
+	if (pktnum >= s->rx_next + 64) {
 		// a long way
 		s->received = 0;
 		s->rx_next = pktnum + 1;
 	} else if (pktnum >= s->rx_next) {
 		// a short way
-		uint64_t last = s->rx_next - 1;
-		size_t shift = (size_t)(last - ALIGN_DOWN(uint64_t, last, 64));
-		uint64_t mask = UINT64_C(1) << (pktnum - last);
+		size_t shift = (size_t)(s->rx_next - ALIGN_DOWN(uint64_t, s->rx_next, 64));
+		uint64_t mask = UINT64_C(1) << (pktnum - s->rx_next);
 		mask -= 1; // create a mask of n bits
 		mask = (mask << shift) | (mask >> (64 - shift)); // and rotate around into place
 		s->received &= ~mask; // and turn off the new bits
@@ -169,8 +174,10 @@ static int receive_data(qrx_stream_t *s, uint64_t offset, const uint8_t *data, s
 	}
 
 	// update the aligned middle
-	memset(s->valid + i, 0, align_end - i);
-	i = align_end;
+	while (i < align_end) {
+		s->valid[i >> 5] = UINT32_C(0xFFFFFFFF);
+		i += 32;
+	}
 
 	// update the bits leading out
 	while (i < end) {
@@ -209,7 +216,7 @@ static int receive_data(qrx_stream_t *s, uint64_t offset, const uint8_t *data, s
 	return 0;
 }
 
-static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcrypto_level level, qtx_stream_t *tx, uint64_t offset, size_t len) {
+static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcrypto_level level, qtx_stream_t *tx, uint64_t from, uint64_t to, bool include_padding) {
 	static uint8_t headers[QC_NUM_LEVELS] = {
 		INITIAL_PACKET,
 		HANDSHAKE_PACKET,
@@ -218,7 +225,7 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 
 	size_t hdr_size = 1 + 4 + 1 + c->peer_id->len + c->local_id->len + 1 + 2 + 4;
 	size_t ack_size = 1 + 8 + 1 + 1 + 1 + 2 * 16;
-	size_t frame_size = 1 + 8 + 2 + len;
+	size_t frame_size = 1 + 8 + 8 + 1;
 	if (s->p + hdr_size + ack_size + frame_size + QUIC_TAG_SIZE > s->e) {
 		return NULL;
 	}
@@ -266,27 +273,33 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 		size_t shift = (size_t)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
 		uint64_t rx = (pkts->received << shift) | (pkts->received >> (64 - shift));
 
+		// and shift the latest packet out
+		rx <<= 1;
+
 		// find the first block
 		uint8_t first_block = 0;
-		while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) != 0) {
+		while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
 			first_block++;
 			num_packets++;
+			rx <<= 1;
 		}
 		*(s->p++) = first_block;
 
-		while (num_blocks < 16 && num_packets < 64) {
+		while (rx != 0 && num_blocks < 16 && num_packets < 63) {
 			// find the gap
 			uint8_t gap = 0;
-			while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) == 0) {
+			while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) == 0) {
 				gap++;
 				num_packets++;
+				rx <<= 1;
 			}
 
 			// find the block
 			uint8_t block = 0;
-			while (num_packets < 64 && (rx & UINT64_C(0x8000000000000000)) != 0) {
+			while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
 				block++;
 				num_packets++;
+				rx <<= 1;
 			}
 
 			*(s->p++) = gap;
@@ -297,15 +310,20 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 		*pblock_count = (uint8_t)num_blocks;
 	}
 
-	if (tx && len) {
+	if (tx && to > from) {
+		uint64_t max = from + (s->e - (s->p + 1 + 8 + 8 + QUIC_TAG_SIZE));
+		if (to > max) {
+			to = max;
+		}
+		size_t len = (size_t)(to - from);
 		*(s->p++) = (tx->id < 0) ? CRYPTO : (STREAM | STREAM_OFF_FLAG | STREAM_LEN_FLAG);
-		s->p = encode_varint(s->p, offset);
+		s->p = encode_varint(s->p, from);
 		s->p = encode_varint(s->p, len);
-		s->p = append(s->p, tx->data + (size_t)(offset - tx->offset), len);
+		s->p = append(s->p, tx->data + (size_t)(from - tx->offset), len);
 	}
 
-	if (s->p < packet_number + 1208-16) {
-		size_t pad = packet_number + 1208-16 - s->p;
+	if (include_padding) {
+		size_t pad = s->e - (s->p + QUIC_TAG_SIZE);
 		memset(s->p, PADDING, pad);
 		s->p += pad;
 	}
@@ -316,9 +334,9 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 
 	// register packet in tx buffer
 	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
-	pkt->offset = offset;
+	pkt->from = from;
+	pkt->to = to;
 	pkt->stream = tx;
-	pkt->len = len;
 	pkt->sent = 0;
 	pkts->tx_next++;
 	return pkt;
@@ -338,16 +356,15 @@ int qc_connect(qconnection_t *c, const char *host_name, const char *svc_name) {
 	generate_initial_secrets(c->peer_id, &pkts->tkey, &pkts->rkey);
 
 	// setup the client hello
-	uint8_t random[TLS_HELLO_RANDOM_SIZE];
-	c->rand.vtable->generate(&c->rand.vtable, random, sizeof(random));
-
 	struct client_hello ch;
 	ch.server_name.p = (uint8_t*)c->server_name.c_str;
 	ch.server_name.e = ch.server_name.p + c->server_name.len;
 	ch.ciphers = c->ciphers;
 	ch.groups = c->groups;
 	ch.algorithms = c->algorithms;
-	ch.random = random;
+
+	c->rand.vtable->generate(&c->rand.vtable, c->client_random, sizeof(c->client_random));
+	ch.random = c->client_random;
 
 	// generate a public/private key for the high priority groups
 	const br_ec_impl *ec = br_ec_get_default();
@@ -363,20 +380,19 @@ int qc_connect(qconnection_t *c, const char *host_name, const char *svc_name) {
 	}
 
 	// encode the TLS record
-	uint8_t *tls_begin = tx->data + tx->len;
-	qslice_t tls = { tls_begin, tx->data + sizeof(pkts->tx_crypto_buf) };
+	qslice_t tls = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
 	if (tls.p > tls.e || encode_client_hello(&tls, &ch)) {
 		return -1;
 	}
-	size_t tls_len = tls.p - tls_begin;
-	size_t tls_off = tx->len;
-	tx->len += tls_len;
+	size_t from = tx->len;
+	size_t to = tls.p - tx->data;
+	tx->len = to;
 
 	// encode the UDP packet
-	uint8_t buf[1500];
+	uint8_t buf[DEFAULT_PACKET_SIZE];
 	qslice_t udp = { buf, buf + sizeof(buf) };
-	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, tls_off, tls_len);
-	if (pkt == NULL) {
+	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, from, to, true);
+	if (pkt == NULL || pkt->to != to) {
 		return -1;
 	}
 
@@ -400,7 +416,7 @@ static br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
 	return NULL;
 }
 
-static int switch_to_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *pk) {
+static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *pk) {
 	c->cipher = cipher;
 
 	br_ec_private_key *sk = find_private_key(c, pk->curve);
@@ -419,20 +435,48 @@ static int switch_to_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_k
 	}
 
 	qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
-	return generate_handshake_secrets(hash, pk, sk, cipher, &pkts->tkey, &pkts->rkey, c->master_secret);
+	if (generate_handshake_secrets(hash, pk, sk, cipher, &pkts->tkey, &pkts->rkey, c->master_secret)) {
+		return -1;
+	}
+
+	if (c->keylog) {
+		const uint8_t *rx = c->pkts[QC_HANDSHAKE].rkey.secret;
+		const uint8_t *tx = c->pkts[QC_HANDSHAKE].tkey.secret;
+		c->keylog(c->user, "CLIENT_HANDSHAKE_TRAFFIC_SECRET", c->client_random, QUIC_HELLO_RANDOM_SIZE, c->is_client ? tx : rx, digest_size(*hash));
+		c->keylog(c->user, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", c->client_random, QUIC_HELLO_RANDOM_SIZE, c->is_client ? tx : rx, digest_size(*hash));
+		c->keylog(c->user, "SERVER_HANDSHAKE_TRAFFIC_SECRET", c->client_random, QUIC_HELLO_RANDOM_SIZE, c->is_client ? rx : tx, digest_size(*hash));
+		c->keylog(c->user, "QUIC_SERVER_HANDSHAKE_TRAFFIC_SECRET", c->client_random, QUIC_HELLO_RANDOM_SIZE, c->is_client ? rx : tx, digest_size(*hash));
+	}
+
+	return 0;
 }
 
-static int send_server_hello(qconnection_t *c, const struct client_hello *ch) {
-	qpacket_buffer_t *pkts = &c->pkts[QC_INITIAL];
-	qtx_stream_t *tx = &pkts->tx_crypto;
+static br_ec_public_key *find_public_key(struct client_hello *ch, int curve) {
+	for (size_t i = 0; i < ch->key_num; i++) {
+		if (ch->keys[i].curve == curve) {
+			return &ch->keys[i];
+		}
+	}
+	return NULL;
+}
+
+static int send_server_hello(qconnection_t *c, struct client_hello *ch) {
+	uint64_t from[2], to[2];
 
 	// setup the server hello
-	uint8_t random[TLS_HELLO_RANDOM_SIZE];
+	uint8_t random[QUIC_HELLO_RANDOM_SIZE];
 	c->rand.vtable->generate(&c->rand.vtable, random, sizeof(random));
+	memcpy(c->client_random, ch->random, QUIC_HELLO_RANDOM_SIZE);
 
 	struct server_hello sh;
 	sh.random = random;
 	sh.cipher = TLS_AES_128_GCM_SHA256;
+
+	// find the client's key
+	br_ec_public_key *client_pk = find_public_key(ch, BR_EC_curve25519);
+	if (!client_pk) {
+		return -1;
+	}
 
 	// generate the server key
 	const br_ec_impl *ec = br_ec_get_default();
@@ -443,30 +487,65 @@ static int send_server_hello(qconnection_t *c, const struct client_hello *ch) {
 	uint8_t pub_key[BR_EC_KBUF_PUB_MAX_SIZE];
 	br_ec_compute_pub(ec, &sh.key, pub_key, &c->priv_key[0]);
 
-	// encode the TLS record
-	uint8_t *tls_begin = tx->data + tx->len;
-	qslice_t tls = { tls_begin, tx->data + sizeof(pkts->tx_crypto_buf) };
-	if (tls.p > tls.e || encode_server_hello(&tls, &sh)) {
-		return -1;
-	}
-	size_t tls_len = tls.p - tls_begin;
-	size_t tls_off = tx->len;
-	tx->len += tls_len;
-
-	// encode the UDP packet and send it
-	uint8_t buf[1500];
-	qslice_t udp = { buf, buf + sizeof(buf) };
-	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, tls_off, tls_len);
-
-	if (pkt == NULL || c->send(c->user, buf, udp.p - buf, (struct sockaddr*)&c->peer_addr->ss, c->peer_addr->len, &pkt->sent)) {
-		return -1;
+	// encode the initial records (server hello)
+	{
+		qpacket_buffer_t *pkts = &c->pkts[QC_INITIAL];
+		qtx_stream_t *tx = &pkts->tx_crypto;
+		qslice_t s = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
+		if (encode_server_hello(&s, &sh)) {
+			return -1;
+		}
+		from[0] = tx->offset + tx->len;
+		to[0] = tx->offset + (s.p - tx->data);
+		tx->len = s.p - tx->data;
 	}
 
-	if (switch_to_handshake(c, sh.cipher, &sh.key)) {
+	if (init_handshake(c, sh.cipher, client_pk)) {
 		return -1;
 	}
 
-	// TODO encrypted extensions and finished
+	// encode the handshake records (encrypted extensions, certificate, cert verify, finished)
+	{
+		qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
+		qtx_stream_t *tx = &pkts->tx_crypto;
+		qslice_t s = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
+		if (encode_certificates(&s, c->certs, c->cert_num)) {
+			return -1;
+		}
+		from[1] = tx->offset + tx->len;
+		to[1] = tx->offset + (s.p - tx->data);
+		tx->len = s.p - tx->data;
+	}
+
+	// encode the records into quic and udp packets
+	for (;;) {
+		uint8_t buf[DEFAULT_PACKET_SIZE];
+		qslice_t s = { buf, buf + sizeof(buf) };
+		qtx_packet_t *pkt[2] = { 0 };
+
+		if (from[0] < to[0]) {
+			pkt[0] = encode_long_packet(c, &s, QC_INITIAL, &c->pkts[QC_INITIAL].tx_crypto, from[0], to[0], false);
+		}
+		if (from[1] < to[1]) {
+			pkt[1] = encode_long_packet(c, &s, QC_HANDSHAKE, &c->pkts[QC_HANDSHAKE].tx_crypto, from[1], to[1], false);
+		}
+		if (!pkt[0] && !pkt[1]) {
+			break;
+		}
+		tick_t sent;
+		if (c->send(c->user, buf, s.p - buf, (struct sockaddr*)&c->peer_addr->ss, c->peer_addr->len, &sent)) {
+			return -1;
+		}
+		if (pkt[0]) {
+			from[0] = pkt[0]->to;
+			pkt[0]->sent = sent;
+		}
+		if (pkt[1]) {
+			from[1] = pkt[1]->to;
+			pkt[1]->sent = sent;
+		}
+	}
+
 	return 0;
 }
 
@@ -560,7 +639,7 @@ static int process_initial_client(qconnection_t *c, qslice_t s) {
 						if (decode_server_hello(data, &sh)) {
 							LOG(c->debug, "server hello parse failure");
 						} else {
-							switch_to_handshake(c, sh.cipher, &sh.key);
+							init_handshake(c, sh.cipher, &sh.key);
 						}
 						break;
 					}
@@ -696,10 +775,13 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 			s.p += paysz;
 
 			qslice_t data;
-			int64_t pktnum = decrypt_packet(&c->pkts[level].rkey, pkt_begin, packet_number, s.p, &data);
+			qpacket_buffer_t *pkts = &c->pkts[level];
+			int64_t pktnum = decrypt_packet(&pkts->rkey, pkt_begin, packet_number, s.p, &data);
 			if (pktnum < 0) {
 				return -1;
 			}
+
+			receive_packet(pkts, pktnum);
 
 			if (process_packet(c, data, level)) {
 				return -1;
