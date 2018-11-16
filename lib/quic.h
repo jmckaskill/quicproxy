@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rx-stream.h"
 #include <cutils/socket.h>
 #include <cutils/stopwatch.h>
 #include <cutils/log.h>
@@ -55,12 +56,6 @@ enum qhandshake_state {
 	QC_RUNNING,
 };
 
-typedef struct qslice qslice_t;
-struct qslice {
-	uint8_t *p;
-	uint8_t *e;
-};
-
 typedef struct qtx_stream qtx_stream_t;
 struct qtx_stream {
 	int64_t id;
@@ -70,13 +65,10 @@ struct qtx_stream {
 	size_t len;
 };
 
-typedef struct qrx_stream qrx_stream_t;
-struct qrx_stream {
-	int64_t id;
-	uint64_t offset;	 // offset into the stream the data pointer is up to
-	uint8_t *data;	 // the actual data bytes themselves
-	uint32_t *valid; // bitset of whether a byte is valid
-	size_t len;      // size left in bytes in the buffer
+typedef struct qslice qslice_t;
+struct qslice {
+	uint8_t *p;
+	uint8_t *e;
 };
 
 typedef struct qtx_packet qtx_packet_t;
@@ -116,11 +108,6 @@ struct qpacket_buffer {
 	qkeyset_t tkey;
 	qkeyset_t rkey;
 	qtx_stream_t tx_crypto;
-	qrx_stream_t rx_crypto;
-	size_t rx_crypto_consumed;
-	uint32_t rx_crypto_valid[QUIC_CRYPTO_BUF_SIZE / 32];
-	uint8_t tx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
-	uint8_t rx_crypto_buf[QUIC_CRYPTO_BUF_SIZE];
 };
 
 typedef struct qcertificate qcertificate_t;
@@ -168,6 +155,12 @@ struct qconnection {
 	br_hmac_drbg_context rand;
 
 	qpacket_buffer_t pkts[QC_NUM_LEVELS];
+	qrx_stream_t rx_crypto;
+	enum qcrypto_level rx_level;
+	// these must be big enough to hold the client/server hellos
+	uint8_t rx_crypto_buf[4096];
+	uint8_t tx_crypto_buf[4096];
+	uint8_t *next_tx_crypto;
 
 	struct {
 		size_t len;

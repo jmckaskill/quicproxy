@@ -16,18 +16,9 @@ static const uint8_t def_algorithms[] = { 0x04, 0x01 };
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
 
-static void setup_level(qpacket_buffer_t *b, qtx_packet_t *sent, size_t sent_len) {
-	b->sent = sent;
-	b->sent_len = sent_len;
-
-	b->tx_crypto.id = -1;
-	b->tx_crypto.data = b->tx_crypto_buf;
-	b->tx_crypto.max_data_allowed = UINT64_MAX;
-
-	b->rx_crypto.id = -1;
-	b->rx_crypto.data = b->rx_crypto_buf;
-	b->rx_crypto.valid = b->rx_crypto_valid;
-	b->rx_crypto.len = sizeof(b->rx_crypto_buf);
+static void change_rx_crypto_level(qconnection_t *c, enum qcrypto_level level) {
+	qrx_init(&c->rx_crypto, c->rx_crypto_buf, sizeof(c->rx_crypto_buf));
+	c->rx_level = level;
 }
 
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
@@ -54,10 +45,19 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 	}
 
 	qtx_packet_t *sent = (qtx_packet_t*)p;
-	setup_level(&c->pkts[QC_INITIAL], sent, QUIC_CRYPTO_PACKETS);
-	setup_level(&c->pkts[QC_HANDSHAKE], sent + QUIC_CRYPTO_PACKETS, QUIC_CRYPTO_PACKETS);
-	setup_level(&c->pkts[QC_PROTECTED], sent + 2 * QUIC_CRYPTO_PACKETS, pktnum - (2 * QUIC_CRYPTO_PACKETS));
+	c->pkts[QC_INITIAL].sent = sent;
+	c->pkts[QC_HANDSHAKE].sent = sent + QUIC_CRYPTO_PACKETS;
+	c->pkts[QC_PROTECTED].sent = sent + 2 * QUIC_CRYPTO_PACKETS;
 
+	c->pkts[QC_INITIAL].sent_len = QUIC_CRYPTO_PACKETS;
+	c->pkts[QC_HANDSHAKE].sent_len = QUIC_CRYPTO_PACKETS;
+	c->pkts[QC_PROTECTED].sent_len = pktnum - 2 * QUIC_CRYPTO_PACKETS;
+
+	c->pkts[QC_INITIAL].tx_crypto.id = -1;
+	c->pkts[QC_HANDSHAKE].tx_crypto.id = -1;
+	c->pkts[QC_PROTECTED].tx_crypto.id = -1;
+
+	change_rx_crypto_level(c, QC_INITIAL);
 	return 0;
 }
 
@@ -135,80 +135,6 @@ static void receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
 	}
 
 	s->received |= UINT64_C(1) << (pktnum & 63);
-}
-
-static int receive_data(qrx_stream_t *s, uint64_t offset, const uint8_t *data, size_t len) {
-	if (offset + len > s->offset + s->len) {
-		// flow control error
-		return -1;
-	} else if (offset + len < s->offset) {
-		// old data
-		return 0;
-	}
-
-	if (offset < s->offset) {
-		// old start, but runs into new territory
-		size_t behind = (size_t)(s->offset - offset);
-		data += behind;
-		len -= behind;
-	}
-
-	// copy the data
-	memcpy(s->data + offset - s->offset, data, len);
-
-	// start setting bits - s->offset may not be aligned
-	size_t i = (size_t)(offset - ALIGN_DOWN(uint64_t, s->offset, 32));
-	size_t end = (size_t)(offset - s->offset) + len;
-	size_t align_begin = ALIGN_UP(size_t, i, 32);
-	size_t align_end = ALIGN_DOWN(size_t, end, 32);
-
-	// update the bits leading in
-	while (i < align_begin) {
-		s->valid[i >> 5] |= 1U << (i & 31);
-		i++;
-	}
-
-	// update the aligned middle
-	while (i < align_end) {
-		s->valid[i >> 5] = UINT32_C(0xFFFFFFFF);
-		i += 32;
-	}
-
-	// update the bits leading out
-	while (i < end) {
-		s->valid[i >> 5] |= 1U << (i & 31);
-		i++;
-	}
-
-	// move the base and pointers forward
-
-	// deal with an unaligned base
-	if (*s->valid == UINT32_C(0xFFFFFFFF) && (s->offset & 31)) {
-		uint64_t new_offset = ALIGN_UP(uint64_t, s->offset, 32);
-		s->data += new_offset - s->offset;
-		s->valid++;
-		s->offset = new_offset;
-	}
-
-	// move the pointer forward in the aligned middle chunk
-	while (*s->valid == UINT32_C(0xFFFFFFFF)) {
-		s->data += 32;
-		s->offset += 32;
-		s->len -= 32;
-		s->valid++;
-	}
-
-	// deal with the unaligned tail
-	size_t shift = (size_t)(s->offset - ALIGN_DOWN(uint64_t, s->offset, 32));
-	uint32_t valid = *s->valid >> shift;
-	while (valid & 1) {
-		s->data++;
-		s->offset++;
-		s->len--;
-		valid >>= 1;
-	}
-
-	return 0;
 }
 
 static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcrypto_level level, qtx_stream_t *tx, uint64_t from, uint64_t to, bool include_padding) {
@@ -389,19 +315,21 @@ int qc_connect(qconnection_t *c, int family, const char *host_name, const char *
 	}
 
 	// encode the TLS record
-	qslice_t tls = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
-	if (tls.p > tls.e || encode_client_hello(&tls, &ch)) {
+	qslice_t s = { c->tx_crypto_buf, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
+	tx->data = s.p;
+	tx->offset = 0;
+	tx->len = 0;
+	if (s.p > s.e || encode_client_hello(&s, &ch)) {
 		return -1;
 	}
-	size_t from = tx->len;
-	size_t to = tls.p - tx->data;
-	tx->len = to;
+	c->next_tx_crypto = s.p;
+	tx->len = s.p - tx->data;
 
 	// encode the UDP packet
 	uint8_t buf[DEFAULT_PACKET_SIZE];
 	qslice_t udp = { buf, buf + sizeof(buf) };
-	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, from, to, true);
-	if (pkt == NULL || pkt->to != to) {
+	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, 0, tx->len, true);
+	if (pkt == NULL || pkt->to != tx->len) {
 		return -1;
 	}
 
@@ -454,8 +382,8 @@ static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *p
 	qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
 	qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
 
-	qslice_t rx_hello = { init->rx_crypto_buf, init->rx_crypto_buf + init->rx_crypto.offset };
-	qslice_t tx_hello = { init->tx_crypto_buf, init->tx_crypto_buf + init->tx_crypto.len };
+	qslice_t rx_hello = { c->rx_crypto_buf, c->rx_crypto_buf + c->rx_crypto.offset };
+	qslice_t tx_hello = { c->tx_crypto_buf, c->next_tx_crypto };
 	qslice_t ch = rx_hello;
 	qslice_t sh = tx_hello;
 	qkeyset_t *client = &pkts->rkey;
@@ -470,6 +398,8 @@ static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *p
 	if (generate_handshake_secrets(&c->crypto_hash, ch, sh, pk, sk, cipher, client, server, c->master_secret)) {
 		return -1;
 	}
+
+	change_rx_crypto_level(c, QC_HANDSHAKE);
 
 	if (c->log_key) {
 		log_key(c, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", client->secret, client->hash_len);
@@ -520,15 +450,17 @@ static int process_client_hello(qconnection_t *c, struct client_hello *ch) {
 	{
 		qpacket_buffer_t *pkts = &c->pkts[QC_INITIAL];
 		qtx_stream_t *tx = &pkts->tx_crypto;
-		qslice_t s = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
+		qslice_t s = { c->tx_crypto_buf, tx->data + sizeof(c->tx_crypto_buf) };
+		tx->offset = tx->len;
+		tx->data = s.p;
+		tx->len = 0;
 		if (encode_server_hello(&s, &sh)) {
 			return -1;
 		}
-		uint64_t from = tx->offset + tx->len;
-		uint64_t to = tx->offset + (s.p - tx->data);
+		c->next_tx_crypto = s.p;
 		tx->len = s.p - tx->data;
 
-		if (send_long_packets(c, QC_INITIAL, tx, from, to)) {
+		if (send_long_packets(c, QC_INITIAL, tx, tx->offset, tx->offset + tx->len)) {
 			return -1;
 		}
 	}
@@ -541,7 +473,10 @@ static int process_client_hello(qconnection_t *c, struct client_hello *ch) {
 	{
 		qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
 		qtx_stream_t *tx = &pkts->tx_crypto;
-		qslice_t s = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
+		qslice_t s = { c->next_tx_crypto, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
+		tx->data = s.p;
+		tx->offset = 0;
+		tx->len = 0;
 
 		// Certificate
 		uint8_t *cert_begin = s.p;
@@ -570,11 +505,10 @@ static int process_client_hello(qconnection_t *c, struct client_hello *ch) {
 		}
 		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, finish_begin, s.p - finish_begin);
 
-		uint64_t from = tx->offset + tx->len;
-		uint64_t to = tx->offset + (s.p - tx->data);
+		c->next_tx_crypto = s.p;
 		tx->len = s.p - tx->data;
 
-		if (send_long_packets(c, QC_HANDSHAKE, tx, from, to)) {
+		if (send_long_packets(c, QC_HANDSHAKE, tx, 0, tx->len)) {
 			return -1;
 		}
 	}
@@ -617,12 +551,17 @@ static int verify_finished(qconnection_t *c, qslice_t verify) {
 		client = &pkts->tkey;
 		server = &pkts->rkey;
 	}
+
 	generate_protected_secrets(&c->crypto_hash.vtable, c->master_secret, c->cipher, client, server);
+	change_rx_crypto_level(c, QC_PROTECTED);
 
 	// send client finished
 	if (c->is_client) {
 		qtx_stream_t *tx = &pkts->tx_crypto;
-		qslice_t s = { tx->data + tx->len, tx->data + sizeof(pkts->tx_crypto_buf) };
+		qslice_t s = { c->next_tx_crypto, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
+		tx->offset = tx->len;
+		tx->data = s.p;
+		tx->len = 0;
 
 		// Finished
 		flen = generate_finish_verify(&pkts->tkey, &c->crypto_hash.vtable, fin);
@@ -632,44 +571,15 @@ static int verify_finished(qconnection_t *c, qslice_t verify) {
 		}
 		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, finish_begin, s.p - finish_begin);
 
-		uint64_t from = tx->offset + tx->len;
-		uint64_t to = tx->offset + (s.p - tx->data);
+		c->next_tx_crypto = s.p;
 		tx->len = s.p - tx->data;
 
-		if (send_long_packets(c, QC_HANDSHAKE, tx, from, to)) {
+		if (send_long_packets(c, QC_HANDSHAKE, tx, tx->offset, tx->offset + tx->len)) {
 			return -1;
 		}
 	}
 
 	return 0;
-}
-
-static bool next_tls_record(qpacket_buffer_t *b, uint8_t *ptype, qslice_t *data) {
-	uint8_t *p = b->rx_crypto_buf + b->rx_crypto_consumed;
-	uint8_t *e = b->rx_crypto_buf + b->rx_crypto.offset;
-	if (p + 4 > e) {
-		return false;
-	}
-	uint32_t tls_len = big_24(p + 1);
-	if (p + 4 + tls_len > e) {
-		return false;
-	}
-	b->rx_crypto_consumed += 4 + tls_len;
-	*ptype = p[0];
-	data->p = p + 4;
-	data->e = data->p + tls_len;
-	return true;
-}
-
-static int decode_crypto(qpacket_buffer_t *b, qslice_t *s) {
-	int64_t off = decode_varint(s);
-	int64_t len = decode_varint(s);
-	if (len < 0 || (s->e - s->p) < len) {
-		return -1;
-	}
-	uint8_t *data = s->p;
-	s->p += len;
-	return receive_data(&b->rx_crypto, (uint64_t)off, data, (size_t)len);
 }
 
 static int decode_ack(qpacket_buffer_t *b, qslice_t *s) {
@@ -703,6 +613,35 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 	return p;
 }
 
+static bool next_tls_record(qconnection_t *c, uint8_t *ptype, qslice_t *data, size_t *consume_size) {
+	uint8_t *p;
+	if (qrx_recv(&c->rx_crypto, 4, &p) <= 0) {
+		return false;
+	}
+	uint32_t tls_len = big_24(p + 1);
+	if (qrx_recv(&c->rx_crypto, 4 + tls_len, &p) <= 0) {
+		return false;
+	}
+	*ptype = p[0];
+	data->p = p + 4;
+	data->e = data->p + tls_len;
+	*consume_size = 4 + tls_len;
+	return true;
+}
+
+static bool decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s) {
+	int64_t off = decode_varint(s);
+	int64_t len = decode_varint(s);
+	if (len < 0 || (s->e - s->p) < len) {
+		return -1;
+	}
+	uint8_t *p = s->p;
+	s->p += len;
+	return (level == c->rx_level) 
+		? (qrx_append(&c->rx_crypto, false, off, s->p, (size_t)len) == QRX_HAVE_DATA)
+		: false;
+}
+
 static int process_protected(qconnection_t *c, qslice_t s) {
 	if (c->hs_state != QC_RUNNING) {
 		return -1;
@@ -730,10 +669,11 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 			}
 			break;
 		case CRYPTO:
-			if (!decode_crypto(pkts, &s)) {
+			if (decode_crypto(c, level, &s)) {
 				uint8_t type;
 				qslice_t data;
-				while (next_tls_record(pkts, &type, &data)) {
+				size_t consume_size;
+				while (next_tls_record(pkts, &type, &data, &consume_size)) {
 					switch (type) {
 					case CLIENT_HELLO: {
 						struct client_hello ch;
@@ -802,7 +742,9 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 						break;
 					}
 					}
+					qrx_consume(&c->rx_crypto, consume_size);
 				}
+				qrx_fold(&c->rx_crypto);
 			}
 			break;
 		}

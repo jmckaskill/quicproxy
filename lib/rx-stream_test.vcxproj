@@ -1,0 +1,97 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Arm-Release|x64">
+      <Configuration>Arm-Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7D6642C4-9109-563E-85D4-5B80A6541721}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <ProjectName>test - rx-stream</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\msvc-debug\test_rx-stream.exe</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/msvc-debug/test_rx-stream.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/msvc-debug/test_rx-stream.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/msvc-debug/test_rx-stream.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/msvc-debug/test_rx-stream.exe</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\msvc-release\test_rx-stream.exe</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/msvc-release/test_rx-stream.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/msvc-release/test_rx-stream.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/msvc-release/test_rx-stream.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/msvc-release/test_rx-stream.exe</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\armv7-release\test_rx-stream.exe</NMakeOutput>
+    <NMakePreprocessorDefinitions>__linux__;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_rx-stream.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_rx-stream.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_rx-stream.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_rx-stream.exe</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src;$(SolutionDir)\bin\libarm\armv7\include;$(SolutionDir)\bin\clang\lib\clang\5.0.1\include</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

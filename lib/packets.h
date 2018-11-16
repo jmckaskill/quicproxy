@@ -104,6 +104,9 @@
 // server name
 #define HOST_NAME_TYPE 0
 
+#define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
+#define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
+
 uint8_t encode_id_len(uint8_t len);
 uint8_t decode_id_len(uint8_t val);
 uint8_t *encode_varint(uint8_t *p, uint64_t val);

@@ -11,11 +11,17 @@ rule run-test
 build $obj/quic/quic.o: cc lib/quic.c
 build $obj/quic/packets.o: cc lib/packets.c
 build $obj/quic/crypto.o: cc lib/crypto.c
+build $obj/quic/rx-stream.o: cc lib/rx-stream.c
 build $obj/quic.lib: lib $
  $obj/quic/quic.o $
  $obj/quic/packets.o $
  $obj/quic/crypto.o $
 
+build $obj/quic/test_rx-stream.o: cc lib/rx-stream_test.c
+build $bin/test_rx-stream.exe: clink $
+ $obj/quic/test_rx-stream.o $
+ $obj/quic/rx-stream.o $
+ $obj/cutils.lib $
 
 build $obj/server/server.o: cc src/server/server.c
 build $bin/qproxy-server.exe: clink $

@@ -15,6 +15,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <None Include=".\build.ninja" />
     <None Include=".\download.manifest" />
     <None Include=".\msvc.ninja" />
     <None Include=".\src.ninja" />

@@ -18,12 +18,15 @@
     <ClCompile Include="crypto.c" />
     <ClCompile Include="packets.c" />
     <ClCompile Include="quic.c" />
+    <ClCompile Include="rx-stream.c" />
+    <ClCompile Include="rx-stream_test.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bearssl_wrapper.h" />
     <ClInclude Include="crypto.h" />
     <ClInclude Include="packets.h" />
     <ClInclude Include="quic.h" />
+    <ClInclude Include="rx-stream.h" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>

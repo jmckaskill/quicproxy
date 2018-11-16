@@ -18,6 +18,7 @@
     <ClCompile Include="client.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ssl-roots.h" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>
