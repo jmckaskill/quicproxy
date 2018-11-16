@@ -9,6 +9,7 @@
 #define HELLO_MIN_PACKET_SIZE 1200
 #define DEFAULT_PACKET_SIZE 1280
 
+
 #define VARINT_16 UINT16_C(0x4000)
 #define VARINT_32 UINT32_C(0x80000000)
 #define VARINT_64 UINT64_C(0xC000000000000000)
@@ -73,18 +74,6 @@
 // TLS compression methods
 #define TLS_COMPRESSION_NULL 0
 
-// TLS signature algorithms
-#define RSA_PKCS1_SHA256 0x0401
-#define RSA_PKCS1_SHA384 0x0501
-#define RSA_PKCS1_SHA512 0x0601
-#define ECDSA_SECP256R1_SHA256 0x0403
-#define ECDSA_SECP384R1_SHA384 0x0503
-#define ECDSA_SECP512R1_SHA512 0x0603
-#define ED25519 0x0807
-#define ED448 0x0808
-#define RSA_PSS_SHA256 0x0809
-#define RSA_PSS_SHA384 0x080A
-#define RSA_PSS_SHA512 0x080B
 
 // TLS extensions
 #define TLS_EXTENSION_HEADER_SIZE 4
@@ -148,8 +137,13 @@ struct encrypted_extensions {
 	char todo;
 };
 
-int encode_certificates(qslice_t *s, const br_x509_certificate *certs, size_t num);
-int decode_certificates(qslice_t s, br_x509_certificate *certs, size_t *num);
+int encode_certificates(qslice_t *s, quic_next_cert next, void* user);
+int encode_verify(qslice_t *s, uint16_t algo, const uint8_t *sig, size_t len);
+int encode_finished(qslice_t *s, const uint8_t *verify, size_t len);
+
+int decode_certificates(qslice_t s, qcertificate_t *certs, size_t *num);
+int decode_verify(qslice_t s, uint16_t *algo, qslice_t *sig);
+int decode_finished(qslice_t s, qslice_t *verify);
 
 static inline void *append(void *to, const void *from, size_t sz) {
 	memcpy(to, from, sz);

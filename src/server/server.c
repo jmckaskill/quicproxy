@@ -9,13 +9,52 @@ static uint32_t get_tick() {
 	return (uint32_t)(ns / 1000);
 }
 
+struct server_data {
+	const char *server_name;
+	qcertificate_t *certs;
+	br_skey_decoder_context *skey;
+	int fd;
+};
+
+
 static int do_send(void *user, const void *buf, size_t len, const struct sockaddr *sa, size_t sasz, tick_t *sent) {
-	int *pfd = user;
-	if (sendto(*pfd, buf, (int)len, 0, sa, (int)sasz) != (int)len) {
+	struct server_data *s = user;
+	if (sendto(s->fd, buf, (int)len, 0, sa, (int)sasz) != (int)len) {
 		return -1;
 	}
 	*sent = get_tick();
 	return 0;
+}
+
+static const qcertificate_t *get_next_cert(void *user, const qcertificate_t *c) {
+	struct server_data *s = user;
+	if (!c) {
+		c = s->certs;
+	} else {
+		c++;
+	}
+	return c->x509.data ? c : NULL;
+}
+
+static int do_sign(void *user, uint16_t algo, const uint8_t *data, size_t len, uint8_t *out) {
+	struct server_data *s = user;
+	br_rsa_pkcs1_sign fn = br_rsa_i62_pkcs1_sign_get();
+	if (!fn) {
+		fn = &br_rsa_i31_pkcs1_sign;
+	}
+	const br_rsa_private_key *sk = br_skey_decoder_get_rsa(s->skey);
+	if (!sk || (sk->n_bitlen + 7) / 8 > QUIC_MAX_SIG_SIZE) {
+		return -1;
+	}
+	uint8_t hash[QUIC_MAX_HASH_SIZE];
+	br_sha256_context h;
+	br_sha256_init(&h);
+	br_sha256_update(&h, data, len);
+	br_sha256_out(&h, hash);
+	if (!fn(BR_HASH_OID_SHA256, hash, br_sha256_SIZE, sk, out)) {
+		return -1;
+	}
+	return (sk->n_bitlen + 7) / 8;
 }
 
 static int pem_to_der(br_pem_decoder_context *pem, str_t *der, mapped_file *mf, size_t *poff) {
@@ -32,7 +71,7 @@ static int pem_to_der(br_pem_decoder_context *pem, str_t *der, mapped_file *mf, 
 	return br_pem_decoder_event(pem) != BR_PEM_END_OBJ;
 }
 
-static int read_pem_certs(const char *path, br_x509_certificate *certs) {
+static int read_pem_certs(const char *path, qcertificate_t *certs) {
 	mapped_file mf;
 	if (map_file(&mf, path)) {
 		return -1;
@@ -50,8 +89,8 @@ static int read_pem_certs(const char *path, br_x509_certificate *certs) {
 			num = -1;
 			goto end;
 		}
-		certs[num].data = (unsigned char*)der.c_str;
-		certs[num].data_len = der.len;
+		certs[num].x509.data = (unsigned char*)der.c_str;
+		certs[num].x509.data_len = der.len;
 		num++;
 	}
 
@@ -83,22 +122,10 @@ static int read_pem_key(const char *path, br_skey_decoder_context *skey) {
 }
 
 static str_t keylog = STR_INIT;
-static void log_key(void *user, const char *label, const uint8_t *random, size_t random_size, const uint8_t *secret, size_t secret_size) {
-	struct {size_t len; char c_str[512];} buf;
-	ca_set(&buf, "\n");
-	ca_add(&buf, label);
-	ca_addch(&buf, ' ');
-	for (size_t i = 0; i < random_size; i++) {
-		ca_addf(&buf, "%02x", random[i]);
-	}
-	ca_addch(&buf, ' ');
-	for (size_t i = 0; i < secret_size; i++) {
-		ca_addf(&buf, "%02x", random[i]);
-	}
-
+static void log_key(void *user, const char *line) {
 	FILE *f = io_fopen(keylog.c_str, "a");
 	if (f) {
-		fwrite(buf.c_str, 1, buf.len, f);
+		fputs(line, f);
 		fclose(f);
 	}
 }
@@ -126,18 +153,22 @@ int main(int argc, const char *argv[]) {
 		FATAL(debug, "failed to init connection");
 	}
 
-	br_x509_certificate certs[QUIC_MAX_CERTIFICATES];
+	qcertificate_t certs[QUIC_MAX_CERTIFICATES+1];
 	int cert_num = read_pem_certs(cert_file.c_str, certs);
 	if (cert_num < 0) {
-		FATAL(debug, "failed to read TLS certificates from %s", cert_file);
+		FATAL(debug, "failed to read TLS certificates from %s", cert_file.c_str);
 	}
+	certs[cert_num].x509.data = NULL;
 
 	br_skey_decoder_context skey;
 	if (read_pem_key(key_file.c_str, &skey)) {
-		FATAL(debug, "failed to read TLS key from %s", key_file);
+		FATAL(debug, "failed to read TLS key from %s", key_file.c_str);
 	}
 
-	qc_set_server_rsa(&qc, certs, cert_num, br_skey_decoder_get_rsa(&skey));
+	struct server_data sd;
+	sd.certs = certs;
+	sd.skey = &skey;
+	sd.fd = fd;
 
 	for (;;) {
 		struct sockaddr_storage ss;
@@ -164,9 +195,11 @@ int main(int argc, const char *argv[]) {
 			qc_on_accept(&qc, sa, salen);
 			qc.debug = &stderr_log;
 			qc.send = &do_send;
-			qc.user = &fd;
+			qc.next_cert = &get_next_cert;
+			qc.sign = &do_sign;
+			qc.user = &sd;
 			if (keylog.len) {
-				qc.keylog = &log_key;
+				qc.log_key = &log_key;
 			}
 		}
 

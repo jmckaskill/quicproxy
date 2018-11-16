@@ -82,7 +82,7 @@ int64_t decode_packet_number(qslice_t *s) {
 	}
 }
 
-static int append_slice(qslice_t *s, qslice_t data) {
+static int append_slice_16(qslice_t *s, qslice_t data) {
 	size_t len = data.e - data.p;
 	size_t have = s->e - s->p;
 	if (len + 2 > have) {
@@ -93,12 +93,27 @@ static int append_slice(qslice_t *s, qslice_t data) {
 	return 0;
 }
 
-static int decode_slice(qslice_t *s, qslice_t *data) {
+static int decode_slice_16(qslice_t *s, qslice_t *data) {
 	uint8_t *p = s->p + 2;
 	if (p > s->e) {
 		return -1;
 	}
 	uint8_t *e = p + big_16(s->p);
+	if (e > s->e) {
+		return -1;
+	}
+	data->p = p;
+	data->e = e;
+	s->p = e;
+	return 0;
+}
+
+static int decode_slice_24(qslice_t *s, qslice_t *data) {
+	uint8_t *p = s->p + 3;
+	if (p > s->e) {
+		return -1;
+	}
+	uint8_t *e = p + big_24(s->p);
 	if (e > s->e) {
 		return -1;
 	}
@@ -286,9 +301,9 @@ err:
 	return -1;
 }
 
-int encode_certificates(qslice_t *ps, const br_x509_certificate *certs, size_t num) {
+int encode_certificates(qslice_t *ps, quic_next_cert next, void* user) {
 	qslice_t s = *ps;
-	if (s.p + 4 > s.e) {
+	if (s.p + 4 + 1 + 3 > s.e) {
 		return -1;
 	}
 
@@ -304,17 +319,57 @@ int encode_certificates(qslice_t *ps, const br_x509_certificate *certs, size_t n
 	s.p += 3;
 	uint8_t *list_begin = s.p;
 
-	for (size_t i = 0; i < num; i++) {
-		if (s.p + 3 + certs[i].data_len + 2 > s.e) {
+	const qcertificate_t *c = NULL;
+	while (next && (c = next(user, c)) != NULL) {
+		if (s.p + 3 + c->x509.data_len + 2 > s.e) {
 			return -1;
 		}
-		s.p = write_big_32(s.p, (uint32_t)certs[i].data_len);
-		s.p = append(s.p, certs[i].data, certs[i].data_len);
+		s.p = write_big_24(s.p, (uint32_t)c->x509.data_len);
+		s.p = append(s.p, c->x509.data, c->x509.data_len);
 		s.p = write_big_16(s.p, 0); // extensions
 	}
 
 	write_big_24(list_begin - 3, (uint32_t)(s.p - list_begin));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
+	ps->p = s.p;
+	return 0;
+}
+
+int encode_verify(qslice_t *ps, uint16_t algo, const uint8_t *sig, size_t len) {
+	qslice_t s = *ps;
+	if (s.p + 4 + 2 + 2 + len > s.e) {
+		return -1;
+	}
+
+	// TLS record
+	*(s.p++) = CERTIFICATE_VERIFY;
+	s.p += 3;
+	uint8_t *record_begin = s.p;
+
+	// algorithm
+	s.p = write_big_16(s.p, algo);
+
+	// signature
+	s.p = write_big_16(s.p, (uint16_t)len);
+	s.p = append(s.p, sig, len);
+
+	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
+	ps->p = s.p;
+	return 0;
+}
+
+int encode_finished(qslice_t *ps, const uint8_t *verify, size_t len) {
+	qslice_t s = *ps;
+	if (s.p + 4 + len > s.e) {
+		return -1;
+	}
+
+	// TLS record
+	*(s.p++) = FINISHED;
+	s.p = write_big_24(s.p, (uint32_t)len);
+
+	// verify data
+	s.p = append(s.p, verify, len);
 	ps->p = s.p;
 	return 0;
 }
@@ -361,7 +416,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 	}
 
 	// ciphers
-	if (decode_slice(&s, &h->ciphers)) {
+	if (decode_slice_16(&s, &h->ciphers)) {
 		goto err;
 	}
 
@@ -371,7 +426,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 	}
 
 	qslice_t extensions;
-	if (decode_slice(&s, &extensions)) {
+	if (decode_slice_16(&s, &extensions)) {
 		goto err;
 	}
 
@@ -383,25 +438,25 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 		switch (type) {
 		case SERVER_NAME: {
 			qslice_t names;
-			if (decode_slice(&ext, &names)) {
+			if (decode_slice_16(&ext, &names)) {
 				goto err;
 			}
 			while (names.p < names.e) {
 				uint8_t name_type = *(names.p++);
 				qslice_t other_name;
-				if (decode_slice(&names, (name_type == HOST_NAME_TYPE) ? &h->server_name : &other_name)) {
+				if (decode_slice_16(&names, (name_type == HOST_NAME_TYPE) ? &h->server_name : &other_name)) {
 					goto err;
 				}
 			}
 			break;
 		}
 		case SUPPORTED_GROUPS:
-			if (decode_slice(&ext, &h->groups) || ((h->groups.e - h->groups.p) & 1)) {
+			if (decode_slice_16(&ext, &h->groups) || ((h->groups.e - h->groups.p) & 1)) {
 				goto err;
 			}
 			break;
 		case SIGNATURE_ALGORITHMS:
-			if (decode_slice(&ext, &h->algorithms) || ((h->algorithms.e - h->algorithms.p) & 1)) {
+			if (decode_slice_16(&ext, &h->algorithms) || ((h->algorithms.e - h->algorithms.p) & 1)) {
 				goto err;
 			}
 			break;
@@ -422,7 +477,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 		}
 		case KEY_SHARE: {
 			qslice_t keys;
-			if (decode_slice(&ext, &keys)) {
+			if (decode_slice_16(&ext, &keys)) {
 				goto err;
 			}
 			while (keys.p < keys.e && h->key_num < QUIC_MAX_KEYSHARE) {
@@ -432,7 +487,7 @@ int decode_client_hello(qslice_t s, struct client_hello *h) {
 				uint16_t group = big_16(keys.p);
 				keys.p += 2;
 				qslice_t key;
-				if (decode_slice(&keys, &key)) {
+				if (decode_slice_16(&keys, &key)) {
 					goto err;
 				}
 				if (key.p == key.e || key.p[0] != EC_KEY_UNCOMPRESSED) {
@@ -491,7 +546,7 @@ int decode_server_hello(qslice_t s, struct server_hello *h) {
 	}
 
 	qslice_t extensions;
-	if (decode_slice(&s, &extensions)) {
+	if (decode_slice_16(&s, &extensions)) {
 		goto err;
 	}
 
@@ -511,7 +566,7 @@ int decode_server_hello(qslice_t s, struct server_hello *h) {
 				uint16_t curve = big_16(ext.p);
 				ext.p += 2;
 				qslice_t key;
-				if (decode_slice(&ext, &key)) {
+				if (decode_slice_16(&ext, &key)) {
 					goto err;
 				}
 				if (key.p < key.e && key.p[0] == EC_KEY_UNCOMPRESSED) {
@@ -527,6 +582,56 @@ int decode_server_hello(qslice_t s, struct server_hello *h) {
 	return 0;
 err:
 	return -1;
+}
+
+int decode_certificates(qslice_t s, qcertificate_t *certs, size_t *num) {
+	if (s.p >= s.e) {
+		return -1;
+	}
+
+	// request context
+	uint8_t ctxsz = *(s.p++);
+	if (s.p > s.e) {
+		return -1;
+	}
+	s.p += ctxsz;
+
+	// cert list
+	qslice_t list;
+	if (decode_slice_24(&s, &list)) {
+		return -1;
+	}
+
+	size_t i = 0;
+	while (list.p < list.e && i < *num) {
+		qslice_t cert, ext;
+		if (decode_slice_16(&list, &cert) || decode_slice_16(&list, &ext)) {
+			return -1;
+		}
+		certs[i].x509.data = cert.p;
+		certs[i].x509.data_len = (size_t)(cert.e - cert.p);
+	}
+
+	*num = i;
+	return 0;
+}
+
+int decode_verify(qslice_t s, uint16_t *palgo, qslice_t *psig) {
+	if (s.p + 2 > s.e) {
+		return -1;
+	}
+
+	// algorithm
+	*palgo = big_16(s.p);
+	s.p += 2;
+
+	// signature
+	return decode_slice_16(&s, psig);
+}
+
+int decode_finished(qslice_t s, qslice_t *verify) {
+	*verify = s;
+	return 0;
 }
 
 

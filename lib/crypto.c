@@ -2,6 +2,11 @@
 #include "packets.h"
 #include <cutils/endian.h>
 
+static inline size_t
+br_digest_size(const br_hash_class *digest_class) {
+	return (size_t)(digest_class->desc >> BR_HASHDESC_OUT_OFF)
+		& BR_HASHDESC_OUT_MASK;
+}
 
 void hkdf_extract(const br_hash_class *digest, const void *salt, size_t saltsz, const void *ikm, size_t ikmsz, void *out) {
 	br_hmac_key_context kc;
@@ -12,11 +17,11 @@ void hkdf_extract(const br_hash_class *digest, const void *salt, size_t saltsz, 
 	br_hmac_out(&hmac, out);
 }
 
-void hkdf_expand(const br_hash_class *digest, const void *secret, const void *info, size_t infosz, void *out, size_t outsz) {
+void hkdf_expand(const br_hash_class *digest, size_t hash_len, const void *secret, const void *info, size_t infosz, void *out, size_t outsz) {
 	br_hmac_key_context kc;
 	br_hmac_context hmac;
-	assert(outsz <= digest_size(digest));
-	br_hmac_key_init(&kc, digest, secret, digest_size(digest));
+	assert(outsz <= hash_len);
+	br_hmac_key_init(&kc, digest, secret, hash_len);
 	br_hmac_init(&hmac, &kc, outsz);
 	br_hmac_update(&hmac, info, infosz);
 	uint8_t chunk_num = 1;
@@ -24,7 +29,7 @@ void hkdf_expand(const br_hash_class *digest, const void *secret, const void *in
 	br_hmac_out(&hmac, out);
 }
 
-void hkdf_expand_label(const br_hash_class *digest, const void *secret, const char *label, const void *context, size_t ctxsz, void *out, size_t outsz) {
+void hkdf_expand_label(const br_hash_class *digest, size_t hash_len, const void *secret, const char *label, const void *context, size_t ctxsz, void *out, size_t outsz) {
 	uint8_t hk_label[2 + 1 + 32 + 1 + 32], *p = hk_label;
 	size_t labelsz = strlen(label);
 	assert(labelsz <= 32);
@@ -35,7 +40,7 @@ void hkdf_expand_label(const br_hash_class *digest, const void *secret, const ch
 	p = append(p, label, labelsz);
 	*(p++) = (uint8_t)ctxsz;
 	p = append(p, context, ctxsz);
-	hkdf_expand(digest, secret, hk_label, p - hk_label, out, outsz);
+	hkdf_expand(digest, hash_len, secret, hk_label, p - hk_label, out, outsz);
 }
 
 static void init_aes_ctr(br_aes_gen_ctr_keys *a, const void *key, size_t keysz) {
@@ -46,10 +51,10 @@ static void init_aes_ctr(br_aes_gen_ctr_keys *a, const void *key, size_t keysz) 
 	}
 }
 
-void init_keyset(qkeyset_t *k) {
-	hkdf_expand_label(k->digest, k->secret, "quic key", NULL, 0, k->data_key, k->key_len);
-	hkdf_expand_label(k->digest, k->secret, "quic pn", NULL, 0, k->pn_key, k->key_len);
-	hkdf_expand_label(k->digest, k->secret, "quic iv", NULL, 0, k->data_iv, sizeof(k->data_iv));
+static void generate_keys(qkeyset_t *k) {
+	hkdf_expand_label(k->digest, k->hash_len, k->secret, "quic key", NULL, 0, k->data_key, k->key_len);
+	hkdf_expand_label(k->digest, k->hash_len, k->secret, "quic pn", NULL, 0, k->pn_key, k->key_len);
+	hkdf_expand_label(k->digest, k->hash_len, k->secret, "quic iv", NULL, 0, k->data_iv, sizeof(k->data_iv));
 	br_ghash gh = br_ghash_pclmul_get();
 	if (!gh) {
 		gh = &br_ghash_ctmul;
@@ -76,14 +81,16 @@ static const uint8_t initial_salt[] = {
 };
 
 void generate_initial_secrets(const qconnection_id_t *id, qkeyset_t *client, qkeyset_t *server) {
+	uint8_t hash_len = 32;
 	uint8_t initial_secret[br_sha256_SIZE];
 	hkdf_extract(&br_sha256_vtable, initial_salt, sizeof(initial_salt), id->id, id->len, initial_secret);
-	hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic client in", NULL, 0, client->secret, br_sha256_SIZE);
-	hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic server in", NULL, 0, server->secret, br_sha256_SIZE);
-	server->key_len = client->key_len = 16;
+	hkdf_expand_label(&br_sha256_vtable, hash_len, initial_secret, "quic client in", NULL, 0, client->secret, br_sha256_SIZE);
+	hkdf_expand_label(&br_sha256_vtable, hash_len, initial_secret, "quic server in", NULL, 0, server->secret, br_sha256_SIZE);
 	server->digest = client->digest = &br_sha256_vtable;
-	init_keyset(client);
-	init_keyset(server);
+	server->hash_len = client->hash_len = hash_len;
+	server->key_len = client->key_len = 16;
+	generate_keys(client);
+	generate_keys(server);
 }
 
 int init_message_hash(br_hash_compat_context *h, uint16_t cipher) {
@@ -96,7 +103,20 @@ int init_message_hash(br_hash_compat_context *h, uint16_t cipher) {
 	}
 }
 
-int generate_handshake_secrets(const br_hash_class *const *msgs, br_ec_public_key *pk, br_ec_private_key *sk, uint16_t cipher, qkeyset_t *client, qkeyset_t *server, uint8_t *master_secret) {
+static uint8_t digest_size(const br_hash_class *digest) {
+	return (uint8_t)(digest->desc >> BR_HASHDESC_OUT_OFF) & BR_HASHDESC_OUT_MASK;
+}
+
+static uint8_t key_length(uint16_t cipher) {
+	switch (cipher) {
+	case TLS_AES_128_GCM_SHA256:
+		return 16;
+	default:
+		return 0;
+	}
+}
+
+int generate_handshake_secrets(br_hash_compat_context *msgs, qslice_t client_hello, qslice_t server_hello, br_ec_public_key *pk, br_ec_private_key *sk, uint16_t cipher, qkeyset_t *client, qkeyset_t *server, uint8_t *master_secret) {
 	const br_ec_impl *ec = br_ec_get_default();
 	if (!ec->mul(pk->q, pk->qlen, sk->x, sk->xlen, pk->curve)) {
 		return -1;
@@ -106,35 +126,60 @@ int generate_handshake_secrets(const br_hash_class *const *msgs, br_ec_public_ke
 		return -1;
 	}
 
-	const br_hash_class *digest = *msgs;
-	size_t key_len;
 	switch (cipher) {
 	case TLS_AES_128_GCM_SHA256:
-		key_len = 16;
-		digest = &br_sha256_vtable;
+		br_sha256_init(&msgs->sha256);
 		break;
 	default:
 		return -1;
 	}
+
+	const br_hash_class *digest = msgs->vtable;
+	uint8_t hash_len = digest_size(digest);
+	uint8_t key_len = key_length(cipher);
+
+	client->hash_len = server->hash_len = hash_len;
 	client->key_len = server->key_len = key_len;
 	client->digest = server->digest = digest;
 
-	uint8_t early_secret[QUIC_MAX_SECRET_SIZE], early_derived[QUIC_MAX_SECRET_SIZE];
+	uint8_t early_secret[QUIC_MAX_SECRET_SIZE];
+	uint8_t early_derived[QUIC_MAX_SECRET_SIZE];
 	hkdf_extract(digest, NULL, 0, NULL, 0, early_secret);
-	hkdf_expand_label(digest, early_secret, "quic derived", NULL, 0, early_derived, digest_size(digest));
+	hkdf_expand_label(digest, hash_len, early_secret, "quic derived", NULL, 0, early_derived, hash_len);
 
-	uint8_t msg_hash[QUIC_MAX_SECRET_SIZE];
-	(*msgs)->out(msgs, msg_hash);
+	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	msgs->vtable->update(&msgs->vtable, client_hello.p, client_hello.e - client_hello.p);
+	msgs->vtable->update(&msgs->vtable, server_hello.p, server_hello.e - server_hello.p);
+	msgs->vtable->out(&msgs->vtable, msg_hash);
 
 	uint8_t hs_secret[QUIC_MAX_SECRET_SIZE];
-	hkdf_extract(digest, early_derived, digest_size(digest), pk->q + xoff, xlen, hs_secret);
-	hkdf_expand_label(digest, hs_secret, "quic c hs traffic", msg_hash, digest_size(digest), client->secret, digest_size(digest));
-	hkdf_expand_label(digest, hs_secret, "quic s hs traffic", msg_hash, digest_size(digest), server->secret, digest_size(digest));
-	hkdf_expand_label(digest, hs_secret, "quic derived", NULL, 0, master_secret, digest_size(digest));
+	hkdf_extract(digest, early_derived, hash_len, pk->q + xoff, xlen, hs_secret);
+	hkdf_expand_label(digest, hash_len, hs_secret, "quic c hs traffic", msg_hash, hash_len, client->secret, hash_len);
+	hkdf_expand_label(digest, hash_len, hs_secret, "quic s hs traffic", msg_hash, hash_len, server->secret, hash_len);
 
-	init_keyset(client);
-	init_keyset(server);
+	uint8_t derived[QUIC_MAX_SECRET_SIZE];
+	hkdf_expand_label(digest, hash_len, hs_secret, "quic derived", NULL, 0, derived, hash_len);
+	hkdf_extract(digest, derived, hash_len, NULL, 0, master_secret);
+
+	generate_keys(client);
+	generate_keys(server);
 	return 0;
+}
+
+void generate_protected_secrets(const br_hash_class *const *msgs, const uint8_t *master_secret, uint16_t cipher, qkeyset_t *client, qkeyset_t *server) {
+	const br_hash_class *digest = *msgs;
+	uint8_t hash_len = digest_size(digest);
+	client->key_len = server->key_len = key_length(cipher);
+	client->hash_len = server->hash_len = hash_len;
+
+	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	(*msgs)->out(msgs, msg_hash);
+
+	hkdf_expand_label(digest, hash_len, master_secret, "quic c ap traffic", msg_hash, hash_len, client->secret, hash_len);
+	hkdf_expand_label(digest, hash_len, master_secret, "quic s ap traffic", msg_hash, hash_len, server->secret, hash_len);
+
+	generate_keys(client);
+	generate_keys(server);
 }
 
 #define PKT_NUM_KEYSZ 16
@@ -198,4 +243,59 @@ int64_t decrypt_packet(qkeyset_t *k, uint8_t *pkt_begin, uint8_t *packet_number,
 	pkt_data->e = tag;
 	return pktnum;
 }
+
+static const char server_context[] = "TLS 1.3, server CertificateVerify";
+static const char client_context[] = "TLS 1.3, client CertificateVerify";
+
+size_t generate_cert_verify(bool is_client, const br_hash_class *const *msgs, uint8_t *out) {
+	assert(64 + sizeof(server_context) + digest_size(*msgs) <= QUIC_MAX_CERT_VERIFY_SIZE);
+	uint8_t *start = out;
+	memset(out, 0x20, 64);
+	out += 64;
+	if (is_client) {
+		out = append(out, client_context, sizeof(client_context));
+	} else {
+		out = append(out, server_context, sizeof(server_context));
+	}
+	(*msgs)->out(msgs, out);
+	out += digest_size(*msgs);
+	return out - start;
+}
+
+size_t generate_finish_verify(qkeyset_t *k, const br_hash_class *const *msgs, uint8_t *out) {
+	uint8_t finished_key[QUIC_MAX_HASH_SIZE];
+	hkdf_expand_label(k->digest, k->hash_len, k->secret, "quic finished", NULL, 0, finished_key, k->hash_len);
+	uint8_t msghash[QUIC_MAX_HASH_SIZE];
+	(*msgs)->out(msgs, msghash);
+	br_hmac_key_context kc;
+	br_hmac_context ctx;
+	br_hmac_key_init(&kc, k->digest, finished_key, k->hash_len);
+	br_hmac_init(&ctx, &kc, 0);
+	br_hmac_update(&ctx, msghash, k->hash_len);
+	br_hmac_out(&ctx, out);
+	return k->hash_len;
+}
+
+int verify_rsa_pkcs1(const br_hash_class *digest, const uint8_t *hash_oid, br_x509_pkey *pk, qslice_t sig, const uint8_t *verify, size_t vlen) {
+	if (pk->key_type != BR_KEYTYPE_RSA) {
+		return -1;
+	}
+
+	br_rsa_pkcs1_vrfy fn = br_rsa_i62_pkcs1_vrfy_get();
+	if (!fn) {
+		fn = &br_rsa_i31_pkcs1_vrfy;
+	}
+
+	uint8_t hash1[QUIC_MAX_HASH_SIZE], hash2[QUIC_MAX_HASH_SIZE];
+	if (!fn(sig.p, sig.e - sig.p, hash_oid, digest_size(digest), &pk->key.rsa, hash1)) {
+		return -1;
+	}
+	br_hash_compat_context h;
+	digest->init(&h.vtable);
+	digest->update(&h.vtable, verify, vlen);
+	digest->out(&h.vtable, hash2);
+	return memcmp(hash1, hash2, digest_size(digest));
+}
+
+
 
