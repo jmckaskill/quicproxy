@@ -1,4 +1,5 @@
 #include "lib/quic.h"
+#include "lib/pem.h"
 #include <cutils/flag.h>
 #include <cutils/socket.h>
 #include <cutils/timer.h>
@@ -11,8 +12,9 @@ static uint32_t get_tick() {
 
 struct server_data {
 	const char *server_name;
+	size_t num_certs;
 	qcertificate_t *certs;
-	br_skey_decoder_context *skey;
+	br_skey_decoder_context skey;
 	int fd;
 };
 
@@ -34,12 +36,8 @@ static int do_send(void *user, const void *buf, size_t len, const struct sockadd
 
 static const qcertificate_t *get_next_cert(void *user, const qcertificate_t *c) {
 	struct server_data *s = user;
-	if (!c) {
-		c = s->certs;
-	} else {
-		c++;
-	}
-	return c->x509.data ? c : NULL;
+	c = c ? (c + 1) : s->certs;
+	return (c < s->certs + s->num_certs) ? c : NULL;
 }
 
 static int do_sign(void *user, uint16_t algo, const uint8_t *data, size_t len, uint8_t *out) {
@@ -48,7 +46,7 @@ static int do_sign(void *user, uint16_t algo, const uint8_t *data, size_t len, u
 	if (!fn) {
 		fn = &br_rsa_i31_pkcs1_sign;
 	}
-	const br_rsa_private_key *sk = br_skey_decoder_get_rsa(s->skey);
+	const br_rsa_private_key *sk = br_skey_decoder_get_rsa(&s->skey);
 	if (!sk || (sk->n_bitlen + 7) / 8 > QUIC_MAX_SIG_SIZE) {
 		return -1;
 	}
@@ -61,70 +59,6 @@ static int do_sign(void *user, uint16_t algo, const uint8_t *data, size_t len, u
 		return -1;
 	}
 	return (sk->n_bitlen + 7) / 8;
-}
-
-static int pem_to_der(br_pem_decoder_context *pem, str_t *der, mapped_file *mf, size_t *poff) {
-	*poff += br_pem_decoder_push(pem, mf->data + *poff, mf->size - *poff);
-
-	if (br_pem_decoder_event(pem) != BR_PEM_BEGIN_OBJ) {
-		return -1;
-	}
-
-	br_pem_decoder_setdest(pem, (void(*)(void*, const void*, size_t))&str_add2, der);
-	*poff += br_pem_decoder_push(pem, mf->data + *poff, mf->size - *poff);
-	br_pem_decoder_setdest(pem, NULL, NULL);
-
-	return br_pem_decoder_event(pem) != BR_PEM_END_OBJ;
-}
-
-static int read_pem_certs(const char *path, qcertificate_t *certs) {
-	mapped_file mf;
-	if (map_file(&mf, path)) {
-		return -1;
-	}
-
-	size_t off = 0;
-	int num = 0;
-	br_pem_decoder_context pem;
-	br_pem_decoder_init(&pem);
-
-	while (off < mf.size && num < QUIC_MAX_CERTIFICATES) {
-		str_t der = STR_INIT;
-		if (pem_to_der(&pem, &der, &mf, &off)) {
-			str_destroy(&der);
-			num = -1;
-			goto end;
-		}
-		certs[num].x509.data = (unsigned char*)der.c_str;
-		certs[num].x509.data_len = der.len;
-		num++;
-	}
-
-end:
-	unmap_file(&mf);
-	return num;
-}
-
-static int read_pem_key(const char *path, br_skey_decoder_context *skey) {
-	br_skey_decoder_init(skey);
-
-	mapped_file mf;
-	if (map_file(&mf, path)) {
-		return -1;
-	}
-
-	int ret = -1;
-	size_t off = 0;
-	str_t der = STR_INIT;
-	br_pem_decoder_context pem;
-	br_pem_decoder_init(&pem);
-	if (!pem_to_der(&pem, &der, &mf, &off)) {
-		br_skey_decoder_push(skey, der.c_str, der.len);
-		ret = br_skey_decoder_last_error(skey);
-	}
-	str_destroy(&der);
-	unmap_file(&mf);
-	return ret;
 }
 
 static str_t keylog = STR_INIT;
@@ -142,6 +76,8 @@ int main(int argc, const char *argv[]) {
 	const char *host = NULL;
 	str_t cert_file = STR_INIT;
 	str_t key_file = STR_INIT;
+	str_set(&key_file, "server.key");
+	str_set(&cert_file, "server.crt");
 	flag_int(&port, 0, "port", "NUM", "Port to bind");
 	flag_string(&host, 0, "host", "NAME", "Hostname to bind to");
 	flag_path(&cert_file, 0, "cert", "TLS certificates file - server cert must be first");
@@ -159,22 +95,32 @@ int main(int argc, const char *argv[]) {
 		FATAL(debug, "failed to init connection");
 	}
 
-	qcertificate_t certs[QUIC_MAX_CERTIFICATES+1];
-	int cert_num = read_pem_certs(cert_file.c_str, certs);
-	if (cert_num < 0) {
-		FATAL(debug, "failed to read TLS certificates from %s", cert_file.c_str);
-	}
-	certs[cert_num].x509.data = NULL;
-
-	br_skey_decoder_context skey;
-	if (read_pem_key(key_file.c_str, &skey)) {
-		FATAL(debug, "failed to read TLS key from %s", key_file.c_str);
-	}
-
 	struct server_data sd;
-	sd.certs = certs;
-	sd.skey = &skey;
 	sd.fd = fd;
+
+	{
+		mapped_file cf;
+		if (map_file(&cf, cert_file.c_str)) {
+			FATAL(debug, "failed to open TLS certificates file '%s'", cert_file.c_str);
+		}
+		sd.certs = read_pem_certs(cf.data, cf.size, &sd.num_certs);
+		if (!sd.num_certs) {
+			FATAL(debug, "failed to read TLS certificates from '%s'", cert_file.c_str);
+		}
+		unmap_file(&cf);
+	}
+
+	{
+		mapped_file kf;
+		if (map_file(&kf, key_file.c_str)) {
+			FATAL(debug, "failed to open TLS key file '%s'", key_file.c_str);
+		}
+		if (read_pem_key(&sd.skey, kf.data, kf.size)) {
+			FATAL(debug, "failed to read TLS key from '%s'", key_file.c_str);
+		}
+		unmap_file(&kf);
+	}
+
 
 	for (;;) {
 		struct sockaddr_storage ss;

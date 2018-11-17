@@ -117,20 +117,27 @@ static uint8_t key_length(uint16_t cipher) {
 }
 
 int generate_handshake_secrets(br_hash_compat_context *msgs, qslice_t client_hello, qslice_t server_hello, br_ec_public_key *pk, br_ec_private_key *sk, uint16_t cipher, qkeyset_t *client, qkeyset_t *server, uint8_t *master_secret) {
-	const br_ec_impl *ec = br_ec_get_default();
-	if (!ec->mul(pk->q, pk->qlen, sk->x, sk->xlen, pk->curve)) {
-		return -1;
-	}
-	size_t xlen, xoff = ec->xoff(pk->curve, &xlen);
-	if (xoff + xlen > pk->qlen) {
-		return -1;
-	}
 
 	switch (cipher) {
 	case TLS_AES_128_GCM_SHA256:
 		br_sha256_init(&msgs->sha256);
 		break;
 	default:
+		return -1;
+	}
+
+	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	msgs->vtable->update(&msgs->vtable, client_hello.p, client_hello.e - client_hello.p);
+	msgs->vtable->update(&msgs->vtable, server_hello.p, server_hello.e - server_hello.p);
+	msgs->vtable->out(&msgs->vtable, msg_hash);
+
+	// do the ecdhe multiply after the hash as this may modify one of the client or server hello buffers
+	const br_ec_impl *ec = br_ec_get_default();
+	if (!ec->mul(pk->q, pk->qlen, sk->x, sk->xlen, pk->curve)) {
+		return -1;
+	}
+	size_t xlen, xoff = ec->xoff(pk->curve, &xlen);
+	if (xoff + xlen > pk->qlen) {
 		return -1;
 	}
 
@@ -146,11 +153,6 @@ int generate_handshake_secrets(br_hash_compat_context *msgs, qslice_t client_hel
 	uint8_t early_derived[QUIC_MAX_SECRET_SIZE];
 	hkdf_extract(digest, NULL, 0, NULL, 0, early_secret);
 	hkdf_expand_label(digest, hash_len, early_secret, "quic derived", NULL, 0, early_derived, hash_len);
-
-	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
-	msgs->vtable->update(&msgs->vtable, client_hello.p, client_hello.e - client_hello.p);
-	msgs->vtable->update(&msgs->vtable, server_hello.p, server_hello.e - server_hello.p);
-	msgs->vtable->out(&msgs->vtable, msg_hash);
 
 	uint8_t hs_secret[QUIC_MAX_SECRET_SIZE];
 	hkdf_extract(digest, early_derived, hash_len, pk->q + xoff, xlen, hs_secret);
@@ -169,6 +171,7 @@ int generate_handshake_secrets(br_hash_compat_context *msgs, qslice_t client_hel
 void generate_protected_secrets(const br_hash_class *const *msgs, const uint8_t *master_secret, uint16_t cipher, qkeyset_t *client, qkeyset_t *server) {
 	const br_hash_class *digest = *msgs;
 	uint8_t hash_len = digest_size(digest);
+	client->digest = server->digest = digest;
 	client->key_len = server->key_len = key_length(cipher);
 	client->hash_len = server->hash_len = hash_len;
 

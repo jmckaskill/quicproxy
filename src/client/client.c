@@ -1,6 +1,6 @@
 #include "lib/quic.h"
+#include "lib/pem.h"
 #include "lib/bearssl_wrapper.h"
-#include "ssl-roots.h"
 #include <cutils/flag.h>
 #include <cutils/socket.h>
 #include <cutils/timer.h>
@@ -39,7 +39,11 @@ static int do_verify_chain(void *user, const qcertificate_t *chain, size_t len, 
 		(*x)->append(x, chain[i].x509.data, chain[i].x509.data_len);
 		(*x)->end_cert(x);
 	}
-	return (int)(*x)->end_chain(x);
+	if ((*x)->end_chain(x)) {
+		return -1;
+	} 
+	*pk = *(*x)->get_pkey(x, NULL);
+	return 0;
 }
 
 static void log_key(void *user, const char *line) {
@@ -52,21 +56,23 @@ static void log_key(void *user, const char *line) {
 }
 
 int main(int argc, const char *argv[]) {
+#ifdef WIN32
+	WSADATA wsa;
+	WSAStartup(MAKEWORD(2, 2), &wsa);
+	Sleep(1000);
+#endif
+
 	log_t *debug = &stderr_log;
 	struct client_data cc;
-	str_init(&cc.keylog);
+	cc.keylog = str_init0();
 
+	str_t ca_file = str_init("ca.crt");
 	const char *port = "8443";
 	cc.host = "localhost";
 	flag_string(&port, 0, "port", "NUM", "Port to connect to");
 	flag_string(&cc.host, 0, "host", "NAME", "Hostname to connect to");
 	flag_path(&cc.keylog, 0, "keylog", "TLS key log for wireshark decoding");
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
-
-#ifdef WIN32
-	WSADATA wsa;
-	WSAStartup(MAKEWORD(2, 2), &wsa);
-#endif
 	cc.fd = (int) socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 	struct sockaddr_in6 in6 = { 0 };
 	int family = in6.sin6_family = AF_INET6;
@@ -81,7 +87,19 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
-	br_x509_minimal_init_full(&cc.x509, TAs, TAs_NUM);
+	{
+		mapped_file caf;
+		if (map_file(&caf, ca_file.c_str)) {
+			FATAL(debug, "failed to open CA file '%s'", ca_file.c_str);
+		}
+		size_t num;
+		br_x509_trust_anchor *ta = read_trust_anchors(caf.data, caf.size, &num);
+		if (!num) {
+			FATAL(debug, "failed to read CAs from '%s'", ca_file.c_str);
+		}
+		br_x509_minimal_init_full(&cc.x509, ta, num);
+		unmap_file(&caf);
+	}
 
 	uint8_t pktbuf[4096];
 	br_prng_seeder seedfn = br_prng_seeder_system(NULL);

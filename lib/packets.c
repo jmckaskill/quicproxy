@@ -605,11 +605,12 @@ int decode_certificates(qslice_t s, qcertificate_t *certs, size_t *num) {
 	size_t i = 0;
 	while (list.p < list.e && i < *num) {
 		qslice_t cert, ext;
-		if (decode_slice_16(&list, &cert) || decode_slice_16(&list, &ext)) {
+		if (decode_slice_24(&list, &cert) || decode_slice_16(&list, &ext)) {
 			return -1;
 		}
 		certs[i].x509.data = cert.p;
 		certs[i].x509.data_len = (size_t)(cert.e - cert.p);
+		i++;
 	}
 
 	*num = i;
