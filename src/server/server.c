@@ -16,10 +16,16 @@ struct server_data {
 	int fd;
 };
 
+static log_t *debug;
 
 static int do_send(void *user, const void *buf, size_t len, const struct sockaddr *sa, size_t sasz, tick_t *sent) {
 	struct server_data *s = user;
+	struct sockaddr_string in;
+	print_sockaddr(&in, sa, sasz);
+	LOG(debug, "TX to %s:%s %d bytes", in.host.c_str, in.port.c_str, (int)len);
+
 	if (sendto(s->fd, buf, (int)len, 0, sa, (int)sasz) != (int)len) {
+		LOG(debug, "TX failed");
 		return -1;
 	}
 	*sent = get_tick();
@@ -131,7 +137,7 @@ static void log_key(void *user, const char *line) {
 }
 
 int main(int argc, const char *argv[]) {
-	log_t *debug = &stderr_log;
+	debug = &stderr_log;
 	int port = 8443;
 	const char *host = NULL;
 	str_t cert_file = STR_INIT;
