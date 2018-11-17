@@ -109,7 +109,7 @@ static void set_bits(qrx_stream_t *r, uint32_t value, size_t start, size_t end) 
 
 		// update the aligned middle - this may wrap around the circular buffer
 		if (cstart > cend) {
-			for (size_t c = cstart; c < (r->bufsz >> 32); c++) {
+			for (size_t c = cstart; c < (r->bufsz >> 5); c++) {
 				r->valid_buf[c] = value;
 			}
 			for (size_t c = 0; c < cend; c++) {

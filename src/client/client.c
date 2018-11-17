@@ -17,7 +17,7 @@ struct client_data {
 };
 
 static uint32_t get_tick() {
-	uint64_t ns = monotonic_nanoseconds();
+	uint64_t ns = monotonic_ns();
 	return (uint32_t)(ns / 1000);
 }
 
