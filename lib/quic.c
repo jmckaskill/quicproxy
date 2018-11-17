@@ -381,7 +381,11 @@ static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *p
 	// generate the handshake secrets
 	qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
 
-	qslice_t rx_hello = { c->rx_crypto_buf, c->rx_crypto_buf + c->rx_crypto.offset };
+	qslice_t rx_hello;
+	size_t sz;
+	rx_hello.p = qrx_recv(&c->rx_crypto, 1, &sz);
+	rx_hello.e = rx_hello.p + sz;
+
 	qslice_t tx_hello = { c->tx_crypto_buf, c->next_tx_crypto };
 	qslice_t ch = rx_hello;
 	qslice_t sh = tx_hello;
@@ -449,7 +453,7 @@ static int process_client_hello(qconnection_t *c, struct client_hello *ch) {
 	{
 		qpacket_buffer_t *pkts = &c->pkts[QC_INITIAL];
 		qtx_stream_t *tx = &pkts->tx_crypto;
-		qslice_t s = { c->tx_crypto_buf, tx->data + sizeof(c->tx_crypto_buf) };
+		qslice_t s = { c->tx_crypto_buf, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
 		tx->offset = tx->len;
 		tx->data = s.p;
 		tx->len = 0;
@@ -742,7 +746,9 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 						break;
 					}
 					}
-					qrx_consume(&c->rx_crypto, consume_size);
+					if (c->rx_level == level) {
+						qrx_consume(&c->rx_crypto, consume_size);
+					}
 				}
 				qrx_fold(&c->rx_crypto);
 			}
