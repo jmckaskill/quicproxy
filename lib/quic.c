@@ -341,7 +341,7 @@ int qc_connect(qconnection_t *c, int family, const char *host_name, const char *
 			ret = 0;
 		}
 	}
-	
+
 	return ret;
 }
 
@@ -379,7 +379,6 @@ static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *p
 	}
 
 	// generate the handshake secrets
-	qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
 	qpacket_buffer_t *pkts = &c->pkts[QC_HANDSHAKE];
 
 	qslice_t rx_hello = { c->rx_crypto_buf, c->rx_crypto_buf + c->rx_crypto.offset };
@@ -614,12 +613,13 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 }
 
 static bool next_tls_record(qconnection_t *c, uint8_t *ptype, qslice_t *data, size_t *consume_size) {
-	uint8_t *p;
-	if (qrx_recv(&c->rx_crypto, 4, &p) <= 0) {
+	uint8_t *p = qrx_recv(&c->rx_crypto, 4, NULL);
+	if (!p) {
 		return false;
 	}
 	uint32_t tls_len = big_24(p + 1);
-	if (qrx_recv(&c->rx_crypto, 4 + tls_len, &p) <= 0) {
+	p = qrx_recv(&c->rx_crypto, 4 + tls_len, NULL);
+	if (!p) {
 		return false;
 	}
 	*ptype = p[0];
@@ -637,8 +637,8 @@ static bool decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *
 	}
 	uint8_t *p = s->p;
 	s->p += len;
-	return (level == c->rx_level) 
-		? (qrx_append(&c->rx_crypto, false, off, s->p, (size_t)len) == QRX_HAVE_DATA)
+	return (level == c->rx_level)
+		? (qrx_append(&c->rx_crypto, false, off, p, (size_t)len) == QRX_HAVE_DATA)
 		: false;
 }
 
@@ -673,7 +673,7 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 				uint8_t type;
 				qslice_t data;
 				size_t consume_size;
-				while (next_tls_record(pkts, &type, &data, &consume_size)) {
+				while (next_tls_record(c, &type, &data, &consume_size)) {
 					switch (type) {
 					case CLIENT_HELLO: {
 						struct client_hello ch;

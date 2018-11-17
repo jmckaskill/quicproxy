@@ -3,10 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifdef _MSC_VER
-typedef ptrdiff_t ssize_t;
-#endif
-
 typedef struct qrx_stream qrx_stream_t;
 struct qrx_stream {
 	// opaque structure
@@ -27,16 +23,20 @@ struct qrx_stream {
 
 int qrx_init(qrx_stream_t *r, void *buf, size_t sz);
 
-#define QRX_EOF -1
-#define QRX_WAIT 0
+static inline bool qrx_have_finish(qrx_stream_t *r) {
+	return r->finish != UINT64_MAX;
+}
+
 // +ve = number of bytes in the buffer
-ssize_t qrx_recv(qrx_stream_t *r, size_t min, void **pdata);
+void *qrx_recv(qrx_stream_t *r, size_t min, size_t *psz);
 
 void qrx_consume(qrx_stream_t *r, size_t sz);
 
 // These are used by the quic transport library
 // append data, the stream may continue to use the provided buffer until the next call to fold
 // can return QRX_EOF, QRX_WAIT or QRX_HAVE_DATA
+#define QRX_ERROR -1
+#define QRX_WAIT 0
 #define QRX_HAVE_DATA 1
 int qrx_append(qrx_stream_t *r, bool fin, uint64_t offset, void *p, size_t sz);
 // fold the appended buffer into the local buffer

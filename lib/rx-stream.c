@@ -147,21 +147,21 @@ int qrx_append(qrx_stream_t *r, bool fin, uint64_t offset, void *voidp, size_t s
 	uint64_t end = offset + sz;
 	if (end <= r->offset) {
 		// old data
-		return 0;
+		return QRX_WAIT;
 	} else if (end > r->consumed + r->bufsz) {
 		// flow control error
-		return -1;
+		return QRX_ERROR;
 	} else if (end > r->finish) {
 		// data past the end
-		return -1;
+		return QRX_ERROR;
 	}
-	
+
 	if (fin) {
 		if (r->finish == UINT64_MAX) {
 			r->finish = end;
 		} else if (r->finish != end) {
 			// the stream end has shifted
-			return -1;
+			return QRX_ERROR;
 		}
 	}
 
@@ -176,11 +176,11 @@ int qrx_append(qrx_stream_t *r, bool fin, uint64_t offset, void *voidp, size_t s
 	if (offset == r->offset) {
 		r->tail_ptr = p;
 		r->tail_size = sz;
+		return QRX_HAVE_DATA;
 	} else {
 		copy_forward(r, offset, p, sz);
+		return QRX_WAIT;
 	}
-
-	return 0;
 }
 
 void qrx_fold(qrx_stream_t *r) {
@@ -191,15 +191,17 @@ void qrx_fold(qrx_stream_t *r) {
 	}
 }
 
-ssize_t qrx_recv(qrx_stream_t *r, size_t min, void **pdata) {
+void *qrx_recv(qrx_stream_t *r, size_t min, size_t *psz) {
 	if (r->consumed + min > r->finish) {
-		return QRX_EOF;
+		goto err;
 	}
 
 	if (r->offset == r->consumed && min <= r->tail_size) {
 		// use data direct from the tail
-		*pdata = r->tail_ptr;
-		return r->tail_size;
+		if (psz) {
+			*psz = r->tail_size;
+		}
+		return r->tail_ptr;
 	} else {
 		// use data from the buffer
 		uint64_t need = r->consumed + min;
@@ -208,7 +210,7 @@ ssize_t qrx_recv(qrx_stream_t *r, size_t min, void **pdata) {
 
 			if (!r->tail_size) {
 				// no tail available
-				return QRX_WAIT;
+				goto err;
 			}
 
 			size_t tocopy = need - r->offset;
@@ -222,14 +224,21 @@ ssize_t qrx_recv(qrx_stream_t *r, size_t min, void **pdata) {
 			if (need > r->offset) {
 				// even after copying in the tail and using out of order data
 				// we still don't have enough
-				return QRX_WAIT;
+				goto err;
 			}
 		}
 
 		size_t pos = (size_t)(r->consumed % r->bufsz);
-		*pdata = r->data_buf + pos;
-		return (ssize_t)(r->offset - r->consumed);
+		if (psz) {
+			*psz = (size_t)(r->offset - r->consumed);
+		}
+		return r->data_buf + pos;
 	}
+err:
+	if (psz) {
+		*psz = 0;
+	}
+	return NULL;
 }
 
 void qrx_consume(qrx_stream_t *r, size_t sz) {

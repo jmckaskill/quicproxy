@@ -16,6 +16,7 @@ build $obj/quic.lib: lib $
  $obj/quic/quic.o $
  $obj/quic/packets.o $
  $obj/quic/crypto.o $
+ $obj/quic/rx-stream.o $
 
 build $obj/quic/test_rx-stream.o: cc lib/rx-stream_test.c
 build $bin/test_rx-stream.exe: clink $
