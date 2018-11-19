@@ -5,21 +5,24 @@
 #include <cutils/char-array.h>
 #include <assert.h>
 
+enum qcrypto_level {
+	QC_INITIAL,
+	QC_HANDSHAKE,
+	QC_PROTECTED,
+};
+
+enum qhandshake_state {
+	QC_RUNNING,
+	QC_PROCESS_SERVER_HELLO,
+	QC_PROCESS_CERTIFICATE,
+	QC_PROCESS_VERIFY,
+	QC_PROCESS_FINISHED,
+};
 
 static const char prng_nonce[] = "quic-proxy prng nonce";
 
-
-static const uint8_t def_ciphers[] = { 0x13, 0x01 };
-static const uint8_t def_groups[] = { 0x00, 0x1D };
-static const uint8_t def_algorithms[] = { 0x04, 0x01 };
-
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
-
-static void change_rx_crypto_level(qconnection_t *c, enum qcrypto_level level) {
-	qrx_init(&c->rx_crypto, c->rx_crypto_buf, sizeof(c->rx_crypto_buf));
-	c->rx_level = level;
-}
 
 int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
 	memset(c, 0, sizeof(*c));
@@ -27,13 +30,6 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 	if (!seedfn || !seedfn(&c->rand.vtable)) {
 		return -1;
 	}
-	c->ciphers.p = (uint8_t*)def_ciphers;
-	c->ciphers.e = c->ciphers.p + sizeof(def_ciphers);
-	c->groups.p = (uint8_t*)def_groups;
-	c->groups.e = c->groups.p + sizeof(def_groups);
-	c->algorithms.p = (uint8_t*)def_algorithms;
-	c->algorithms.e = c->algorithms.p + sizeof(def_algorithms);
-	c->peer_addr = &c->peer_addrs[0];
 
 	uint8_t *p = (uint8_t*)ALIGN_UP(uintptr_t, (uintptr_t)pktbuf, 8);
 	uint8_t *e = (uint8_t*)ALIGN_DOWN(uintptr_t, (uintptr_t)pktbuf + bufsz, 8);
@@ -53,64 +49,17 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 	c->pkts[QC_HANDSHAKE].sent_len = QUIC_CRYPTO_PACKETS;
 	c->pkts[QC_PROTECTED].sent_len = pktnum - 2 * QUIC_CRYPTO_PACKETS;
 
-	c->pkts[QC_INITIAL].tx_crypto.id = -1;
-	c->pkts[QC_HANDSHAKE].tx_crypto.id = -1;
-	c->pkts[QC_PROTECTED].tx_crypto.id = -1;
-
-	change_rx_crypto_level(c, QC_INITIAL);
 	return 0;
 }
 
-void qc_on_accept(qconnection_t *c, const struct sockaddr *sa, size_t sasz) {
-	for (int i = 0; i < QUIC_MAX_ADDR; i++) {
-		if (!c->peer_addrs[i].len) {
-			memcpy(&c->peer_addrs[i].ss, sa, sasz);
-			c->peer_addrs[i].len = sasz;
-			break;
-		}
-	}
-}
-
-static int lookup_peer_name(qconnection_t *c, int family, const char *server_name, const char *svc_name) {
-	if (ca_set(&c->server_name, server_name)) {
-		return -1;
-	}
-
-	struct addrinfo hints, *result;
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = family;
-	hints.ai_socktype = SOCK_DGRAM;
-	hints.ai_flags = (family == AF_INET6 ? AI_V4MAPPED : 0);
-	if (getaddrinfo(server_name, svc_name, &hints, &result)) {
-		return -1;
-	}
-
-	for (struct addrinfo *rp = result; rp != NULL; rp = rp->ai_next) {
-		qc_on_accept(c, rp->ai_addr, rp->ai_addrlen);
-	}
-
-	freeaddrinfo(result);
-	return 0;
-}
-
-static void generate_id(const br_prng_class **prng, qconnection_id_t *id) {
-	id->len = DEFAULT_SERVER_ID_LEN;
-	(*prng)->generate(prng, id->id, DEFAULT_SERVER_ID_LEN);
+static void generate_id(const br_prng_class **prng, uint8_t *id) {
+	id[0] = DEFAULT_SERVER_ID_LEN;
+	(*prng)->generate(prng, id+1, DEFAULT_SERVER_ID_LEN);
 }
 
 static void generate_ids(qconnection_t *c) {
-	for (int i = 0; i < QUIC_MAX_IDS; i++) {
-		if (!c->local_ids[i].len) {
-			generate_id(&c->rand.vtable, &c->local_ids[i]);
-		}
-	}
-	if (!c->local_id) {
-		c->local_id = &c->local_ids[0];
-	}
-	if (!c->peer_id) {
-		generate_id(&c->rand.vtable, &c->peer_ids[0]);
-		c->peer_id = &c->peer_ids[0];
-	}
+	generate_id(&c->rand.vtable, &c->local_id);
+	generate_id(&c->rand.vtable, &c->peer_id);
 }
 
 static void receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
@@ -137,31 +86,112 @@ static void receive_packet(qpacket_buffer_t *s, uint64_t pktnum) {
 	s->received |= UINT64_C(1) << (pktnum & 63);
 }
 
-static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcrypto_level level, qtx_stream_t *tx, uint64_t from, uint64_t to, bool include_padding) {
-	static uint8_t headers[QC_NUM_LEVELS] = {
+static int encode_ack_frame(qconnection_t *c, qslice_t *s, qpacket_buffer_t *pkts) {
+	size_t ack_size = 1 + 8 + 1 + 1 + 1 + 2 * 16;
+	if (s->p + ack_size > s->e) {
+		return -1;
+	}
+
+	*(s->p++) = ACK;
+
+	// largest acknowledged
+	s->p = encode_varint(s->p, pkts->rx_next - 1);
+
+	// ack delay - TODO
+	*(s->p++) = 0;
+
+	// block count - fill out later
+	uint8_t *pblock_count = s->p++;
+	size_t num_blocks = 0;
+	size_t num_packets = 0;
+
+	// rotate around such that the latest packet is in the top bit
+	size_t shift = (size_t)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
+	uint64_t rx = (pkts->received << shift) | (pkts->received >> (64 - shift));
+
+	// and shift the latest packet out
+	rx <<= 1;
+
+	// find the first block
+	uint8_t first_block = 0;
+	while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
+		first_block++;
+		num_packets++;
+		rx <<= 1;
+	}
+	*(s->p++) = first_block;
+
+	while (rx != 0 && num_blocks < 16 && num_packets < 63) {
+		// find the gap
+		uint8_t gap = 0;
+		while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) == 0) {
+			gap++;
+			num_packets++;
+			rx <<= 1;
+		}
+
+		// find the block
+		uint8_t block = 0;
+		while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
+			block++;
+			num_packets++;
+			rx <<= 1;
+		}
+
+		*(s->p++) = gap;
+		*(s->p++) = block;
+		num_blocks++;
+	}
+
+	*pblock_count = (uint8_t)num_blocks;
+	return 0;
+}
+
+static int start_long_packet(qconnection_t *c, enum qcrypto_level level, qslice_t s, qslice_t *data) {
+
+	size_t hsz = 1;
+	hsz += 4; // version
+	hsz += 1 + c->peer_id[0] + c->local_id[0];
+	if (level == QC_INITIAL) {
+		hsz++; // token
+	}
+	hsz += 2; // length;
+	hsz += packet_number_length(c->pkts[level].tx_next);
+
+	size_t fsz = QUIC_TAG_SIZE;
+
+	data->p = s.p + hsz;
+	data->e = s.e - fsz;
+	
+	return (data->p < data->e) ? 0 : -1;
+}
+
+static qtx_packet_t *finish_long_packet(qconnection_t *c, enum qcrypto_level level, qslice_t *s, qslice_t *data, size_t minsz) {
+	static const uint8_t headers[] = {
 		INITIAL_PACKET,
 		HANDSHAKE_PACKET,
 		PROTECTED_PACKET,
 	};
 
-	size_t hdr_size = 1 + 4 + 1 + c->peer_id->len + c->local_id->len + 1 + 2 + 4;
-	size_t ack_size = 1 + 8 + 1 + 1 + 1 + 2 * 16;
-	size_t frame_size = 1 + 8 + 8 + 1;
-	if (s->p + hdr_size + ack_size + frame_size + QUIC_TAG_SIZE > s->e) {
-		return NULL;
+	qpacket_buffer_t *pkts = &c->pkts[level];
+	uint8_t *pkt_begin = s->p;
+
+	// padding
+	size_t pkt_sz = (size_t)(data->p - pkt_begin) + QUIC_TAG_SIZE;
+	if (pkt_sz < minsz) {
+		size_t pad = minsz - pkt_sz;
+		memset(data->p, PADDING, pad);
+		data->p += pad;;
 	}
 
-	qpacket_buffer_t *pkts = &c->pkts[level];
-
 	// header
-	uint8_t *pkt_begin = s->p;
 	*(s->p++) = headers[level];
 	s->p = write_big_32(s->p, QUIC_VERSION);
 
 	// connection IDs
-	*(s->p++) = (encode_id_len(c->peer_id->len) << 4) | encode_id_len(c->local_id->len);
-	s->p = append(s->p, c->peer_id->id, c->peer_id->len);
-	s->p = append(s->p, c->local_id->id, c->local_id->len);
+	*(s->p++) = (encode_id_len(c->peer_id[0]) << 4) | encode_id_len(c->local_id[0]);
+	s->p = append(s->p, c->peer_id + 1, c->peer_id[0]);
+	s->p = append(s->p, c->local_id + 1, c->local_id[0]);
 
 	// token
 	if (level == QC_INITIAL) {
@@ -169,429 +199,348 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, enum qcry
 	}
 
 	// length
-	s->p += 2; // fill out later
+	size_t data_sz = (size_t)(data->p + QUIC_TAG_SIZE - s->p);
+	s->p = write_big_16(s->p, (uint16_t)data_sz);
 
 	// packet number
 	uint8_t *packet_number = s->p;
 	s->p = encode_packet_number(s->p, pkts->tx_next);
 	uint8_t *enc_begin = s->p;
 
-	if (pkts->rx_next) {
-		*(s->p++) = ACK;
+	// tag
+	uint8_t *tag = data->p;
+	s->p = data->p + QUIC_TAG_SIZE;
 
-		// largest acknowledged
-		s->p = encode_varint(s->p, pkts->rx_next - 1);
+	const qcipher_class **cipher = &pkts->tkey.u.vtable;
+	(*cipher)->encrypt(cipher, pkts->tx_next, pkts->tkey.data_iv, pkt_begin, enc_begin, tag);
+	(*cipher)->protect(cipher, packet_number, 2, data_sz);
 
-		// ack delay - TODO
-		*(s->p++) = 0;
+	return &pkts->sent[(pkts->tx_next++) % pkts->sent_len];
+}
 
-		// block count - fill out later
-		uint8_t *pblock_count = s->p++;
-		size_t num_blocks = 0;
-		size_t num_packets = 0;
-
-		// rotate around such that the latest packet is in the top bit
-		size_t shift = (size_t)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
-		uint64_t rx = (pkts->received << shift) | (pkts->received >> (64 - shift));
-
-		// and shift the latest packet out
-		rx <<= 1;
-
-		// find the first block
-		uint8_t first_block = 0;
-		while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
-			first_block++;
-			num_packets++;
-			rx <<= 1;
-		}
-		*(s->p++) = first_block;
-
-		while (rx != 0 && num_blocks < 16 && num_packets < 63) {
-			// find the gap
-			uint8_t gap = 0;
-			while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) == 0) {
-				gap++;
-				num_packets++;
-				rx <<= 1;
-			}
-
-			// find the block
-			uint8_t block = 0;
-			while (num_packets < 63 && (rx & UINT64_C(0x8000000000000000)) != 0) {
-				block++;
-				num_packets++;
-				rx <<= 1;
-			}
-
-			*(s->p++) = gap;
-			*(s->p++) = block;
-			num_blocks++;
-		}
-
-		*pblock_count = (uint8_t)num_blocks;
+static qtx_packet_t *encode_crypto_packet(qconnection_t *c, qslice_t *s, enum qcrypto_level level, uint32_t off, const void *data, size_t sz, size_t minsz) {
+	qslice_t p;
+	if (start_long_packet(c, level, *s, &p)) {
+		return -1;
+	}
+	qpacket_buffer_t *pkts = &c->pkts[level];
+	if (pkts->rx_next && encode_ack_frame(c, &p, pkts)) {
+		return -1;
 	}
 
-	if (tx && to > from) {
-		uint64_t max = from + (s->e - (s->p + 1 + 8 + 8 + QUIC_TAG_SIZE));
-		if (to > max) {
-			to = max;
-		}
-		size_t len = (size_t)(to - from);
-		*(s->p++) = (tx->id < 0) ? CRYPTO : (STREAM | STREAM_OFF_FLAG | STREAM_LEN_FLAG);
-		s->p = encode_varint(s->p, from);
-		s->p = encode_varint(s->p, len);
-		s->p = append(s->p, tx->data + (size_t)(from - tx->offset), len);
+	size_t chdr = 1 + 4 + 4;
+	if (p.p + chdr > p.e) {
+		return -1;
 	}
+	size_t tocopy = (size_t)(p.e - p.p) - chdr;
+	*(p.p++) = CRYPTO;
+	p.p = encode_varint(p.p, off);
+	p.p = encode_varint(p.p, tocopy);
+	p.p = append(p.p, data, tocopy);
 
-	if (true) {//if (include_padding) {
-		size_t pad = s->e - (s->p + QUIC_TAG_SIZE);
-		memset(s->p, PADDING, pad);
-		s->p += pad;
-	}
-
-	s->p += QUIC_TAG_SIZE;
-	write_big_16(packet_number - 2, VARINT_16 | (uint16_t)(s->p - packet_number));
-	encrypt_packet(&pkts->tkey, pkts->tx_next, pkt_begin, packet_number, enc_begin, s->p);
-
-	// register packet in tx buffer
-	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
-	pkt->from = from;
-	pkt->to = to;
-	pkt->stream = tx;
-	pkt->sent = 0;
-	pkts->tx_next++;
+	qtx_packet_t *pkt = finish_long_packet(c, level, s, &p, minsz);
+	pkt->stream = NULL;
+	pkt->from = off;
+	pkt->to = off + tocopy;
 	return pkt;
 }
 
-static int send_long_packets(qconnection_t *c, enum qcrypto_level level, qtx_stream_t *tx, uint64_t from, uint64_t to) {
-	while (from < to) {
-		uint8_t buf[DEFAULT_PACKET_SIZE];
-		qslice_t s = { buf, buf + sizeof(buf) };
-		qtx_packet_t *pkt = encode_long_packet(c, &s, level, tx, from, to, false);
-		if (!pkt || c->send(c->user, buf, s.p - buf, (struct sockaddr*)&c->peer_addr->ss, c->peer_addr->len, &pkt->sent)) {
-			return -1;
-		}
-		from = pkt->to;
-	}
-	return 0;
-}
 
-int qc_connect(qconnection_t *c, int family, const char *host_name, const char *svc_name) {
-	qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
-	qtx_stream_t *tx = &init->tx_crypto;
-
-	c->hs_state = QC_WAIT_FOR_SERVER_HELLO;
+int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qcrypto_params_t *params) {
+	c->params = params;
+	c->server_name = server_name;
+	c->validator = validator;
 	c->is_client = true;
-	if (lookup_peer_name(c, family, host_name, svc_name)) {
-		return -1;
-	}
-
-	// generate the initial keys
+	c->crypto_state = QC_PROCESS_SERVER_HELLO;
+	c->rx_crypto.state = 0;
+	c->rx_crypto_off = 0;
+	c->rand.vtable->generate(&c->rand.vtable, c->client_random, sizeof(c->client_random));
 	generate_ids(c);
+
+	qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
 	generate_initial_secrets(c->peer_id, &init->tkey, &init->rkey);
 
-	// setup the client hello
-	struct client_hello ch;
-	ch.server_name.p = (uint8_t*)c->server_name.c_str;
-	ch.server_name.e = ch.server_name.p + c->server_name.len;
-	ch.ciphers = c->ciphers;
-	ch.groups = c->groups;
-	ch.algorithms = c->algorithms;
-
-	c->rand.vtable->generate(&c->rand.vtable, c->client_random, sizeof(c->client_random));
-	ch.random = c->client_random;
-
-	// generate a public/private key for the high priority groups
+	// generate a private key for the high priority groups
 	const br_ec_impl *ec = br_ec_get_default();
 	uint8_t pub_keys[QUIC_MAX_KEYSHARE][BR_EC_KBUF_PUB_MAX_SIZE];
-	c->key_num = (c->ciphers.e - c->ciphers.p) / 2;
-	if (c->key_num > QUIC_MAX_KEYSHARE) {
-		c->key_num = QUIC_MAX_KEYSHARE;
-	}
-	ch.key_num = c->key_num;
-	for (size_t i = 0; i < ch.key_num; i++) {
-		br_ec_keygen(&c->rand.vtable, ec, &c->priv_key[i], c->priv_key_data[i], big_16(ch.groups.p + (i * 2)));
-		br_ec_compute_pub(ec, &ch.keys[i], pub_keys[i], &c->priv_key[i]);
+	c->key_num = MIN(QUIC_MAX_KEYSHARE, strlen(params->groups));
+	for (size_t i = 0; i < c->key_num; i++) {
+		if (!br_ec_keygen(&c->rand.vtable, ec, &c->keys[i], c->key_data[i], params->groups[i])) {
+			return -1;
+		}
 	}
 
 	// encode the TLS record
-	qslice_t s = { c->tx_crypto_buf, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
-	tx->data = s.p;
-	tx->offset = 0;
-	tx->len = 0;
-	if (s.p > s.e || encode_client_hello(&s, &ch)) {
+	uint8_t tlsbuf[1024];
+	qslice_t tls = { tlsbuf, tlsbuf + sizeof(tlsbuf) };
+	if (encode_client_hello(c, &tls)) {
 		return -1;
 	}
-	c->next_tx_crypto = s.p;
-	tx->len = s.p - tx->data;
+
 
 	// encode the UDP packet
-	uint8_t buf[DEFAULT_PACKET_SIZE];
-	qslice_t udp = { buf, buf + sizeof(buf) };
-	qtx_packet_t *pkt = encode_long_packet(c, &udp, QC_INITIAL, tx, 0, tx->len, true);
-	if (pkt == NULL || pkt->to != tx->len) {
+	uint8_t udpbuf[DEFAULT_PACKET_SIZE];
+	qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
+	qtx_packet_t *pkt = encode_crypto_packet(c, &udp, QC_INITIAL, 0, tlsbuf, (size_t)(tls.p - tlsbuf), 1200);
+	if (pkt == NULL) {
 		return -1;
 	}
 
 	// send it
-	int ret = -1;
-	for (int i = 0; i < QUIC_MAX_ADDR; i++) {
-		qconnection_addr_t *a = &c->peer_addrs[i];
-		if (a->len && !c->send(c->user, buf, udp.p - buf, (struct sockaddr*)&a->ss, a->len, &pkt->sent)) {
-			ret = 0;
-		}
-	}
-
-	return ret;
+	return c->send(c->send_user, udpbuf, (size_t)(udp.p - udpbuf), &pkt->sent);
 }
 
-static br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
-	for (size_t i = 0; i < c->key_num; i++) {
-		if (c->priv_key[i].curve == curve) {
-			return &c->priv_key[i];
+static void log_key(qconnection_t *c, const char *label, const uint8_t *secret, size_t len) {
+	static const char hex[] = "0123456789abcdef";
+	char sec_hex[2 * QUIC_MAX_HASH_SIZE + 1];
+	char rand_hex[2 * QUIC_RANDOM_SIZE + 1];
+	for (size_t i = 0; i < QUIC_RANDOM_SIZE; i++) {
+		rand_hex[2 * i] = hex[c->client_random[i] >> 4];
+		rand_hex[2 * i + 1] = hex[c->client_random[i] & 15];
+	}
+	rand_hex[2 * QUIC_RANDOM_SIZE] = 0;
+	for (size_t i = 0; i < len; i++) {
+		sec_hex[2 * i] = hex[secret[i] >> 4];
+		sec_hex[2 * i + 1] = hex[secret[i] & 15];
+	}
+	sec_hex[2 * len] = 0;
+	LOG(c->keylog, "%s %s %s\n", label, sec_hex, rand_hex);
+}
+
+static const qsignature_class *get_signature(const qsigner_class **signer, uint64_t client_mask) {
+	for (size_t i = 0;; i++) {
+		const qsignature_class *c = (*signer)->get_type(signer, i);
+		if (!c) {
+			break;
+		}
+		if ((UINT64_C(1) << c->curve) & client_mask) {
+			return c;
 		}
 	}
 	return NULL;
 }
 
-#define MAX_LABEL_SIZE sizeof("QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET")
-static void log_key(qconnection_t *c, const char *label, const uint8_t *secret, size_t len) {
-	char line[MAX_LABEL_SIZE + 1 + 2 * QUIC_HELLO_RANDOM_SIZE + 2 * QUIC_MAX_HASH_SIZE + 2];
-	char *p = line + snprintf(line, MAX_LABEL_SIZE + 1, "%s ", label);
-	for (size_t i = 0; i < QUIC_HELLO_RANDOM_SIZE; i++) {
-		p += sprintf(p, "%02x", c->client_random[i]);
+int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class **signer) {
+	// general setup
+	memcpy(c->peer_id, h->source, QUIC_ADDRESS_SIZE);
+	memcpy(c->local_id, h->destination, QUIC_ADDRESS_SIZE);
+	c->crypto_state = QC_WAIT_FOR_FINISHED;
+	c->rx_crypto_off = 0;
+	c->is_client = false;
+
+	// nonces
+	memcpy(c->client_random, h->random, QUIC_RANDOM_SIZE);
+	c->rand.vtable->generate(&c->rand.vtable, c->server_random, QUIC_RANDOM_SIZE);
+
+	// cipher
+	c->cipher = h->cipher;
+
+	// key group
+	c->key_num = 1;
+	if (!h->key.curve || !br_ec_keygen(&c->rand.vtable, br_ec_get_default(), &c->keys[0], c->key_data[0], h->key.curve)) {
+		return -1;
 	}
-	p += sprintf(p, " ");
-	for (size_t i = 0; i < len; i++) {
-		p += sprintf(p, "%02x", secret[i]);
+
+	// certificates
+	c->signature = get_signature(signer, h->signatures);
+	if (!c->signature) {
+		return -1;
 	}
-	*(p++) = '\n';
-	*p = '\0';
-	c->log_key(c->user, line);
+	c->validator = NULL;
+	c->signer = signer;
+	c->server_name = NULL;
+	c->params = NULL;
+
+	// transcript
+	const br_hash_class *hash = c->cipher->hash;
+	hash->init(&c->msg_hash.vtable);
+	hash->update(&c->msg_hash.vtable, h->raw, h->raw_size);
+
+	// server hello
+	uint8_t tlsbuf[3 * 1024];
+	qslice_t s = { tlsbuf, tlsbuf + sizeof(tlsbuf) };
+	if (encode_server_hello(c, &s)) {
+		return -1;
+	}
+	size_t init_len = (size_t)(s.p - tlsbuf);
+	hash->update(&c->msg_hash.vtable, tlsbuf, init_len);
+
+	// now that we have both the hellos in the msg hash, we can generate the handshake keys
+	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
+	if (generate_handshake_secrets(c->cipher, &c->msg_hash.vtable, &h->key, &c->keys[0], &hs->rkey, &hs->tkey, c->master_secret)) {
+		return -1;
+	}
+
+	// Certificate
+	uint8_t *cert_begin = s.p;
+	if (encode_certificates(&s, signer)) {
+		return -1;
+	}
+	hash->update(&c->msg_hash.vtable, cert_begin, s.p - cert_begin);
+
+	// CertificateVerify
+	uint8_t verify[QUIC_MAX_CERT_VERIFY_SIZE];
+	size_t vlen = generate_cert_verify(c->is_client, &c->msg_hash.vtable, verify);
+	uint8_t sig[QUIC_MAX_SIG_SIZE];
+	uint8_t *verify_begin = s.p;
+	int slen = (*signer)->sign(signer, c->signature, verify, vlen, sig);
+	if (slen < 0 || encode_verify(&s, c->signature, sig, (size_t)slen)) {
+		return -1;
+	}
+	hash->update(&c->msg_hash.vtable, verify_begin, s.p - verify_begin);
+
+	// Finished
+	uint8_t fin[QUIC_MAX_HASH_SIZE];
+	size_t flen = generate_finish_verify(&hs->tkey, &c->msg_hash.vtable, fin);
+	uint8_t *finish_begin = s.p;
+	if (encode_finished(&s, fin, flen)) {
+		return -1;
+	}
+	hash->update(&c->msg_hash.vtable, finish_begin, s.p - finish_begin);
+	size_t hs_len = (size_t)(s.p - tlsbuf) - init_len;
+
+	qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
+	generate_protected_secrets(c->cipher, &c->msg_hash.vtable, c->master_secret, &prot->rkey, &prot->tkey);
+
+	// encode and sent it
+	size_t init_sent = 0;
+	size_t hs_sent = 0;
+	while (init_sent < init_len && hs_sent < hs_len) {
+		uint8_t udpbuf[DEFAULT_PACKET_SIZE];
+		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
+		qtx_packet_t *pkts[2] = { NULL, NULL };
+		if (init_sent < init_len) {
+			pkts[0] = encode_crypto_packet(c, &udp, QC_INITIAL, init_sent, tlsbuf + init_sent, init_len - init_sent, 0);
+			if (pkts[0]) {
+				init_sent = (size_t) pkts[0]->to;
+			}
+		}
+		if (hs_sent < hs_len) {
+			pkts[1] = encode_crypto_packet(c, &udp, QC_HANDSHAKE, hs_sent, tlsbuf + init_len + hs_sent, hs_len - hs_sent, 0);
+			if (pkts[1]) {
+				hs_sent = (size_t)pkts[1]->to;
+			}
+		}
+		tick_t txtime;
+		if (c->send(c->send_user, udpbuf, (size_t)(udp.p - udpbuf), &txtime)) {
+			return -1;
+		}
+		if (pkts[0]) {
+			pkts[0]->sent = txtime;
+		}
+		if (pkts[1]) {
+			pkts[1]->sent = txtime;
+		}
+	}
+	
+	return 0;
 }
 
-static int init_handshake(qconnection_t *c, uint16_t cipher, br_ec_public_key *pk) {
-	c->cipher = cipher;
+static const qcipher_class *find_cipher(uint16_t code, const qcipher_class *const *ciphers) {
+	while (*ciphers) {
+		if ((*ciphers)->cipher == code) {
+			return *ciphers;
+		}
+		ciphers++;
+	}
+	return NULL;
+}
 
-	br_ec_private_key *sk = find_private_key(c, pk->curve);
+static const br_ec_private_key *find_private_key(qconnection_t *c, uint16_t curve) {
+	for (size_t i = 0; i < c->key_num; i++) {
+		if (c->keys[i].curve == curve) {
+			return &c->keys[i];
+		}
+	}
+	return NULL;
+}
+
+static int process_server_hello(qconnection_t *c, const struct server_hello *h, qslice_t record) {
+	// crypto management
+	memcpy(c->server_random, h->random, QUIC_RANDOM_SIZE);
+
+	// cipher
+	c->cipher = find_cipher(h->cipher, c->params->ciphers);
+	if (!c->cipher) {
+		return -1;
+	}
+
+	// key groups
+	const br_ec_private_key *sk = find_private_key(c, h->key.curve);
 	if (!sk) {
 		return -1;
 	}
 
-	// generate the handshake secrets
+	uint8_t chello[1024];
+	qslice_t s = { chello, chello + sizeof(chello) };
+	encode_client_hello(c, &s);
+
+	// update the transcript now that we know what hash to use
+	const br_hash_class *hash = c->cipher->hash;
+	hash->init(&c->msg_hash.vtable);
+	hash->update(&c->msg_hash.vtable, chello, s.p - chello);
+	hash->update(&c->msg_hash.vtable, record.p, record.e - record.p);
+
 	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-
-	qslice_t rx_hello;
-	size_t sz;
-	rx_hello.p = qrx_recv(&c->rx_crypto, 1, &sz);
-	rx_hello.e = rx_hello.p + sz;
-
-	qslice_t tx_hello = { c->tx_crypto_buf, c->next_tx_crypto };
-	qslice_t ch = rx_hello;
-	qslice_t sh = tx_hello;
-	qkeyset_t *client = &hs->rkey;
-	qkeyset_t *server = &hs->tkey;
-	if (c->is_client) {
-		ch = tx_hello;
-		sh = rx_hello;
-		client = &hs->tkey;
-		server = &hs->rkey;
-	}
-
-	if (generate_handshake_secrets(&c->crypto_hash, ch, sh, pk, sk, cipher, client, server, c->master_secret)) {
-		return -1;
-	}
-
-	change_rx_crypto_level(c, QC_HANDSHAKE);
-
-	if (c->log_key) {
-		log_key(c, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", client->secret, client->hash_len);
-		log_key(c, "QUIC_SERVER_HANDSHAKE_TRAFFIC_SECRET", server->secret, server->hash_len);
-	}
-
-	return 0;
+	return generate_handshake_secrets(c->cipher, &c->msg_hash.vtable, &h->key, sk, &hs->tkey, &hs->rkey, c->master_secret);
 }
 
-static br_ec_public_key *find_public_key(struct client_hello *ch, int curve) {
-	for (size_t i = 0; i < ch->key_num; i++) {
-		if (ch->keys[i].curve == curve) {
-			return &ch->keys[i];
+static const qsignature_class *find_signature(uint16_t code, const qsignature_class *const *signatures) {
+	while (*signatures) {
+		if ((*signatures)->algorithm == code) {
+			return *signatures;
 		}
+		signatures++;
 	}
 	return NULL;
 }
 
-static int process_client_hello(qconnection_t *c, struct client_hello *ch) {
-	// setup the server hello
-	uint8_t random[QUIC_HELLO_RANDOM_SIZE];
-	c->rand.vtable->generate(&c->rand.vtable, random, sizeof(random));
-	memcpy(c->client_random, ch->random, QUIC_HELLO_RANDOM_SIZE);
-
-	struct server_hello sh;
-	sh.random = random;
-	sh.cipher = TLS_AES_128_GCM_SHA256;
-
-	// find the client's key
-	br_ec_public_key *client_pk = find_public_key(ch, BR_EC_curve25519);
-	if (!client_pk) {
+static int process_verify(qconnection_t *c, const struct verify *v) {
+	const qsignature_class *type = find_signature(v->algorithm, c->params->signatures);
+	if (!type) {
 		return -1;
 	}
 
-	// generate the server key
-	const br_ec_impl *ec = br_ec_get_default();
-	if (!c->key_num) {
-		c->key_num = 1;
-		br_ec_keygen(&c->rand.vtable, ec, &c->priv_key[0], c->priv_key_data, BR_EC_curve25519);
-	}
-	uint8_t pub_key[BR_EC_KBUF_PUB_MAX_SIZE];
-	br_ec_compute_pub(ec, &sh.key, pub_key, &c->priv_key[0]);
-
-	// set the server hostname
-	ca_set2(&c->server_name, (char*)ch->server_name.p, ch->server_name.e - ch->server_name.p);
-
-	// encode the initial records (server hello)
-	{
-		qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
-		qtx_stream_t *tx = &init->tx_crypto;
-		qslice_t s = { c->tx_crypto_buf, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
-		tx->offset = tx->len;
-		tx->data = s.p;
-		tx->len = 0;
-		if (encode_server_hello(&s, &sh)) {
-			return -1;
-		}
-		c->next_tx_crypto = s.p;
-		tx->len = s.p - tx->data;
-
-		if (send_long_packets(c, QC_INITIAL, tx, tx->offset, tx->offset + tx->len)) {
-			return -1;
-		}
-	}
-
-	if (init_handshake(c, sh.cipher, client_pk)) {
-		return -1;
-	}
-
-	// encode the handshake records (encrypted extensions, certificate, cert verify, finished)
-	{
-		qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-		qtx_stream_t *tx = &hs->tx_crypto;
-		qslice_t s = { c->next_tx_crypto, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
-		tx->data = s.p;
-		tx->offset = 0;
-		tx->len = 0;
-
-		// Certificate
-		uint8_t *cert_begin = s.p;
-		if (encode_certificates(&s, c->next_cert, c->user)) {
-			return -1;
-		}
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, cert_begin, s.p - cert_begin);
-
-		// CertificateVerify
-		uint8_t verify[QUIC_MAX_CERT_VERIFY_SIZE];
-		size_t vlen = generate_cert_verify(c->is_client, &c->crypto_hash.vtable, verify);
-		uint8_t sig[QUIC_MAX_SIG_SIZE];
-		uint8_t *verify_begin = s.p;
-		int slen = c->sign(c->user, RSA_PKCS1_SHA256, verify, vlen, sig);
-		if (slen < 0 || encode_verify(&s, RSA_PKCS1_SHA256, sig, (size_t)slen)) {
-			return -1;
-		}
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, verify_begin, s.p - verify_begin);
-
-		// Finished
-		uint8_t fin[QUIC_MAX_HASH_SIZE];
-		size_t flen = generate_finish_verify(&hs->tkey, &c->crypto_hash.vtable, fin);
-		uint8_t *finish_begin = s.p;
-		if (encode_finished(&s, fin, flen)) {
-			return -1;
-		}
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, finish_begin, s.p - finish_begin);
-
-		c->next_tx_crypto = s.p;
-		tx->len = s.p - tx->data;
-
-		if (send_long_packets(c, QC_HANDSHAKE, tx, 0, tx->len)) {
-			return -1;
-		}
-	}
-
-	return 0;
-}
-
-static int process_server_hello(qconnection_t *c, struct server_hello *sh) {
-	// TODO verify the cipher
-	return init_handshake(c, sh->cipher, &sh->key);
-}
-
-static int verify_certificate_chain(qconnection_t *c, const qcertificate_t *certs, size_t num) {
-	return c->verify_chain(c->user, certs, num, &c->cert_key);
-}
-
-static int verify_signature(qconnection_t *c, uint16_t algo, qslice_t sig) {
 	uint8_t verify[QUIC_MAX_CERT_VERIFY_SIZE];
-	size_t vlen = generate_cert_verify(!c->is_client, &c->crypto_hash.vtable, verify);
-
-	switch (algo) {
-	case RSA_PKCS1_SHA256:
-		return verify_rsa_pkcs1(&br_sha256_vtable, BR_HASH_OID_SHA256, &c->cert_key, sig, verify, vlen);
-	default:
-		return -1;
-	}
+	size_t vlen = generate_cert_verify(c->msg_hash.vtable, !c->is_client, v->msg_hash, verify);
+	const br_x509_pkey *pk = (*c->validator)->get_pkey(c->validator, NULL);
+	return type->verify(type, pk, verify, vlen, v->signature, v->sig_size);
 }
 
-static int process_finished(qconnection_t *c, qslice_t verify, qslice_t record) {
+static int process_finished(qconnection_t *c, const struct finished *fin) {
 	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-	uint8_t fin[QUIC_MAX_HASH_SIZE];
-	size_t flen = generate_finish_verify(&hs->rkey, &c->crypto_hash.vtable, fin);
-	if (flen != (size_t)(verify.e - verify.p) || memcmp(fin, verify.p, flen)) {
+	uint8_t verify[QUIC_MAX_HASH_SIZE];
+	size_t vlen = generate_finish_verify(&hs->rkey, fin->msg_hash, verify);
+	if (vlen != fin->size || memcmp(fin->verify, verify, vlen)) {
 		return -1;
 	}
 
-	qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
-	qkeyset_t *client = &prot->rkey;
-	qkeyset_t *server = &prot->tkey;
 	if (c->is_client) {
-		client = &prot->tkey;
-		server = &prot->rkey;
-		// for the client: add the server finished
-		// on the server side the server finished was added when sending it earlier
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, record.p, (size_t)(record.e - record.p));
-	}
+		qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
+		generate_protected_secrets(c->cipher, &c->msg_hash.vtable, c->master_secret, &prot->tkey, &prot->rkey);
 
-	generate_protected_secrets(&c->crypto_hash.vtable, c->master_secret, c->cipher, client, server);
-	change_rx_crypto_level(c, QC_PROTECTED);
-
-	if (c->is_client) {
-		qtx_stream_t *tx = &hs->tx_crypto;
-		qslice_t s = { c->next_tx_crypto, c->tx_crypto_buf + sizeof(c->tx_crypto_buf) };
-		tx->offset = tx->len;
-		tx->data = s.p;
-		tx->len = 0;
+		uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+		c->msg_hash.vtable->out(&c->msg_hash.vtable, msg_hash);
 
 		// Finished
-		flen = generate_finish_verify(&hs->tkey, &c->crypto_hash.vtable, fin);
-		uint8_t *finish_begin = s.p;
-		if (encode_finished(&s, fin, flen)) {
+		uint8_t tls[256];
+		qslice_t s = { tls, tls + sizeof(tls) };
+		vlen = generate_finish_verify(&hs->tkey, msg_hash, verify);
+		if (encode_finished(&s, verify, vlen)) {
 			return -1;
 		}
-		// add the client finished
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, finish_begin, s.p - finish_begin);
+		// add the client finished to the hash
+		c->msg_hash.vtable->update(&c->msg_hash.vtable, tls, s.p - tls);
 
-		c->next_tx_crypto = s.p;
-		tx->len = s.p - tx->data;
-
-		if (send_long_packets(c, QC_HANDSHAKE, tx, tx->offset, tx->offset + tx->len)) {
+		// send it
+		uint8_t udpbuf[512];
+		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
+		qtx_packet_t *pkt = encode_crypto_packet(c, &udp, QC_HANDSHAKE, 0, tls, s.p - tls, 0);
+		if (!pkt || c->send(c->send_user, udpbuf, udp.p - udpbuf, &pkt->sent)) {
 			return -1;
 		}
-	} else {
-		// for the server: add the client finished
-		c->crypto_hash.vtable->update(&c->crypto_hash.vtable, record.p, (size_t)(record.e - record.p));
 	}
 	return 0;
-}
-
-static int send_client_finished(qconnection_t *c) {
 }
 
 static int decode_ack(qpacket_buffer_t *b, qslice_t *s) {
@@ -625,115 +574,128 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 	return p;
 }
 
-static bool next_tls_record(qconnection_t *c, qslice_t *record) {
-	uint8_t *p = qrx_recv(&c->rx_crypto, 4, NULL);
-	if (!p) {
-		return false;
+static enum qcrypto_level expected_level(int crypto_state) {
+	switch (crypto_state) {
+	case QC_PROCESS_SERVER_HELLO:
+		return QC_INITIAL;
+	case QC_PROCESS_CERTIFICATE:
+	case QC_PROCESS_VERIFY:
+	case QC_PROCESS_FINISHED:
+		return QC_HANDSHAKE;
+	default:
+		return QC_PROTECTED;
 	}
-	uint32_t tls_len = big_24(p + 1);
-	p = qrx_recv(&c->rx_crypto, 4 + tls_len, NULL);
-	if (!p) {
-		return false;
-	}
-	record->p = p;
-	record->e = p + 4 + tls_len;
-	return true;
 }
 
-static bool decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s) {
+static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s) {
 	int64_t off = decode_varint(s);
 	int64_t len = decode_varint(s);
 	if (len < 0 || (s->e - s->p) < len) {
-		return -1;
+		goto err;
 	}
-	uint8_t *p = s->p;
-	s->p += len;
-	return (level == c->rx_level)
-		? (qrx_append(&c->rx_crypto, false, off, p, (size_t)len) == QRX_HAVE_DATA)
-		: false;
+	qslice_t tls = { s->p, s->p + len };
+	s->p = tls.e;
+	if (level != expected_level(c->crypto_state)) {
+		// probably a resend of old data
+		return 0;
+	} else if (off != c->rx_crypto_off) {
+		goto err;
+	}
+	c->rx_crypto_off += len;
+
+	const br_hash_class **msgs = &c->msg_hash.vtable;
+	struct crypto_decoder *d = &c->rx_crypto;
+
+	switch (c->crypto_state) {
+	case QC_PROCESS_SERVER_HELLO: {
+		int r = decode_server_hello(d, &c->rx_crypto_data.server_hello, (unsigned)off, tls.p, tls.e - tls.p);
+		if (r < 0) {
+			goto err;
+		} else if (!r) {
+			// TODO support partial server hellos
+			// transcript hash doesn't support this
+			goto err;
+		}
+		qslice_t record = { tls.p, tls.p + r };
+		off += r;
+		tls.p += r;
+		if (process_server_hello(c, &c->rx_crypto_data.server_hello, record)) {
+			goto err;
+		}
+		c->crypto_state = QC_PROCESS_CERTIFICATE;
+		d->state = 0;
+		(*c->validator)->start_chain(c->validator, c->server_name);
+		c->rx_crypto_off = 0;
+		return 0;
+	}
+	case QC_PROCESS_CERTIFICATE: {
+		int r = decode_certificates(d, c->validator, (unsigned)off, tls.p, tls.e - tls.p);
+		if (r < 0) {
+			goto err;
+		} else if (!r) {
+			(*msgs)->update(msgs, tls.p, tls.e - tls.p);
+			return 0;
+		}
+		(*msgs)->update(msgs, tls.p, r);
+		off += r;
+		tls.p += r;
+		if ((*c->validator)->end_chain(c->validator)) {
+			goto err;
+		}
+		c->crypto_state = QC_PROCESS_VERIFY;
+		d->state = 0;
+		(*msgs)->out(msgs, c->rx_crypto_data.verify.msg_hash);
+	}
+	case QC_PROCESS_VERIFY: {
+		int r = decode_verify(d, &c->rx_crypto_data.verify, (unsigned)off, tls.p, tls.e - tls.p);
+		if (r < 0) {
+			goto err;
+		} else if (!r) {
+			(*msgs)->update(msgs, tls.p, tls.e - tls.p);
+			return 0;
+		}
+		(*msgs)->update(msgs, tls.p, r);
+		off += r;
+		tls.p += r;
+		if (process_verify(c, &c->rx_crypto_data.verify)) {
+			goto err;
+		}
+		c->crypto_state = QC_PROCESS_FINISHED;
+		d->state = 0;
+		(*msgs)->out(msgs, c->rx_crypto_data.finished.msg_hash);
+	}
+	case QC_PROCESS_FINISHED: {
+		int r = decode_finished(d, &c->rx_crypto_data.finished, (unsigned)off, tls.p, tls.e - tls.p);
+		if (r < 0) {
+			goto err;
+		} else if (!r) {
+			(*msgs)->update(msgs, tls.p, tls.e - tls.p);
+			return 0;
+		}
+		(*msgs)->update(msgs, tls.p, r);
+		off += r;
+		tls.p += r;
+		if (process_finished(c, &c->rx_crypto_data.finished)) {
+			goto err;
+		}
+		c->crypto_state = QC_RUNNING;
+		return 0;
+	}
+	case QC_RUNNING:
+		// TODO - process runtime crypto data
+		return 0;
+	default:
+		goto err;
+	}
+err:
+	// on error we drop the whole packet
+	// TODO - better error handling
+	return -1;
 }
 
 static int process_protected(qconnection_t *c, qslice_t s) {
-	if (c->hs_state != QC_RUNNING) {
-		return -1;
-	}
-
-
+	// TODO
 	return 0;
-}
-
-static void process_tls_record(qconnection_t *c, qslice_t record) {
-	qslice_t data = { record.p + 4, record.e };
-	switch (record.p[0]) {
-	case CLIENT_HELLO: {
-		struct client_hello ch;
-		if (c->hs_state != QC_WAIT_FOR_CLIENT_HELLO) {
-			LOG(c->debug, "unexpected client hello message");
-		} else if (decode_client_hello(data, &ch)) {
-			LOG(c->debug, "client hello parse failure");
-		} else {
-			process_client_hello(c, &ch);
-			c->hs_state = QC_WAIT_FOR_FINISHED;
-		}
-		break;
-	}
-	case SERVER_HELLO: {
-		struct server_hello sh;
-		if (c->hs_state != QC_WAIT_FOR_SERVER_HELLO) {
-			LOG(c->debug, "unexpected server hello message");
-		} else if (decode_server_hello(data, &sh)) {
-			LOG(c->debug, "server hello parse failure");
-		} else if (process_server_hello(c, &sh)) {
-			LOG(c->debug, "server hello failure");
-		} else {
-			c->hs_state = QC_WAIT_FOR_CERTIFICATE;
-		}
-		break;
-	}
-	case CERTIFICATE: {
-		size_t num = QUIC_MAX_CERTIFICATES;
-		qcertificate_t certs[QUIC_MAX_CERTIFICATES];
-		if (c->hs_state != QC_WAIT_FOR_CERTIFICATE) {
-			LOG(c->debug, "unexpected certificate message");
-		} else if (decode_certificates(data, certs, &num)) {
-			LOG(c->debug, "certificate message parse failure");
-		} else if (verify_certificate_chain(c, certs, num)) {
-			LOG(c->debug, "certificate chain verification failure");
-		} else {
-			c->crypto_hash.vtable->update(&c->crypto_hash.vtable, record.p, (size_t)(record.e - record.p));
-			c->hs_state = QC_WAIT_FOR_VERIFY;
-		}
-		break;
-	}
-	case CERTIFICATE_VERIFY: {
-		uint16_t algo;
-		qslice_t sig;
-		if (c->hs_state != QC_WAIT_FOR_VERIFY) {
-			LOG(c->debug, "unexpected certificate verify message");
-		} else if (decode_verify(data, &algo, &sig)) {
-			LOG(c->debug, "verify parse failure");
-		} else if (verify_signature(c, algo, sig)) {
-			LOG(c->debug, "certificate verification failure");
-		} else {
-			c->crypto_hash.vtable->update(&c->crypto_hash.vtable, record.p, (size_t)(record.e - record.p));
-			c->hs_state = QC_WAIT_FOR_FINISHED;
-		}
-		break;
-	}
-	case FINISHED: {
-		qslice_t verify;
-		if (c->hs_state != QC_WAIT_FOR_FINISHED) {
-			LOG(c->debug, "unexpected finished message");
-		} else if (decode_finished(data, &verify)) {
-			LOG(c->debug, "finished parse failure");
-		} else if (process_finished(c, verify, record)) {
-			LOG(c->debug, "finished verification failure");
-		} else {
-			c->hs_state = QC_RUNNING;
-		}
-		break;
-	}
-	}
 }
 
 static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level) {
@@ -755,14 +717,7 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 			break;
 		case CRYPTO:
 			if (decode_crypto(c, level, &s)) {
-				qslice_t record;
-				while (next_tls_record(c, &record)) {
-					process_tls_record(c, record);
-					if (level == c->rx_level) {
-						qrx_consume(&c->rx_crypto, (size_t)(record.e - record.p));
-					}
-				}
-				qrx_fold(&c->rx_crypto);
+				return -1;
 			}
 			break;
 		}
@@ -770,11 +725,13 @@ static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level
 	return 0;
 }
 
-int qc_get_destination(void *buf, size_t len, uint8_t **p) {
+int qc_get_destination(void *buf, size_t len, uint8_t *out) {
 	uint8_t *u = buf;
 	if (!len) {
 		return -1;
 	}
+	uint8_t *pid;
+	uint8_t dcil;
 	if (*u & LONG_HEADER_FLAG) {
 		if (len < 6) {
 			return -1;
@@ -782,23 +739,26 @@ int qc_get_destination(void *buf, size_t len, uint8_t **p) {
 		if (big_32(u + 1) != QUIC_VERSION) {
 			return -2;
 		}
-		uint8_t dcil = decode_id_len(u[5] >> 4);
+		dcil = decode_id_len(u[5] >> 4);
 		if (len < 6 + dcil) {
 			return -1;
 		}
-		*p = u + 6;
-		return dcil;
-
+		pid = u + 6;
 	} else {
 		if (len < 1 + DEFAULT_SERVER_ID_LEN) {
 			return -1;
 		}
-		*p = u + 1;
-		return DEFAULT_SERVER_ID_LEN;
+		dcil = DEFAULT_SERVER_ID_LEN;
+		pid = u + 1;
 	}
+
+	out[0] = dcil;
+	memcpy(out + 1, u + 6, dcil);
+	memset(out + 1 + dcil, 0, QUIC_ADDRESS_SIZE - dcil);
+	return 0;
 }
 
-int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *sa, size_t salen, tick_t rxtime) {
+int qc_recv(qconnection_t *c, void *buf, size_t len, tick_t rxtime) {
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
@@ -813,32 +773,14 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 			uint32_t version = big_32(s.p);
 			s.p += 4;
 			if (version != QUIC_VERSION) {
-				// TODO send version negotiation
-				// and handle version negotiation
+				// remotes shouldn't randomly change the version on us
 				return -1;
 			}
+			// skip over ids
 			uint8_t dcil = decode_id_len(s.p[0] >> 4);
 			uint8_t scil = decode_id_len(s.p[0] & 0xF);
 			s.p++;
-			if (dcil != DEFAULT_SERVER_ID_LEN) {
-				return -1;
-			}
-
-			if (!c->is_client && !c->local_id) {
-				c->local_id = &c->local_ids[0];
-				c->local_id->len = dcil;
-				memcpy(c->local_id->id, s.p, dcil);
-				s.p += dcil;
-				c->peer_id = &c->peer_ids[0];
-				c->peer_id->len = scil;
-				memcpy(c->peer_id->id, s.p, scil);
-				s.p += scil;
-
-				qpacket_buffer_t *init = &c->pkts[QC_INITIAL];
-				generate_initial_secrets(c->local_id, &init->rkey, &init->tkey);
-			} else {
-				s.p += dcil + scil;
-			}
+			s.p += dcil + scil;
 
 			enum qcrypto_level level;
 
@@ -873,14 +815,10 @@ int qc_on_recv(qconnection_t *c, void *buf, size_t len, const struct sockaddr *s
 			qslice_t data;
 			qpacket_buffer_t *pkts = &c->pkts[level];
 			int64_t pktnum = decrypt_packet(&pkts->rkey, pkt_begin, packet_number, s.p, &data);
-			if (pktnum < 0) {
-				return -1;
-			}
 
-			receive_packet(pkts, pktnum);
-
-			if (process_packet(c, data, level)) {
-				return -1;
+			if (pktnum >= 0 && !process_packet(c, data, level)) {
+				// only mark the packet as received if we could successfully process it
+				receive_packet(pkts, pktnum);
 			}
 
 		} else {

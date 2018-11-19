@@ -34,12 +34,6 @@ static int do_send(void *user, const void *buf, size_t len, const struct sockadd
 	return 0;
 }
 
-static const qcertificate_t *get_next_cert(void *user, const qcertificate_t *c) {
-	struct server_data *s = user;
-	c = c ? (c + 1) : s->certs;
-	return (c < s->certs + s->num_certs) ? c : NULL;
-}
-
 static int do_sign(void *user, uint16_t algo, const uint8_t *data, size_t len, uint8_t *out) {
 	struct server_data *s = user;
 	br_rsa_pkcs1_sign fn = br_rsa_i62_pkcs1_sign_get();
@@ -88,23 +82,21 @@ int main(int argc, const char *argv[]) {
 	int fd = must_open_server_socket(SOCK_DGRAM, host, port);
 	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
 
-	bool connected = false;
-	qconnection_t qc;
-	uint8_t pktbuf[4096];
-	if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
-		FATAL(debug, "failed to init connection");
-	}
 
 	struct server_data sd;
 	sd.fd = fd;
+	br_skey_decoder_context skey;
+	br_x509_certificate *certs;
+	size_t num_certs;
+	qsigner_compat signer;
 
-	{
+ 	{
 		mapped_file cf;
 		if (map_file(&cf, cert_file.c_str)) {
 			FATAL(debug, "failed to open TLS certificates file '%s'", cert_file.c_str);
 		}
-		sd.certs = read_pem_certs(cf.data, cf.size, &sd.num_certs);
-		if (!sd.num_certs) {
+		certs = read_pem_certs(cf.data, cf.size, &num_certs);
+		if (!certs) {
 			FATAL(debug, "failed to read TLS certificates from '%s'", cert_file.c_str);
 		}
 		unmap_file(&cf);
@@ -115,11 +107,29 @@ int main(int argc, const char *argv[]) {
 		if (map_file(&kf, key_file.c_str)) {
 			FATAL(debug, "failed to open TLS key file '%s'", key_file.c_str);
 		}
-		if (read_pem_key(&sd.skey, kf.data, kf.size)) {
+		if (read_pem_key(&skey, kf.data, kf.size)) {
 			FATAL(debug, "failed to read TLS key from '%s'", key_file.c_str);
 		}
 		unmap_file(&kf);
+		switch (br_skey_decoder_key_type(&skey)) {
+		case BR_KEYTYPE_RSA:
+			qsigner_rsa_pkcs1_init(&signer.rsa_pkcs1, &TLS_RSA_SIGNATURES, br_skey_decoder_get_rsa(&skey), certs, num_certs);
+			break;
+		case BR_KEYTYPE_EC:
+			qsigner_ecdsa_init(&signer.ecdsa, &TLS_ECDSA_SIGNATURES, br_skey_decoder_get_ec(&skey), certs, num_certs);
+			break;
+		}
 	}
+
+	qcrypto_params_t params = {
+		TLS_DEFAULT_GROUPS,
+		TLS_DEFAULT_CIPHERS,
+		TLS_DEFAULT_SIGNATURES,
+	};
+
+	bool connected = false;
+	qconnection_t qc;
+	uint8_t pktbuf[4096];
 
 
 	for (;;) {
@@ -138,24 +148,27 @@ int main(int argc, const char *argv[]) {
 		LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
 
 		if (connected) {
-			uint8_t *dest;
-			int dsz = qc_get_destination(buf, sz, &dest);
-			if (dsz < 0 || dsz != qc.local_id->len || memcmp(dest, qc.local_id->id, dsz)) {
+			uint8_t dest[QUIC_ADDRESS_SIZE];
+			if (qc_get_destination(buf, sz, dest) || memcmp(dest, qc.local_id, sizeof(dest))) {
 				continue;
 			}
-		} else if (!connected) {
-			qc_on_accept(&qc, sa, salen);
+			qc_recv(&qc, buf, sz, rxtime);
+		} else {
+			qconnect_request_t req;
+			if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
+				LOG(debug, "failed to decode request");
+				continue;
+			}
+			if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
+				FATAL(debug, "failed to init connection");
+			}
 			qc.debug = &stderr_log;
 			qc.send = &do_send;
-			qc.next_cert = &get_next_cert;
-			qc.sign = &do_sign;
-			qc.user = &sd;
-			if (keylog.len) {
-				qc.log_key = &log_key;
+			qc.send_user = &sd;
+			if (qc_accept(&qc, &req, &signer, 1)) {
+				LOG(debug, "failed to accept request");
 			}
 		}
-
-		qc_on_recv(&qc, buf, sz, sa, salen, rxtime);
 	}
 
 	closesocket(fd);

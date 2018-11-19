@@ -26,10 +26,10 @@ static int pem_to_der(append_fn fn, void *user, const char *data, size_t sz, siz
 	return (br_pem_decoder_event(&pem) == BR_PEM_END_OBJ) ? 0 : -1;
 }
 
-qcertificate_t *read_pem_certs(const void *data, size_t size, size_t *pnum) {
+br_x509_certificate *read_pem_certs(const void *data, size_t size, size_t *pnum) {
 	size_t off = 0;
 	struct {
-		qcertificate_t *v;
+		br_x509_certificate *v;
 		size_t size, cap;
 	} certs = { 0 };
 
@@ -44,16 +44,16 @@ qcertificate_t *read_pem_certs(const void *data, size_t size, size_t *pnum) {
 		default:
 			break;
 		}
-		qcertificate_t *c = APPEND(&certs);
-		c->x509.data = (unsigned char*)der.c_str;
-		c->x509.data_len = der.len;
+		br_x509_certificate *c = APPEND(&certs);
+		c->data = (unsigned char*)der.c_str;
+		c->data_len = der.len;
 	}
 end:
 	*pnum = certs.size;
 	return certs.v;
 err:
 	for (size_t i = 0; i < certs.size; i++) {
-		free(certs.v[i].x509.data);
+		free(certs.v[i].data);
 	}
 	free(certs.v);
 	*pnum = 0;

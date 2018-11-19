@@ -111,6 +111,7 @@ int main(int argc, const char *argv[]) {
 	qc.verify_chain = &do_verify_chain;
 	qc.user = &cc;
 	qc.debug = &stderr_log;
+	qc.x509 = &cc.x509.vtable;
 	if (cc.keylog.len) {
 		qc.log_key = &log_key;
 	}
