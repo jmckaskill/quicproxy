@@ -1,14 +1,21 @@
 #include "signature.h"
-#include "cipher.h"
-#include "crypto.h"
 
 // fake rsa curves to allow for a signatures bitset
 #define RSA_PKCS1_SHA256_CURVE 63
 #define RSA_PKCS1_SHA384_CURVE 62
 #define RSA_PKCS1_SHA512_CURVE 61
 
-static int verify_rsa_pkcs1(const qsignature_class *c, const br_x509_pkey *pk, const br_ec_impl *ec, const void *text, size_t text_len, const void *sig, size_t sig_len) {
-	(void)ec;
+const qsignature_class *find_signature(const qsignature_class *const *s, uint16_t code) {
+	while (*s) {
+		if ((*s)->algorithm == code) {
+			return *s;
+		}
+		s++;
+	}
+	return NULL;
+}
+
+static int verify_rsa_pkcs1(const qsignature_class *c, const br_x509_pkey *pk, const void *text, size_t text_len, const void *sig, size_t sig_len) {
 	if (pk->key_type != BR_KEYTYPE_RSA) {
 		return -1;
 	}
@@ -20,7 +27,7 @@ static int verify_rsa_pkcs1(const qsignature_class *c, const br_x509_pkey *pk, c
 
 	uint8_t hash1[QUIC_MAX_HASH_SIZE];
 	uint8_t hash2[QUIC_MAX_HASH_SIZE];
-	if (!fn(sig, sig_len, digest_size(c->hash), &pk->key.rsa, hash1)) {
+	if (!fn(sig, sig_len, c->hash_oid, digest_size(c->hash), &pk->key.rsa, hash1)) {
 		return -1;
 	}
 	br_hash_compat_context h;
@@ -98,14 +105,27 @@ const qsignature_class TLS_ECDSA_SECP521R1_SHA512 = {
 	&verify_ecdsa,
 };
 
+const qsignature_class *TLS_RSA_PKCS1_SIGNATURES[] = {
+	&TLS_RSA_PKCS1_SHA256,
+	&TLS_RSA_PKCS1_SHA512,
+	&TLS_RSA_PKCS1_SHA384,
+	NULL,
+};
+
+const qsignature_class *TLS_ECDSA_SIGNATURES[] = {
+	&TLS_ECDSA_SECP256R1_SHA256,
+	&TLS_ECDSA_SECP384R1_SHA384,
+	&TLS_ECDSA_SECP521R1_SHA512,
+	NULL,
+};
 
 const qsignature_class *TLS_DEFAULT_SIGNATURES[] = {
 	&TLS_ECDSA_SECP256R1_SHA256,
 	&TLS_ECDSA_SECP384R1_SHA384,
 	&TLS_ECDSA_SECP521R1_SHA512,
 	&TLS_RSA_PKCS1_SHA256,
-	&TLS_RSA_PKCS1_SHA512,
 	&TLS_RSA_PKCS1_SHA384,
+	&TLS_RSA_PKCS1_SHA512,
 	NULL,
 };
 
@@ -115,30 +135,30 @@ struct signer_common {
 	size_t num_certs;
 };
 
-const br_x509_certificate *get_cert(const qsigner_class **c, size_t idx) {
+const br_x509_certificate *get_cert(const qsigner_class *const *c, size_t idx) {
 	struct signer_common *s = (struct signer_common*) c;
-	return (idx > s->num_certs) ? NULL : &s->certs[idx];
+	return (idx < s->num_certs) ? &s->certs[idx] : NULL;
 }
 
-static const qsignature_class *get_rsa_pkcs1_type(const qsigner_class **c, size_t idx) {
+static const qsignature_class *get_rsa_pkcs1_type(const qsigner_class *const *c, size_t idx) {
 	qsigner_rsa_pkcs1 *s = (qsigner_rsa_pkcs1*)c;
 	return s->sigs[idx];
 }
 
-static int sign_rsa_pkcs1(const qsigner_class **c, const qsignature_class *sig, const void *text, size_t text_len, void *sig) {
+static int sign_rsa_pkcs1(const qsigner_class *const *c, const qsignature_class *type, const void *text, size_t text_len, void *out) {
 	qsigner_rsa_pkcs1 *s = (qsigner_rsa_pkcs1*)c;
 
 	uint8_t hash[QUIC_MAX_HASH_SIZE];
 	br_hash_compat_context h;
-	sig->hash->init(&h.vtable);
-	sig->hash->update(&h.vtable, text, text_len);
-	sig->hash->out(&h.vtable, hash);
+	type->hash->init(&h.vtable);
+	type->hash->update(&h.vtable, text, text_len);
+	type->hash->out(&h.vtable, hash);
 
 	br_rsa_pkcs1_sign fn = br_rsa_i62_pkcs1_sign_get();
 	if (!fn) {
 		fn = &br_rsa_i31_pkcs1_sign;
 	}
-	if (!fn(sig->hash_oid, hash, digest_size(sig->hash), s->sk, sig)) {
+	if (!fn(type->hash_oid, hash, digest_size(type->hash), s->sk, out)) {
 		return -1;
 	}
 	return (s->sk->n_bitlen + 7) / 8;
@@ -162,37 +182,27 @@ const qsigner_class TLS_RSA_PKCS1_signer = {
 	&sign_rsa_pkcs1,
 };
 
-static const qsignature_class *ecdsa_type(const qsigner_class **c, size_t idx) {
+static const qsignature_class *ecdsa_type(const qsigner_class *const *c, size_t idx) {
 	qsigner_ecdsa *s = (qsigner_ecdsa*)c;
 	return idx ? NULL : s->sig;
 }
 
-static int sign_ecdsa(const qsigner_class **c, const qsignature_class *sig, const void *text, size_t text_len, void *sig) {
+static int sign_ecdsa(const qsigner_class *const *c, const qsignature_class *type, const void *text, size_t text_len, void *out) {
 	qsigner_ecdsa *s = (qsigner_ecdsa*)c;
-	(void)sig;
 
 	uint8_t hash[QUIC_MAX_HASH_SIZE];
 	br_hash_compat_context h;
-	s->sig->hash->init(&h.vtable);
-	s->sig->hash->update(&h.vtable, text, text_len);
-	s->sig->hash->out(&h.vtable, hash);
+	type->hash->init(&h.vtable);
+	type->hash->update(&h.vtable, text, text_len);
+	type->hash->out(&h.vtable, hash);
 
 	br_ecdsa_sign fn = br_ecdsa_sign_raw_get_default();
-	size_t ret = fn(s->sig->ec, s->sig->hash, hash, s->sk, sig);
+	size_t ret = fn(type->ec, type->hash, hash, s->sk, out);
 	return ret ? (int)ret : -1;
 }
 
-static const qsignature_class *find_signature(const qsignature_class *const *s, int curve) {
-	while (*s) {
-		if ((*s)->curve == curve) {
-			return *s;
-		}
-	}
-	return NULL;
-}
-
 int qsigner_ecdsa_init(qsigner_ecdsa *s, const qsignature_class *const *signatures, const br_ec_private_key *sk, const br_x509_certificate *certs, size_t num) {
-	s->sig = find_signature(signatures, sk->curve);
+	s->sig = find_signature(signatures, (uint16_t) sk->curve);
 	if (!s->sig) {
 		return -1;
 	}

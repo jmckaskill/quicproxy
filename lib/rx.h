@@ -1,7 +1,6 @@
 #pragma once
+#include "common.h"
 #include <cutils/rbtree.h>
-#include <stdint.h>
-#include <stdbool.h>
 
 typedef struct qrx_stream qrx_stream_t;
 struct qrx_stream {

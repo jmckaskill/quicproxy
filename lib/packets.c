@@ -1,7 +1,6 @@
 #include "packets.h"
-#include "quic.h"
-#include <cutils/endian.h>
-#include <stdbool.h>
+#include "connection.h"
+
 
 // TLS records
 #define TLS_RECORD_HEADER_SIZE 4
@@ -18,7 +17,7 @@
 #define MESSAGE_HASH 254
 
 #define TLS_LEGACY_VERSION 0x303
-#define TLS_VERSION 0x304
+
 
 #define EC_KEY_UNCOMPRESSED 4
 
@@ -54,6 +53,12 @@
 
 // server name
 #define HOST_NAME_TYPE 0
+
+const qcrypto_params_t TLS_DEFAULT_PARAMS = {
+	TLS_DEFAULT_GROUPS,
+	TLS_DEFAULT_CIPHERS,
+	TLS_DEFAULT_SIGNATURES,
+};
 
 uint8_t *encode_varint(uint8_t *p, uint64_t val) {
 	if (val < 0x40) {
@@ -266,6 +271,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 		}
 		s.p = write_big_16(s.p, c->params->ciphers[i]->cipher);
 	}
+	write_big_16(cipher_begin - 2, (uint16_t)(s.p - cipher_begin));
 
 	// compression methods
 	if (s.p + 2 > s.e) {
@@ -297,12 +303,12 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 
 	// supported groups
 	size_t group_len = strlen(c->params->groups);
-	if (s.p + 2 + 2 + 2 + group_len > s.e) {
+	if (s.p + 2 + 2 + 2 + 2*group_len > s.e) {
 		return -1;
 	}
 	s.p = write_big_16(s.p, SUPPORTED_GROUPS);
-	s.p = write_big_16(s.p, (uint16_t)(2 + group_len));
-	s.p = write_big_16(s.p, (uint16_t)(group_len));
+	s.p = write_big_16(s.p, (uint16_t)(2 + 2*group_len));
+	s.p = write_big_16(s.p, (uint16_t)(2*group_len));
 	for (size_t i = 0; i < group_len; i++) {
 		s.p = write_big_16(s.p, c->params->groups[i]);
 	}
@@ -381,7 +387,6 @@ int encode_certificates(qslice_t *ps, const qsigner_class *const *signer) {
 	s.p += 3;
 	uint8_t *list_begin = s.p;
 
-	const qcertificate_t *c = NULL;
 	for (size_t i = 0;;i++) {
 		const br_x509_certificate *c = (*signer)->get_cert(signer, i);
 		if (!c) {
@@ -439,26 +444,6 @@ int encode_finished(qslice_t *ps, const uint8_t *verify, size_t len) {
 	return 0;
 }
 
-const qcipher_class *find_cipher(uint16_t code, const qcipher_class *const *s) {
-	while (*s) {
-		if ((*s)->cipher == code) {
-			return *s;
-		}
-		s++;
-	}
-	return NULL;
-}
-
-const qsignature_class *find_signature(uint16_t code, const qsignature_class *const *s) {
-	while (*s) {
-		if ((*s)->algorithm == code) {
-			return *s;
-		}
-		s++;
-	}
-	return NULL;
-}
-
 int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_params_t *params) {
 	// check fixed size headers - up to and including cipher list size
 	qslice_t s = *ps;
@@ -501,7 +486,7 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_param
 	while (ciphers.p < ciphers.e && !h->cipher) {
 		uint16_t code = big_16(ciphers.p);
 		ciphers.p += 2;
-		h->cipher = find_cipher(code, params->ciphers);
+		h->cipher = find_cipher(params->ciphers, code);
 	}
 
 	// only null compression allowed
@@ -520,14 +505,14 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_param
 		if (s.p + 4 > s.e) {
 			return -1;
 		}
-		uint16_t type = big_16(s.p);
+		uint16_t ext_type = big_16(s.p);
 		size_t ext_len = big_16(s.p + 2);
 		qslice_t ext;
 		ext.p = s.p + 4;
 		ext.e = ext.p + ext_len;
 		s.p = ext.e;
 
-		switch (type) {
+		switch (ext_type) {
 		case SERVER_NAME: {
 			qslice_t names;
 			if (decode_slice_16(&ext, &names)) {
@@ -540,7 +525,7 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_param
 					return -1;
 				}
 				if (name_type == HOST_NAME_TYPE) {
-					h->server_name = name.p;
+					h->server_name = (char*)name.p;
 					h->name_len = (size_t)(name.e - name.p);
 					break;
 				}
@@ -572,7 +557,7 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_param
 			while (a.p < a.e) {
 				uint16_t algo = big_16(a.p);
 				a.p += 2;
-				const qsignature_class *type = find_signature(algo, params->signatures);
+				const qsignature_class *type = find_signature(params->signatures, algo);
 				if (type && type->curve < 64) {
 					h->signatures |= UINT64_C(1) << type->curve;
 				}
@@ -956,7 +941,7 @@ int decode_finished(struct crypto_decoder *d, struct finished *f, unsigned off, 
 			return CRYPTO_ERROR;
 		}
 		f->size = big_24(r.p+1);
-		d->end = r.off + f->size;
+		d->end = (unsigned)(r.off + f->size);
 		if (f->size > QUIC_MAX_HASH_SIZE) {
 			return CRYPTO_ERROR;
 		}

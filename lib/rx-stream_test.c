@@ -1,4 +1,4 @@
-#include "rx-stream.h"
+#include "rx.h"
 #include <cutils/test.h>
 
 

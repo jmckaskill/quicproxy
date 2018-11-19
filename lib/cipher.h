@@ -1,6 +1,5 @@
 #pragma once
-#include "bearssl_wrapper.h"
-#include <stdint.h>
+#include "common.h"
 
 typedef struct qcipher_class qcipher_class;
 struct qcipher_class {
@@ -11,10 +10,11 @@ struct qcipher_class {
 	const br_hash_class *hash;
 	void(*init)(const qcipher_class **vt, const void *pn_key, const void *data_key);
 	void(*protect)(const qcipher_class **vt, void *pktnum, size_t num_sz, size_t pay_sz);
-	uint32_t(*decrypt)(const qcipher_class **vt, uint64_t pktnum, const void *iv, const uint8_t *pkt, const uint8_t *enc, const uint8_t *tag);
+	uint32_t(*decrypt)(const qcipher_class **vt, uint64_t pktnum, const void *iv, uint8_t *pkt, uint8_t *enc, uint8_t *tag);
 	void(*encrypt)(const qcipher_class **vt, uint64_t pktnum, const void *iv, uint8_t *pkt, uint8_t *enc, uint8_t *tag);
 };
 
+const qcipher_class *find_cipher(const qcipher_class *const *s, uint16_t code);
 
 // TLS_AES_128_GCM_SHA256 & TLS_AES_256_GCM_SH384
 typedef struct qcipher_aes_gcm qcipher_aes_gcm;
@@ -50,11 +50,6 @@ struct qcipher_chacha20 {
 extern const qcipher_class TLS_CHACHA20_POLY1305_SHA256;
 extern const qcipher_class *TLS_DEFAULT_CIPHERS[];
 
-#define QUIC_MAX_SECRET_SIZE 32
-#define QUIC_MAX_HASH_SIZE 32
-#define QUIC_MAX_KEY_SIZE 32
-#define QUIC_MAX_IV_SIZE 12
-#define QUIC_TAG_SIZE 16
 
 typedef struct qkeyset qkeyset_t;
 struct qkeyset {

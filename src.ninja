@@ -8,22 +8,26 @@ rule run-test
  command = $in -o $out
  description = TEST $in -o $out
 
-build $obj/quic/quic.o: cc lib/quic.c
+build $obj/quic/cipher.o: cc lib/cipher.c
+build $obj/quic/connection.o: cc lib/connection.c
+build $obj/quic/kdf.o: cc lib/kdf.c
 build $obj/quic/packets.o: cc lib/packets.c
-build $obj/quic/crypto.o: cc lib/crypto.c
-build $obj/quic/rx-stream.o: cc lib/rx-stream.c
 build $obj/quic/pem.o: cc lib/pem.c
+build $obj/quic/rx.o: cc lib/rx.c
+build $obj/quic/signature.o: cc lib/signature.c
 build $obj/quic.lib: lib $
- $obj/quic/quic.o $
+ $obj/quic/cipher.o $
+ $obj/quic/connection.o $
+ $obj/quic/kdf.o $
  $obj/quic/packets.o $
- $obj/quic/crypto.o $
- $obj/quic/rx-stream.o $
  $obj/quic/pem.o $
+ $obj/quic/rx.o $
+ $obj/quic/signature.o $
 
 build $obj/quic/test_rx-stream.o: cc lib/rx-stream_test.c
 build $bin/test_rx-stream.exe: clink $
  $obj/quic/test_rx-stream.o $
- $obj/quic/rx-stream.o $
+ $obj/quic/rx.o $
  $obj/cutils.lib $
 
 build $obj/server/server.o: cc src/server/server.c

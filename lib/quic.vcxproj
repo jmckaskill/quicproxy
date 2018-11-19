@@ -16,23 +16,24 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="cipher.c" />
-    <ClCompile Include="crypto.c" />
+    <ClCompile Include="connection.c" />
+    <ClCompile Include="kdf.c" />
     <ClCompile Include="packets.c" />
     <ClCompile Include="pem.c" />
-    <ClCompile Include="quic.c" />
-    <ClCompile Include="rx-stream.c" />
     <ClCompile Include="rx-stream_test.c" />
+    <ClCompile Include="rx.c" />
     <ClCompile Include="signature.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="bearssl_wrapper.h" />
     <ClInclude Include="cipher.h" />
-    <ClInclude Include="crypto.h" />
+    <ClInclude Include="common.h" />
+    <ClInclude Include="connection.h" />
+    <ClInclude Include="kdf.h" />
     <ClInclude Include="packets.h" />
     <ClInclude Include="pem.h" />
-    <ClInclude Include="quic.h" />
-    <ClInclude Include="rx-stream.h" />
+    <ClInclude Include="rx.h" />
     <ClInclude Include="signature.h" />
+    <ClInclude Include="tx.h" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>

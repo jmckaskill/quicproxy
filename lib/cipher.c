@@ -1,9 +1,19 @@
 #include "cipher.h"
 
+const qcipher_class *find_cipher(const qcipher_class *const *s, uint16_t code) {
+	while (*s) {
+		if ((*s)->cipher == code) {
+			return *s;
+		}
+		s++;
+	}
+	return NULL;
+}
+
 static void get_nonce_12(uint8_t *nonce, uint64_t pktnum, const void *iv) {
 	write_big_32(nonce, 0);
 	write_big_64(nonce + 4, pktnum);
-	for (int i = 0; i < sizeof(nonce); i++) {
+	for (int i = 0; i < 12; i++) {
 		nonce[i] ^= ((uint8_t*)iv)[i];
 	}
 }
@@ -42,7 +52,7 @@ static void protect_aes_gcm(const qcipher_class **vt, void *pktnum, size_t num_s
 	c->pn.vtable->run(&c->pn.vtable, sample, big_32((char*)sample + 12), pktnum, num_sz);
 }
 
-static uint32_t decrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, const void *iv, const uint8_t *pkt, const uint8_t *enc, const uint8_t *tag) {
+static uint32_t decrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, const void *iv, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_gcm *c = (qcipher_aes_gcm*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, iv);
@@ -115,7 +125,7 @@ static void protect_aes_ccm(const qcipher_class **vt, void *pktnum, size_t num_s
 
 #define CCM_TAG_LEN 16
 
-static uint32_t decrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, const void *iv, const uint8_t *pkt, const uint8_t *enc, const uint8_t *tag) {
+static uint32_t decrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, const void *iv, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_ccm *c = (qcipher_aes_ccm*)vt;
 	size_t aad_len = (size_t)(enc - pkt);
 	size_t data_len = (size_t)(tag - enc);
@@ -178,6 +188,10 @@ static void protect_chacha20(const qcipher_class **vt, void *pktnum, size_t num_
 	fn(c->pn_key, (char*)sample + 4, cc, pktnum, num_sz);
 }
 
+#ifdef _MSC_VER
+#pragma warning(disable:4146) // minus applied to unsigned
+#endif
+
 static inline uint32_t
 EQ0(int32_t x) {
 	uint32_t q;
@@ -186,7 +200,7 @@ EQ0(int32_t x) {
 	return ~(q | -q) >> 31;
 }
 
-static uint32_t decrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, const void *iv, const uint8_t *pkt, const uint8_t *enc, const uint8_t *tag) {
+static uint32_t decrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, const void *iv, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
 	qcipher_chacha20 *c = (qcipher_chacha20*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, iv);
@@ -214,6 +228,7 @@ const qcipher_class TLS_CHACHA20_POLY1305_SHA256 = {
 	256 / 8, // key size
 	12, // iv size
 	16, // tag size
+	&br_sha256_vtable,
 	&init_chacha20_poly1305_sha256,
 	&protect_chacha20,
 	&decrypt_chacha20,
@@ -225,8 +240,8 @@ const qcipher_class TLS_CHACHA20_POLY1305_SHA256 = {
 // Prefer GCM over CCM
 
 const qcipher_class *TLS_DEFAULT_CIPHERS[] = {
-	&TLS_CHACHA20_POLY1305_SHA256,
 	&TLS_AES_128_GCM_SHA256,
+	&TLS_CHACHA20_POLY1305_SHA256,
 	&TLS_AES_256_GCM_SHA384,
 	&TLS_AES_128_CCM_SHA256,
 	NULL,

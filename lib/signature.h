@@ -1,7 +1,6 @@
 #pragma once
-#include "bearssl_wrapper.h"
+#include "common.h"
 
-#define QUIC_MAX_SIG_SIZE 512 // allow for up to 4096 bit rsa keys
 
 typedef struct qsignature_class qsignature_class;
 struct qsignature_class {
@@ -13,6 +12,8 @@ struct qsignature_class {
 	int(*verify)(const qsignature_class *c, const br_x509_pkey *pk, const void *text, size_t text_len, const void *sig, size_t sig_len);
 };
 
+const qsignature_class *find_signature(const qsignature_class *const *s, uint16_t code);
+
 extern const qsignature_class TLS_RSA_PKCS1_SHA256;
 extern const qsignature_class TLS_RSA_PKCS1_SHA384;
 extern const qsignature_class TLS_RSA_PKCS1_SHA512;
@@ -20,7 +21,7 @@ extern const qsignature_class TLS_ECDSA_SECP256R1_SHA256;
 extern const qsignature_class TLS_ECDSA_SECP384R1_SHA384;
 extern const qsignature_class TLS_ECDSA_SECP521R1_SHA512;
 
-extern const qsignature_class *TLS_RSA_SIGNATURES[];
+extern const qsignature_class *TLS_RSA_PKCS1_SIGNATURES[];
 extern const qsignature_class *TLS_ECDSA_SIGNATURES[];
 extern const qsignature_class *TLS_DEFAULT_SIGNATURES[];
 
