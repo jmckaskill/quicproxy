@@ -17,19 +17,6 @@
 
 #define QUIC_ADDRESS_SIZE 19 // +1 for size
 
-// TLS signature algorithms
-#define RSA_PKCS1_SHA256 0x0401
-#define RSA_PKCS1_SHA384 0x0501
-#define RSA_PKCS1_SHA512 0x0601
-#define ECDSA_SECP256R1_SHA256 0x0403
-#define ECDSA_SECP384R1_SHA384 0x0503
-#define ECDSA_SECP512R1_SHA512 0x0603
-#define ED25519 0x0807
-#define ED448 0x0808
-#define RSA_PSS_SHA256 0x0809
-#define RSA_PSS_SHA384 0x080A
-#define RSA_PSS_SHA512 0x080B
-
 typedef struct qtx_stream qtx_stream_t;
 struct qtx_stream {
 	int64_t id;
@@ -37,12 +24,6 @@ struct qtx_stream {
 	uint64_t offset;
 	uint8_t *data;
 	size_t len;
-};
-
-typedef struct qslice qslice_t;
-struct qslice {
-	uint8_t *p;
-	uint8_t *e;
 };
 
 typedef struct qtx_packet qtx_packet_t;
@@ -83,8 +64,8 @@ struct qconnection {
 	// send/recv
 	quic_send send;
 	void *send_user;
+	uint64_t local_id;
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
-	uint8_t local_id[QUIC_ADDRESS_SIZE];
 	bool is_client;
 
 	// crypto management
@@ -142,8 +123,8 @@ int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **
 typedef struct qconnect_request qconnect_request_t;
 struct qconnect_request {
 	tick_t rxtime;
+	uint64_t destination;
 	uint8_t source[QUIC_ADDRESS_SIZE];
-	uint8_t destination[QUIC_ADDRESS_SIZE];
 
 	const uint8_t *random;
 
@@ -158,7 +139,11 @@ struct qconnect_request {
 	size_t raw_size;
 };
 
-int qc_get_destination(void *buf, size_t len, uint8_t *out);
+#define QC_PARSE_ERROR -1
+#define QC_WRONG_VERSION -2
+#define QC_STATELESS_RETRY -3
+
+int qc_get_destination(void *buf, size_t len, uint64_t *out);
 int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qcrypto_params_t *params);
 int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer);
 

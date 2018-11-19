@@ -52,57 +52,6 @@
 #define ACK_MASK 0xFE
 #define ACK_ECN_FLAG 1
 
-// TLS records
-#define TLS_RECORD_HEADER_SIZE 4
-#define CLIENT_HELLO 1
-#define SERVER_HELLO 2
-#define NEW_SESSION_TICKET 4
-#define END_OF_EARLY_DATA 5
-#define ENCRYPTED_EXTENSIONS 6
-#define CERTIFICATE 11
-#define CERTIFICATE_REQUEST 13
-#define CERTIFICATE_VERIFY 15
-#define FINISHED 20
-#define KEY_UPDATE 24
-#define MESSAGE_HASH 254
-
-#define TLS_LEGACY_VERSION 0x303
-#define TLS_VERSION 0x304
-
-#define EC_KEY_UNCOMPRESSED 4
-
-// TLS compression methods
-#define TLS_COMPRESSION_NULL 0
-
-
-// TLS extensions
-#define TLS_EXTENSION_HEADER_SIZE 4
-#define SERVER_NAME 0
-#define MAX_FRAGMENT_LENGTH 1
-#define STATUS_REQUEST 5
-#define SUPPORTED_GROUPS 10
-#define SIGNATURE_ALGORITHMS 13
-#define USE_SRTP 14
-#define HEARTBEAT 15
-#define APP_PROTOCOL 16
-#define SIGNED_CERTIFICATE_TIMESTAMP 18
-#define CLIENT_CERTIFICATE_TYPE 19
-#define SERVER_CERTIFICATE_TYPE 20
-#define TLS_PADDING 21
-#define PRE_SHARED_KEY 41
-#define EARLY_DATA 42
-#define SUPPORTED_VERSIONS 43
-#define COOKIE 44
-#define PSK_KEY_EXCHANGE_MODES 45
-#define CERTIFICATE_AUTHORITIES 47
-#define OID_FILTERS 48
-#define POST_HANDSHAKE_AUTH 49
-#define SIGNATURE_ALGORITHMS_CERT 50
-#define KEY_SHARE 51
-#define QUIC_TRANSPORT_PARAMETERS 0xFFA5
-
-// server name
-#define HOST_NAME_TYPE 0
 
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
@@ -112,8 +61,14 @@ static inline void *append(void *to, const void *from, size_t sz) {
 	return (uint8_t*)to + sz;
 }
 
-uint8_t encode_id_len(uint8_t len);
-uint8_t decode_id_len(uint8_t val);
+typedef struct qslice qslice_t;
+struct qslice {
+	uint8_t *p;
+	uint8_t *e;
+};
+
+static inline uint8_t encode_id_len(uint8_t len) {return len ? (len - 3) : 0;}
+static inline uint8_t decode_id_len(uint8_t val) {return val ? (val + 3) : 0;}
 uint8_t *encode_varint(uint8_t *p, uint64_t val);
 int64_t decode_varint(qslice_t *s);
 size_t packet_number_length(uint64_t val);
@@ -122,18 +77,7 @@ int64_t decode_packet_number(qslice_t *s);
 
 int encode_client_hello(const qconnection_t *c, qslice_t *ps);
 int encode_server_hello(const qconnection_t *c, qslice_t *ps);
-
-struct client_hello {
-	const uint8_t *random;
-	qslice_t server_name;
-	qslice_t ciphers;
-	qslice_t groups;
-	qslice_t algorithms;
-	size_t key_num;
-	br_ec_public_key keys[QUIC_MAX_KEYSHARE];
-};
-
-int decode_client_hello(qslice_t s, struct client_hello *h);
+int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qcrypto_params_t *params);
 
 struct encrypted_extensions {
 	char todo;

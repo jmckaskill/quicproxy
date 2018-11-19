@@ -3,14 +3,57 @@
 #include <cutils/endian.h>
 #include <stdbool.h>
 
+// TLS records
+#define TLS_RECORD_HEADER_SIZE 4
+#define CLIENT_HELLO 1
+#define SERVER_HELLO 2
+#define NEW_SESSION_TICKET 4
+#define END_OF_EARLY_DATA 5
+#define ENCRYPTED_EXTENSIONS 6
+#define CERTIFICATE 11
+#define CERTIFICATE_REQUEST 13
+#define CERTIFICATE_VERIFY 15
+#define FINISHED 20
+#define KEY_UPDATE 24
+#define MESSAGE_HASH 254
 
-uint8_t encode_id_len(uint8_t len) {
-	return len ? (len - 3) : 0;
-}
+#define TLS_LEGACY_VERSION 0x303
+#define TLS_VERSION 0x304
 
-uint8_t decode_id_len(uint8_t val) {
-	return val ? (val + 3) : 0;
-}
+#define EC_KEY_UNCOMPRESSED 4
+
+// TLS compression methods
+#define TLS_COMPRESSION_NULL 0
+
+
+// TLS extensions
+#define TLS_EXTENSION_HEADER_SIZE 4
+#define SERVER_NAME 0
+#define MAX_FRAGMENT_LENGTH 1
+#define STATUS_REQUEST 5
+#define SUPPORTED_GROUPS 10
+#define SIGNATURE_ALGORITHMS 13
+#define USE_SRTP 14
+#define HEARTBEAT 15
+#define APP_PROTOCOL 16
+#define SIGNED_CERTIFICATE_TIMESTAMP 18
+#define CLIENT_CERTIFICATE_TYPE 19
+#define SERVER_CERTIFICATE_TYPE 20
+#define TLS_PADDING 21
+#define PRE_SHARED_KEY 41
+#define EARLY_DATA 42
+#define SUPPORTED_VERSIONS 43
+#define COOKIE 44
+#define PSK_KEY_EXCHANGE_MODES 45
+#define CERTIFICATE_AUTHORITIES 47
+#define OID_FILTERS 48
+#define POST_HANDSHAKE_AUTH 49
+#define SIGNATURE_ALGORITHMS_CERT 50
+#define KEY_SHARE 51
+#define QUIC_TRANSPORT_PARAMETERS 0xFFA5
+
+// server name
+#define HOST_NAME_TYPE 0
 
 uint8_t *encode_varint(uint8_t *p, uint64_t val) {
 	if (val < 0x40) {
@@ -396,16 +439,44 @@ int encode_finished(qslice_t *ps, const uint8_t *verify, size_t len) {
 	return 0;
 }
 
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qcrypto_params_t *params) {
-	h->rxtime = rxtime;
-	qslice_t s;
-	s.p = (uint8_t*)buf;
-	s.e = s.p + len;
+const qcipher_class *find_cipher(uint16_t code, const qcipher_class *const *s) {
+	while (*s) {
+		if ((*s)->cipher == code) {
+			return *s;
+		}
+		s++;
+	}
+	return NULL;
+}
 
+const qsignature_class *find_signature(uint16_t code, const qsignature_class *const *s) {
+	while (*s) {
+		if ((*s)->algorithm == code) {
+			return *s;
+		}
+		s++;
+	}
+	return NULL;
+}
+
+int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_params_t *params) {
 	// check fixed size headers - up to and including cipher list size
-	if (s.p + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
+	qslice_t s = *ps;
+	if (s.p + 1 + 3 + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
 		return -1;
 	}
+
+	// TLS record header
+	if (*(s.p++) != CLIENT_HELLO) {
+		return -1;
+	}
+	size_t len = big_24(s.p);
+	s.p += 3;
+	if (s.p + len > s.e) {
+		return -1;
+	}
+	ps->p = s.p + len;
+	s.e = ps->p;
 
 	// legacy version
 	if (big_16(s.p) != TLS_LEGACY_VERSION) {
@@ -426,6 +497,11 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtim
 	qslice_t ciphers;
 	if (decode_slice_16(&s, &ciphers) || ((ciphers.e - ciphers.p) & 1)) {
 		return -1;
+	}
+	while (ciphers.p < ciphers.e && !h->cipher) {
+		uint16_t code = big_16(ciphers.p);
+		ciphers.p += 2;
+		h->cipher = find_cipher(code, params->ciphers);
 	}
 
 	// only null compression allowed
@@ -450,6 +526,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtim
 		ext.p = s.p + 4;
 		ext.e = ext.p + ext_len;
 		s.p = ext.e;
+
 		switch (type) {
 		case SERVER_NAME: {
 			qslice_t names;
@@ -458,23 +535,50 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtim
 			}
 			while (names.p < names.e) {
 				uint8_t name_type = *(names.p++);
-				qslice_t other_name;
-				if (decode_slice_16(&names, (name_type == HOST_NAME_TYPE) ? &h->server_name : &other_name)) {
+				qslice_t name;
+				if (decode_slice_16(&names, &name)) {
 					return -1;
+				}
+				if (name_type == HOST_NAME_TYPE) {
+					h->server_name = name.p;
+					h->name_len = (size_t)(name.e - name.p);
+					break;
 				}
 			}
 			break;
 		}
-		case SUPPORTED_GROUPS:
-			if (decode_slice_16(&ext, &h->groups) || ((h->groups.e - h->groups.p) & 1)) {
+		case SUPPORTED_GROUPS: {
+			qslice_t g;
+			if (decode_slice_16(&ext, &g) || ((g.e - g.p) & 1)) {
 				return -1;
 			}
-			break;
-		case SIGNATURE_ALGORITHMS:
-			if (decode_slice_16(&ext, &h->algorithms) || ((h->algorithms.e - h->algorithms.p) & 1)) {
-				return -1;
+			if (!h->key.curve) {
+				while (g.p < g.e) {
+					uint16_t group = big_16(g.p);
+					g.p += 2;
+					if (group < 128 && strchr(params->groups, (char)group)) {
+						h->key.curve = group;
+						break;
+					}
+				}
 			}
 			break;
+		}
+		case SIGNATURE_ALGORITHMS: {
+			qslice_t a;
+			if (decode_slice_16(&ext, &a) || ((a.e - a.p) & 1)) {
+				return -1;
+			}
+			while (a.p < a.e) {
+				uint16_t algo = big_16(a.p);
+				a.p += 2;
+				const qsignature_class *type = find_signature(algo, params->signatures);
+				if (type && type->curve < 64) {
+					h->signatures |= UINT64_C(1) << type->curve;
+				}
+			}
+			break;
+		}
 		case SUPPORTED_VERSIONS: {
 			if (ext.p == ext.e) {
 				return -1;
@@ -495,23 +599,19 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtim
 			if (decode_slice_16(&ext, &keys)) {
 				return -1;
 			}
-			while (keys.p < keys.e && h->key_num < QUIC_MAX_KEYSHARE) {
-				if (keys.p + 2 > keys.e) {
-					return -1;
-				}
+			while (keys.p + 2 < keys.e) {
 				uint16_t group = big_16(keys.p);
 				keys.p += 2;
-				qslice_t key;
-				if (decode_slice_16(&keys, &key)) {
+				qslice_t k;
+				if (decode_slice_16(&keys, &k)) {
 					return -1;
 				}
-				if (key.p == key.e || key.p[0] != EC_KEY_UNCOMPRESSED) {
-					continue;
+				if (group < 128 && strchr(params->groups, (char)group) && k.p < k.e && k.p[0] == EC_KEY_UNCOMPRESSED) {
+					h->key.curve = group;
+					h->key.q = k.p + 1;
+					h->key.qlen = k.e - h->key.q;
+					break;
 				}
-				br_ec_public_key *k = &h->keys[h->key_num++];
-				k->curve = group;
-				k->q = key.p + 1;
-				k->qlen = key.e - k->q;
 			}
 			break;
 		}

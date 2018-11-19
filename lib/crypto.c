@@ -54,10 +54,14 @@ static const uint8_t initial_salt[] = {
 void generate_initial_secrets(const uint8_t *id, qkeyset_t *client, qkeyset_t *server) {
 	uint8_t initial_secret[br_sha256_SIZE];
 	hkdf_extract(&br_sha256_vtable, initial_salt, sizeof(initial_salt), id+1, id[0], initial_secret);
-	hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic client in", NULL, 0, client->secret, br_sha256_SIZE);
-	hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic server in", NULL, 0, server->secret, br_sha256_SIZE);
-	init_keyset(client, &TLS_AES_128_GCM_SHA256);
-	init_keyset(server, &TLS_AES_128_GCM_SHA256);
+	if (client) {
+		hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic client in", NULL, 0, client->secret, br_sha256_SIZE);
+		init_keyset(client, &TLS_AES_128_GCM_SHA256);
+	}
+	if (server) {
+		hkdf_expand_label(&br_sha256_vtable, initial_secret, "quic server in", NULL, 0, server->secret, br_sha256_SIZE);
+		init_keyset(server, &TLS_AES_128_GCM_SHA256);
+	}
 }
 
 int generate_handshake_secrets(const qcipher_class *cipher, const br_hash_class *const *msgs, const br_ec_public_key *pk, const br_ec_private_key *sk, qkeyset_t *client, qkeyset_t *server, uint8_t *master_secret) {
@@ -105,39 +109,6 @@ void generate_protected_secrets(const qcipher_class *cipher, const br_hash_class
 
 	init_keyset(client, cipher);
 	init_keyset(server, cipher);
-}
-
-int64_t decrypt_packet(qkeyset_t *k, uint8_t *pkt_begin, uint8_t *packet_number, uint8_t *pkt_end, qslice_t *pkt_data) {
-	if (!k->digest) {
-		// key not initialized yet
-		return -1;
-	}
-	// copy out the encrypted packet number
-	// this way we can assume a 4B packet number
-    // and copy the payload bytes 
-	if (packet_number + 1 + QUIC_TAG_SIZE > pkt_end) {
-		return -1;
-	}
-	qslice_t s = { packet_number, packet_number + 4 };
-	uint8_t tmp[4];
-	memcpy(tmp, s.p, 4);
-	protect_packet_number(k, s.p, s.e, pkt_end);
-	int64_t pktnum = decode_packet_number(&s);
-	if (pktnum < 0) {
-		return -1;
-	}
-	memcpy(s.p, tmp + (s.p - packet_number), 4 - (s.p - packet_number));
-
-	uint8_t *enc_begin = s.p;
-	uint8_t *tag = pkt_end - QUIC_TAG_SIZE;
-	if (tag < enc_begin) {
-		return -1;
-	}
-	
-
-	pkt_data->p = enc_begin;
-	pkt_data->e = tag;
-	return pktnum;
 }
 
 static const char server_context[] = "TLS 1.3, server CertificateVerify";
