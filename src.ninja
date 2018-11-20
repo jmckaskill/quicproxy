@@ -8,26 +8,29 @@ rule run-test
  command = $in -o $out
  description = TEST $in -o $out
 
+build $obj/quic/buffer.o: cc lib/buffer.c
 build $obj/quic/cipher.o: cc lib/cipher.c
 build $obj/quic/connection.o: cc lib/connection.c
 build $obj/quic/kdf.o: cc lib/kdf.c
 build $obj/quic/packets.o: cc lib/packets.c
 build $obj/quic/pem.o: cc lib/pem.c
-build $obj/quic/rx.o: cc lib/rx.c
 build $obj/quic/signature.o: cc lib/signature.c
+build $obj/quic/stream.o: cc lib/stream.c
 build $obj/quic.lib: lib $
+ $obj/quic/buffer.o $
  $obj/quic/cipher.o $
  $obj/quic/connection.o $
  $obj/quic/kdf.o $
  $obj/quic/packets.o $
  $obj/quic/pem.o $
- $obj/quic/rx.o $
  $obj/quic/signature.o $
+ $obj/quic/stream.o $
 
-build $obj/quic/test_rx-stream.o: cc lib/rx-stream_test.c
-build $bin/test_rx-stream.exe: clink $
- $obj/quic/test_rx-stream.o $
- $obj/quic/rx.o $
+build $obj/quic/test_buffer.o: cc lib/buffer_test.c
+build $bin/test_buffer.log: run-test $bin/test_buffer.exe
+build $bin/test_buffer.exe: clink $
+ $obj/quic/test_buffer.o $
+ $obj/quic/buffer.o $
  $obj/cutils.lib $
 
 build $obj/server/server.o: cc src/server/server.c
@@ -54,6 +57,7 @@ build $TGT: phony $
  $bin/test_rbtree.exe $
  $bin/test_str.exe $
  $bin/test_test.exe $
+ $bin/test_buffer.exe $
 
 build check-$TGT: phony $
  $bin/test_flag.log $
@@ -62,6 +66,7 @@ build check-$TGT: phony $
  $bin/test_rbtree.log $
  $bin/test_str.log $
  $bin/test_test.log $
+ $bin/test_buffer.log $
 
 include ext/bearssl.ninja
 

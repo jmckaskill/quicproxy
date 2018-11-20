@@ -15,7 +15,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-server", "src\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-client", "src\client\client.vcxproj", "{92623FB8-4F1B-5BBD-93C2-DDA902688894}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test - rx-stream", "lib\rx-stream_test.vcxproj", "{7D6642C4-9109-563E-85D4-5B80A6541721}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test - buffer", "lib\buffer_test.vcxproj", "{83A18429-4CFE-54F6-8504-5914CB87F397}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - bearssl", "ext\bearssl.vcxproj", "{2F5708D1-9D06-5AE7-89B8-A704AF116264}"
 EndProject
@@ -50,12 +50,12 @@ Global
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|ALL.Build.0 = Release|x64
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Arm-Release|ALL.Build.0 = Arm-Release|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Debug|ALL.ActiveCfg = Debug|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Debug|ALL.Build.0 = Debug|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Release|ALL.ActiveCfg = Release|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Release|ALL.Build.0 = Release|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
-		{7D6642C4-9109-563E-85D4-5B80A6541721}.Arm-Release|ALL.Build.0 = Arm-Release|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Debug|ALL.ActiveCfg = Debug|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Debug|ALL.Build.0 = Debug|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Release|ALL.ActiveCfg = Release|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Release|ALL.Build.0 = Release|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Arm-Release|ALL.ActiveCfg = Arm-Release|x64
+		{83A18429-4CFE-54F6-8504-5914CB87F397}.Arm-Release|ALL.Build.0 = Arm-Release|x64
 		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Debug|ALL.ActiveCfg = Debug|x64
 		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Debug|ALL.Build.0 = Debug|x64
 		{2F5708D1-9D06-5AE7-89B8-A704AF116264}.Release|ALL.ActiveCfg = Release|x64

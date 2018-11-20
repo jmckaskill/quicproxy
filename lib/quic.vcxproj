@@ -15,23 +15,26 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="buffer.c" />
+    <ClCompile Include="buffer_test.c" />
     <ClCompile Include="cipher.c" />
     <ClCompile Include="connection.c" />
     <ClCompile Include="kdf.c" />
     <ClCompile Include="packets.c" />
     <ClCompile Include="pem.c" />
-    <ClCompile Include="rx-stream_test.c" />
-    <ClCompile Include="rx.c" />
+    <ClCompile Include="stream.c" />
     <ClCompile Include="signature.c" />
+    <ClCompile Include="tx.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="buffer.h" />
     <ClInclude Include="cipher.h" />
     <ClInclude Include="common.h" />
     <ClInclude Include="connection.h" />
     <ClInclude Include="kdf.h" />
     <ClInclude Include="packets.h" />
     <ClInclude Include="pem.h" />
-    <ClInclude Include="rx.h" />
+    <ClInclude Include="stream.h" />
     <ClInclude Include="signature.h" />
     <ClInclude Include="tx.h" />
   </ItemGroup>

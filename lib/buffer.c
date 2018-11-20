@@ -4,10 +4,11 @@
 static size_t ctz(uint32_t v) {
 	return __builtin_ctz(v);
 }
-#elif defined _MSC_VEC
+#elif defined _MSC_VER
 #include <intrin.h>
 #pragma intrinsic(_BitScanForward)
 static size_t ctz(uint32_t v) {
+	unsigned long ret;
 	_BitScanForward(&ret, v);
 	return ret;
 }
@@ -25,50 +26,52 @@ static size_t ctz(uint32_t v) {
 }
 #endif
 
-int qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size) {
+void qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size) {
 	// buffer is split into two circular buffers
 	// Data bytes in chunks of 32B
 	// Valid bits in chunks of 32b
 	char *s = (char*)ALIGN_UP(uintptr_t, (uintptr_t)buf, 4);
-	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + sz, 4);
-	size_t chunks = (e - s) / (4 + 32);
-	if (!chunks) {
-		return -1;
+	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + size, 4);
+	b->size = 32 * ((e - s) / (4 + 32));
+	if (b->size) {
+		b->valid = (uint32_t*)s;
+		b->data = (char*)(s + (b->size / 4));
+		memset(b->valid, tx ? 0xFF : 0, b->size / 4);
+		if (tx) {
+			b->tail = UINT32_MAX;
+			b->valid[0] &= (UINT32_C(1) << 31) - 1;
+		}
+	} else {
+		b->valid = NULL;
+		b->data = NULL;
 	}
-	r->size = chunks * 32;
-	r->valid = (uint32_t*)s;
-	r->data = s + (chunks * 4);
-	memset(r->valid, tx ? 0xFF : 0, chunks * 4);
-	r->tail = 0;
-	r->head = 0;
-	if (tx) {
-		r->head = 1;
-		r->valid[0] &= ~1U;
-	}
-	return 0;
+	b->tail = 0;
+	b->head = 0;
 }
 
-static inline uint32_t set_bits_one_chunk(uint32_t valid, uint32_t value, size_t start, size_t end) {
-	uint32_t mask = ((UINT32_C(1) << end) - 1) - ((UINT32_C(1) << start) - 1);
+static inline uint32_t set_bits_one_chunk(uint32_t valid, uint32_t value, uint32_t mask) {
 	return (valid & ~mask) | (value & mask);
 }
 
+// creates a mask of 1s on the right sz long
+#define MASK(SZ) ((UINT32_C(1) << (SZ)) - 1)
+
 static void set_bits(qbuffer_t *b, uint32_t value, size_t start, size_t end) {
 	size_t cstart = start >> 5;
-	size_t cend = start >> 5;
+	size_t cend = end >> 5;
 
 	if (start <= end && cstart == cend) {
 		// all updates are in one chunk
-		b->valid[cstart] = set_bits_one_chunk(b->valid[cstart], value, start&31, end&31);
+		uint32_t mask = MASK(end & 31) - MASK(start & 31);
+		b->valid[cstart] = set_bits_one_chunk(b->valid[cstart], value, mask);
 	} else {
 		// update the bits leading in
-		size_t align_begin = ALIGN_UP(size_t, start, 32);
-		b->valid[cstart] = set_bits_one_chunk(b->valid[cstart], value, start&31, 32);
-		cstart = align_begin >> 5;
+		b->valid[cstart] = set_bits_one_chunk(b->valid[cstart], value, ~MASK(start & 31));
+		cstart = (start + 31) >> 5;
 
 		// update the aligned middle - this may wrap around the circular buffer
 		if (cstart > cend) {
-			for (size_t c = cstart; c < (r->size >> 5); c++) {
+			for (size_t c = cstart; c < (b->size >> 5); c++) {
 				b->valid[c] = value;
 			}
 			for (size_t c = 0; c < cend; c++) {
@@ -81,18 +84,22 @@ static void set_bits(qbuffer_t *b, uint32_t value, size_t start, size_t end) {
 		}
 
 		// update the bits leading out
-		size_t align_end = ALIGN_DOWN(size_t, end, 32);
-		b->valid[cend] = set_bits_one_chunk(b->valid[cend], value, 0, end&31);
+		b->valid[cend] = set_bits_one_chunk(b->valid[cend], value, MASK(end & 31));
 	}
 }
 
 
-size_t qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data) {
+size_t qbuf_insert(qbuffer_t *b, uint64_t off, size_t len, const void *data) {
 	size_t start = (size_t)(off % b->size);
 	size_t end = (start + len) % b->size;
 
 	if (data) {
-		memcpy(b->data + start, data, len);
+		if (end < start) {
+			memcpy(b->data + start, data, b->size - start);
+			memcpy(b->data, (char*)data + len - end, end);
+		} else {
+			memcpy(b->data + start, data, len);
+		}
 	}
 
 	if (off != b->tail) {
@@ -104,7 +111,6 @@ size_t qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data) 
 		// and then work through the valid_buf to move
 		// forward for later data that arrived earlier
 		size_t ret = len;
-		size_t align_end = ALIGN_UP(size_t, end, 32);
 
 		// look through the bits leading in
 		if (end & 31) {
@@ -117,13 +123,14 @@ size_t qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data) 
 		}
 
 		// look through the valid chunks until the end of the circular buffer
-		size_t c = align_end / 32;
-		while (c < b->size / 32 && b->valid[c] == ~UINT32_C(0)) {
+		size_t c = (end + 31) >> 5;
+		size_t csz = b->size >> 5;
+		while (c < csz && b->valid[c] == ~UINT32_C(0)) {
 			c++;
 			ret += 32;
 		}
 
-		if (c == b->size / 32) {
+		if (c == csz) {
 			// look through the valid chunks at the start of the circular buffer
 			c = 0;
 			while (b->valid[c] == ~UINT32_C(0)) {
@@ -133,7 +140,7 @@ size_t qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data) 
 		}
 
 		// look through the bits leading out
-		uint32_t tail_valid = r->valid_buf[c];
+		uint32_t tail_valid = b->valid[c];
 		ret += ctz(~tail_valid);
 
 	end:
@@ -142,9 +149,11 @@ size_t qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data) 
 	}
 }
 
-void *qbuf_valid(qbuffer_t *b, size_t *psz) {
-	*psz = (size_t)((b->tail - b->head) % b->size);
-	return b->data_bytes + (size_t)(b->head % b->size);
+size_t qbuf_buffer(qbuffer_t *b, void **pdata) {
+	size_t start = (size_t)(b->head % b->size);
+	size_t end = (size_t)(b->tail % b->size);
+	*pdata = b->data + start;
+	return (end < start) ? (b->size - start) : (end - start);
 }
 
 void qbuf_consume(qbuffer_t *b, size_t sz) {

@@ -3,6 +3,10 @@
 #include "signature.h"
 #include "cipher.h"
 
+// By default we support the 5 ECDHE groups in TLS 1.3
+// Priority is given to x22519 and secp256r1
+#define TLS_DEFAULT_GROUPS "\x1D\x17\x18\x19\x1E"
+
 typedef struct qcrypto_params qcrypto_params_t;
 struct qcrypto_params {
 	const char *groups;

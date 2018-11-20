@@ -16,6 +16,10 @@
 #include <assert.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+typedef ptrdiff_t ssize_t;
+#endif
+
 typedef struct logger log_t;
 typedef unsigned long tick_t;
 typedef struct qconnection qconnection_t;
@@ -69,6 +73,8 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define RETRY_PACKET 0xFE
 #define HANDSHAKE_PACKET 0xFD
 #define PROTECTED_PACKET 0xFC
+#define SHORT_PACKET 0x30
+#define SHORT_PACKET_MASK 0xB8
 
 // frame types
 #define PADDING 0

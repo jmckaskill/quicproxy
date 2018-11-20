@@ -13,25 +13,56 @@ static uint32_t get_tick() {
 
 static log_t *debug;
 
-struct server_fd {
+struct server {
+	const qinterface_t *vtable;
+	uint64_t id;
+	bool connected;
 	int fd;
-	socklen_t sasz;
+	socklen_t salen;
 	struct sockaddr_storage ss;
+	qconnection_t conn;
+	qstream_t stream;
+	bool stream_opened;
+	uint8_t pktbuf[4096];
+	uint8_t txbuf[4096];
+	uint8_t rxbuf[4096];
 };
 
-static int do_send(void *user, const void *buf, size_t len, tick_t *sent) {
-	struct server_fd *fd = user;
+static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+	struct server *s = (struct server*) vt;
 	struct sockaddr_string in;
-	print_sockaddr(&in, (struct sockaddr*)&fd->ss, fd->sasz);
+	print_sockaddr(&in, (struct sockaddr*)&s->ss, s->salen);
 	LOG(debug, "TX to %s:%s %d bytes", in.host.c_str, in.port.c_str, (int)len);
 
-	if (sendto(fd->fd, buf, (int)len, 0, (struct sockaddr*)&fd->ss, fd->sasz) != (int)len) {
+	if (sendto(s->fd, buf, (int)len, 0, (struct sockaddr*)&s->ss, s->salen) != (int)len) {
 		LOG(debug, "TX failed");
 		return -1;
 	}
 	*sent = get_tick();
 	return 0;
 }
+
+static qstream_t *server_open(const qinterface_t **vt, bool bidirectional) {
+	struct server *s = (struct server*) vt;
+	if (!s->stream_opened) {
+		return NULL;
+	}
+	qinit_stream(&s->stream, s->txbuf, sizeof(s->txbuf), s->rxbuf, sizeof(s->rxbuf));
+	s->stream_opened = true;
+	return &s->stream;
+}
+
+static void server_close(const qinterface_t **vt, qstream_t *stream) {
+	struct server *s = (struct server*) vt;
+	s->stream_opened = false;
+}
+
+static const qinterface_t server_interface = {
+	&server_send,
+	&server_open,
+	&server_close,
+	NULL,
+};
 
 int main(int argc, const char *argv[]) {
 	debug = &stderr_log;
@@ -53,7 +84,6 @@ int main(int argc, const char *argv[]) {
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
 
 	int fd = must_open_server_socket(SOCK_DGRAM, host, port);
-	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
 
 	br_skey_decoder_context skey;
 	br_x509_certificate *certs;
@@ -95,24 +125,23 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
-	bool connected = false;
-	uint64_t local_id = 0;
-	qconnection_t qc;
-	uint8_t pktbuf[4096];
-	struct server_fd sfd;
-	sfd.fd = fd;
+	struct server s;
+	s.vtable = &server_interface;
+	s.fd = fd;
+	s.stream_opened = false;
+	s.connected = false;
 
 	for (;;) {
-		sfd.sasz = sizeof(sfd.ss);
+		s.salen = sizeof(s.ss);
 		char buf[4096];
-		int sz = recvfrom(sfd.fd, buf, sizeof(buf), 0, (struct sockaddr*)&sfd.ss, &sfd.sasz);
+		int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&s.ss, &s.salen);
 		if (sz < 0) {
 			break;
 		}
 		tick_t rxtime = get_tick();
 
 		struct sockaddr_string in;
-		print_sockaddr(&in, (struct sockaddr*)&sfd.ss, sfd.sasz);
+		print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);
 		LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
 
 		uint64_t dest;
@@ -120,28 +149,26 @@ int main(int argc, const char *argv[]) {
 			continue;
 		}
 
-		if (connected && dest == local_id) {
-			qc_recv(&qc, buf, sz, rxtime);
-		} else if (!connected) {
+		if (s.connected && dest == s.id) {
+			qc_recv(&s.conn, NULL, buf, sz, rxtime);
+		} else if (!s.connected) {
 			qconnect_request_t req;
 			if (qc_decode_request(&req, buf, sz, rxtime, &TLS_DEFAULT_PARAMS)) {
 				LOG(debug, "failed to decode request");
 				continue;
 			}
-			if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
+			if (qc_init(&s.conn, &s.vtable, br_prng_seeder_system(NULL), s.pktbuf, sizeof(s.pktbuf))) {
 				FATAL(debug, "failed to init connection");
 			}
-			qc.debug = &stderr_log;
-			qc.send = &do_send;
-			qc.send_user = &sfd;
+			s.conn.debug = &stderr_log;
 			if (keylog_path.len) {
-				qc.keylog = open_file_log(&keylogger, keylog_path.c_str);
+				s.conn.keylog = open_file_log(&keylogger, keylog_path.c_str);
 			}
-			if (qc_accept(&qc, &req, &signer.vtable)) {
+			if (qc_accept(&s.conn, &req, &signer.vtable)) {
 				LOG(debug, "failed to accept request");
 			}
-			local_id = req.destination;
-			connected = true;
+			s.id = req.destination;
+			s.connected = true;
 		}
 	}
 

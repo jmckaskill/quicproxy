@@ -31,18 +31,17 @@ struct qbuffer {
 	size_t size; // circular buffer size in bytes
 };
 
-int qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size);
+void qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size);
 
 // set data valid after the tail. data may be NULL, in which case we'll just set the validity bits.
-int qbuf_set_valid(qbuffer_t *b, uint64_t off, size_t len, const void *data);
+// returns the number of bytes now visible. May be 0 if the data is out of order.
+size_t qbuf_insert(qbuffer_t *b, uint64_t off, size_t len, const void *data);
 
-// max data allowed for receive buffers
-static inline uint64_t qbuf_max(qbuffer_t *b) {
-	return r->head + r->bufsz - 1;
-}
-
-// first valid region. Can be used for writing for tx or reading for rx.
-void *qbuf_valid(qbuffer_t *b, size_t *psz);
+// First valid region chunk. Can be used for writing for tx or reading for rx.
+// May not the full first valid region due to the circular buffer wrapping
+// Call again after consuming data.
+size_t qbuf_buffer(qbuffer_t *b, void **pdata);
+size_t qbuf_read(qbuffer_t *b, void *buf, size_t sz);
 
 // Consume data from the head of the valid region.
 void qbuf_consume(qbuffer_t *b, size_t sz);

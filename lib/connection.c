@@ -18,10 +18,9 @@ enum qhandshake_state {
 
 static const char prng_nonce[] = "quic-proxy prng nonce";
 
-#define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
-#define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 
-int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
+int qc_init(qconnection_t *c, const qinterface_t **iface, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
 	memset(c, 0, sizeof(*c));
 	br_hmac_drbg_init(&c->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
 	if (!seedfn || !seedfn(&c->rand.vtable)) {
@@ -48,6 +47,7 @@ int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz)
 
 	br_sha256_init(&c->msg_sha256);
 	br_sha384_init(&c->msg_sha384);
+	c->iface = iface;
 
 	return 0;
 }
@@ -239,11 +239,59 @@ static qtx_packet_t *encode_crypto_packet(qconnection_t *c, qslice_t *s, enum qc
 
 	qtx_packet_t *pkt = finish_long_packet(c, level, s, &p, minsz);
 	pkt->stream = NULL;
-	pkt->from = off;
-	pkt->to = off + tocopy;
+	pkt->off = off;
+	pkt->len = tocopy;
 	return pkt;
 }
 
+static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t to) {
+	qpacket_buffer_t *pkts = &c->pkts[QC_PROTECTED];
+
+	do {
+		uint8_t buf[DEFAULT_PACKET_SIZE];
+		qslice_t p = { buf, buf + sizeof(buf) };
+		
+		// Header
+		*(p.p++) = SHORT_PACKET;
+
+		// destination
+		p.p = append(p.p, c->peer_id + 1, c->peer_id[0]);
+
+		// packet number
+		uint8_t *packet_number = p.p;
+		p.p = encode_packet_number(p.p, pkts->tx_next);
+		uint8_t *enc_begin = p.p;
+
+		if (pkts->rx_next && encode_ack_frame(c, &p, pkts)) {
+			return;
+		}
+
+		// data
+		uint8_t *stream_header = p.p;
+		*(p.p++) = STREAM | STREAM_OFF_FLAG;
+		p.p = encode_varint(p.p, from);
+		size_t r = qbuf_read(&s->tx, p.p, (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
+		p.p += r;
+		from += r;
+
+		// set stream fin flag
+		if (from == s->tx.head && (s->flags & QSTREAM_END)) {
+			*stream_header |= STREAM_FIN_FLAG;
+		}
+
+		// tag
+		uint8_t *tag = p.p;
+		p.p += QUIC_TAG_SIZE;
+
+		const qcipher_class **cipher = &pkts->tkey.u.vtable;
+		(*cipher)->encrypt(cipher, pkts->tx_next, pkts->tkey.data_iv, buf, enc_begin, tag);
+		(*cipher)->protect(cipher, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
+
+		qtx_packet_t *pkt = &pkts->sent[(pkts->tx_next++) % pkts->sent_len];
+		(*c->iface)->send(c->iface, NULL, buf, (size_t)(p.p - buf), &pkt->sent);
+
+	} while (from < to);
+}
 
 int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qcrypto_params_t *params) {
 	c->params = params;
@@ -290,7 +338,7 @@ int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **
 	}
 
 	// send it
-	return c->send(c->send_user, udpbuf, (size_t)(udp.p - udpbuf), &pkt->sent);
+	return (*c->iface)->send(c->iface, NULL, udpbuf, (size_t)(udp.p - udpbuf), &pkt->sent);
 }
 
 static void log_key(qconnection_t *c, const char *label, const uint8_t *secret, size_t len) {
@@ -433,17 +481,17 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 		if (init_sent < init_len) {
 			pkts[0] = encode_crypto_packet(c, &udp, QC_INITIAL, init_sent, tlsbuf + init_sent, init_len - init_sent, DEFAULT_PACKET_SIZE);
 			if (pkts[0]) {
-				init_sent = (size_t) pkts[0]->to;
+				init_sent += pkts[0]->len;
 			}
 		}
 		if (hs_sent < hs_len) {
 			pkts[1] = encode_crypto_packet(c, &udp, QC_HANDSHAKE, hs_sent, tlsbuf + init_len + hs_sent, hs_len - hs_sent, DEFAULT_PACKET_SIZE);
 			if (pkts[1]) {
-				hs_sent = (size_t)pkts[1]->to;
+				hs_sent += pkts[1]->len;
 			}
 		}
 		tick_t txtime;
-		if (c->send(c->send_user, udpbuf, (size_t)(udp.p - udpbuf), &txtime)) {
+		if ((*c->iface)->send(c->iface, NULL, udpbuf, (size_t)(udp.p - udpbuf), &txtime)) {
 			return -1;
 		}
 		if (pkts[0]) {
@@ -543,7 +591,7 @@ static int process_finished(qconnection_t *c, const struct finished *fin) {
 		uint8_t udpbuf[512];
 		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
 		qtx_packet_t *pkt = encode_crypto_packet(c, &udp, QC_HANDSHAKE, 0, tls, s.p - tls, 0);
-		if (!pkt || c->send(c->send_user, udpbuf, udp.p - udpbuf, &pkt->sent)) {
+		if (!pkt || (*c->iface)->send(c->iface, NULL, udpbuf, udp.p - udpbuf, &pkt->sent)) {
 			return -1;
 		}
 	}
@@ -855,7 +903,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 	return have_hello ? 0 : QC_PARSE_ERROR;
 }
 
-int qc_recv(qconnection_t *c, void *buf, size_t len, tick_t rxtime) {
+int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime) {
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
@@ -916,7 +964,7 @@ int qc_recv(qconnection_t *c, void *buf, size_t len, tick_t rxtime) {
 				receive_packet(pkts, pktnum);
 			}
 
-		} else {
+		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
 			s.p += DEFAULT_SERVER_ID_LEN;
 			if (s.p > s.e) {
@@ -931,3 +979,39 @@ int qc_recv(qconnection_t *c, void *buf, size_t len, tick_t rxtime) {
 
 	return 0;
 }
+
+static void flush_stream(qconnection_t *c, qstream_t *s) {
+	if (s->id < 0) {
+		s->id = c->next_stream_id++;
+		rb_insert(&c->active_streams, rb_begin(&c->active_streams, RB_RIGHT), &s->rb, RB_RIGHT);
+	}
+
+	if (s->tx_next < s->tx.head 
+	|| ((s->flags & QSTREAM_END) && !(s->flags & QSTREAM_END_SENT)) 
+	|| ((s->flags & QSTREAM_RESET) && !(s->flags & QSTREAM_RESET_SENT))) {
+		send_stream(c, s, s->tx_next, MIN(s->tx_max, s->tx.head));
+	}
+}
+
+void qc_add_stream(qconnection_t *c, qstream_t *s, bool bidirectional) {
+	s->id = -1;
+	s->tx_max = c->default_max_data;
+
+	if (c->crypto_state == QC_RUNNING && c->next_stream_id <= c->max_stream_id) {
+		flush_stream(c, s);
+	} else {
+		s->prev = c->last_pending_stream;
+		s->next = NULL;
+		if (s->prev) {
+			s->prev->next = s;
+		} else {
+			c->first_pending_stream = s;
+		}
+		c->last_pending_stream = s;
+	}
+}
+
+
+
+
+

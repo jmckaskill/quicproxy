@@ -13,20 +13,32 @@ static uint32_t get_tick() {
 	return (uint32_t)(ns / 1000);
 }
 
-static int do_send(void *user, const void *buf, size_t len, tick_t *sent) {
-	int *pfd = user;
-	if (send(*pfd, buf, (int)len, 0) != (int)len) {
+struct client {
+	const qinterface_t *vtable;
+	qconnection_t conn;
+	int fd;
+	qstream_t stream;
+	uint8_t txbuf[4096];
+	uint8_t rxbuf[4096];
+	uint8_t pktbuf[4096];
+};
+
+static int client_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+	struct client *c = (struct client*) vt;
+	if (send(c->fd, buf, (int)len, 0) != (int)len) {
 		return -1;
 	}
 	*sent = get_tick();
 	return 0;
 }
 
-int main(int argc, const char *argv[]) {
-#if defined _MSC_VER && defined DEBUG
-	Sleep(5000);
-#endif
+static const qinterface_t client_interface = {
+	&client_send,
+	NULL,
+	NULL,
+};
 
+int main(int argc, const char *argv[]) {
 	log_t *debug = &stderr_log;
 	str_t keylog_path = STR_INIT;
 	struct file_logger keylog_file;
@@ -59,20 +71,22 @@ int main(int argc, const char *argv[]) {
 		unmap_file(&caf);
 	}
 
-	uint8_t pktbuf[4096];
-	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
-	qconnection_t qc;
-	if (qc_init(&qc, seedfn, pktbuf, sizeof(pktbuf))) {
+	struct client c;
+	c.vtable = &client_interface;
+	c.fd = fd;
+	if (qc_init(&c.conn, &c.vtable, br_prng_seeder_system(NULL), c.pktbuf, sizeof(c.pktbuf))) {
 		FATAL(debug, "failed to initialize connection");
 	}
-	qc.send = &do_send;
-	qc.send_user = &fd;
-	qc.debug = &stderr_log;
+	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
+	qtx_write(&c.stream, "hello world", 11);
+	qtx_finish(&c.stream);
+	qc_add_stream(&c.conn, &c.stream);
+	c.conn.debug = &stderr_log;
 	if (keylog_path.len) {
-		qc.keylog = open_file_log(&keylog_file, keylog_path.c_str);
+		c.conn.keylog = open_file_log(&keylog_file, keylog_path.c_str);
 	}
 
-	if (qc_connect(&qc, host, &x509.vtable, &TLS_DEFAULT_PARAMS)) {
+	if (qc_connect(&c.conn, host, &x509.vtable, &TLS_DEFAULT_PARAMS)) {
 		FATAL(debug, "failed to connect to [%s]:%d", host, port);
 	}
 
@@ -83,7 +97,7 @@ int main(int argc, const char *argv[]) {
 			LOG(debug, "receive error");
 			break;
 		} else {
-			qc_recv(&qc, buf, w, get_tick());
+			qc_recv(&c.conn, NULL, buf, w, get_tick());
 		}
 	}
 

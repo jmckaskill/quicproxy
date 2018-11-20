@@ -75,9 +75,9 @@ dirs = [
 ]
 
 [[project]]
-name =  "test - rx-stream"
-file = "lib/rx-stream_test.vcxproj"
-target = "bin/{TGT}/test_rx-stream.exe"
+name =  "test - buffer"
+file = "lib/buffer_test.vcxproj"
+target = "bin/{TGT}/test_buffer.exe"
 
 [[project]]
 name = "lib - bearssl"

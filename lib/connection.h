@@ -1,8 +1,7 @@
 #pragma once
 
 #include "common.h"
-#include "rx.h"
-#include "tx.h"
+#include "stream.h"
 #include "cipher.h"
 #include "packets.h"
 #include "signature.h"
@@ -10,10 +9,38 @@
 
 typedef int(*quic_send)(void *user, const void *buf, size_t len, tick_t *sent);
 
+typedef struct qinterface qinterface_t;
+struct qinterface {
+	int(*send)(const qinterface_t **iface, const void *addr, const void *buf, size_t len, tick_t *sent);
+	qstream_t*(*open)(const qinterface_t **iface, bool bidirectional);
+	void(*close)(const qinterface_t **iface, qstream_t *s);
+	void(*change_peer_address)(const qinterface_t **iface, const void *addr);
+};
+
+typedef struct qtx_packet qtx_packet_t;
+struct qtx_packet {
+	uint64_t off;
+	size_t len;
+	qstream_t *stream;
+	tick_t sent;
+};
+
+typedef struct qpacket_buffer qpacket_buffer_t;
+struct qpacket_buffer {
+	qtx_packet_t *sent;	// packets sent for retries
+	size_t sent_len;	// number of packets in the send buffer
+	uint64_t received;	// receive bitset - one bit per packet
+	uint64_t rx_next;   // next packet to receive (highest received + 1)
+	uint64_t tx_next;   // next packet to send (highest sent + 1)
+	qkeyset_t tkey;
+	qkeyset_t rkey;
+};
+
 struct qconnection {
+	// caller interface
+	const qinterface_t **iface;
+
 	// send/recv
-	quic_send send;
-	void *send_user;
 	uint64_t local_id;
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
 	bool is_client;
@@ -58,10 +85,22 @@ struct qconnection {
 	const br_hash_class **msg_hash;
 	br_sha256_context msg_sha256;
 	br_sha384_context msg_sha384;
+
+	// streams
+	uint64_t max_stream_id;
+	uint64_t next_stream_id;
+	rbtree active_streams;
+	qstream_t *first_pending_stream;
+	qstream_t *last_pending_stream;
+	uint64_t default_max_data;
 };
 
-int qc_init(qconnection_t *c, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
-int qc_recv(qconnection_t *c, void *buf, size_t len, tick_t rxtime);
+int qc_init(qconnection_t *c, const qinterface_t **vt, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
+int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime);
+
+void qc_add_stream(qconnection_t *c, qstream_t *s, bool bidirectional);
+void qc_rm_stream(qconnection_t *c, qstream_t *s);
+int qc_flush_stream(qconnection_t *c, qstream_t *s);
 
 // Client code
 int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qcrypto_params_t *params);
@@ -94,6 +133,3 @@ int qc_get_destination(void *buf, size_t len, uint64_t *out);
 int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qcrypto_params_t *params);
 int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer);
 
-// By default we support the 5 ECDHE groups in TLS 1.3
-// Priority is given to x22519 and secp256r1
-#define TLS_DEFAULT_GROUPS "\x1D\x17\x18\x19\x1E"
