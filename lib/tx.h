@@ -11,6 +11,12 @@ struct qtx_stream {
 	size_t len;
 };
 
+int qtx_init(qtx_stream_t *t, void *buf, size_t sz);
+
+void *qtx_send_buffer(qtx_stream_t *t, size_t min, size_t *psz);
+void qtx_send(qtx_stream_t *t, size_t sz);
+void qtx_send_finish(qtx_stream_t *t);
+
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
 	uint64_t from, to;	// offset of this packet into the data stream

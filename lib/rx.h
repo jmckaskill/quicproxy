@@ -23,13 +23,11 @@ struct qrx_stream {
 int qrx_init(qrx_stream_t *r, void *buf, size_t sz);
 
 static inline bool qrx_have_finish(qrx_stream_t *r) {
-	return r->finish != UINT64_MAX;
+	return r->offset == r->finish;
 }
 
-// +ve = number of bytes in the buffer
-void *qrx_recv(qrx_stream_t *r, size_t min, size_t *psz);
-
-void qrx_consume(qrx_stream_t *r, size_t sz);
+void *qrx_recv_buffer(qrx_stream_t *r, size_t min, size_t *psz);
+void qrx_recv(qrx_stream_t *r, size_t sz);
 
 // These are used by the quic transport library
 // append data, the stream may continue to use the provided buffer until the next call to fold
