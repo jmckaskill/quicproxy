@@ -1,25 +1,36 @@
 #pragma once
 #include "common.h"
 #include "cipher.h"
+#include <cutils/rbtree.h>
 
 typedef struct qtx_stream qtx_stream_t;
 struct qtx_stream {
+	// sorting
+	rbnode rb;
 	int64_t id;
-	uint64_t max_data_allowed;
-	uint64_t offset;
-	uint8_t *data;
-	size_t len;
+
+	// buffer management
+	bool finished;
+	uint64_t have;
+	uint64_t sent;
+	char *buffer;
+	size_t bufsz;
+
+	// flow control
+	uint64_t max_allowed;
+	uint64_t max_sent;
 };
 
-int qtx_init(qtx_stream_t *t, void *buf, size_t sz);
+void qtx_set_buffer(qtx_stream_t *t, void *buf, size_t sz);
 
-void *qtx_send_buffer(qtx_stream_t *t, size_t min, size_t *psz);
-void qtx_send(qtx_stream_t *t, size_t sz);
-void qtx_send_finish(qtx_stream_t *t);
+void *qtx_buffer(qtx_stream_t *t, size_t *psz);
+static inline void qtx_consume(qtx_stream_t *t, size_t sz) {t->have += sz;}
+static inline void qtx_finish(qtx_stream_t *t) { t->finished = true; }
 
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
-	uint64_t from, to;	// offset of this packet into the data stream
+	uint64_t off;
+	size_t len;
 	qtx_stream_t *stream;
 	tick_t sent;
 };
