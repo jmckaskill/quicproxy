@@ -125,6 +125,15 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
+	static const qconnect_params_t params = {
+		.groups = TLS_DEFAULT_GROUPS,
+		.ciphers = TLS_DEFAULT_CIPHERS,
+		.signatures = TLS_DEFAULT_SIGNATURES,
+		.bidi_streams = 1,
+		.max_data = 4096,
+		.stream_data_bidi_remote = 4096,
+	};
+
 	struct server s;
 	s.vtable = &server_interface;
 	s.fd = fd;
@@ -153,7 +162,7 @@ int main(int argc, const char *argv[]) {
 			qc_recv(&s.conn, NULL, buf, sz, rxtime);
 		} else if (!s.connected) {
 			qconnect_request_t req;
-			if (qc_decode_request(&req, buf, sz, rxtime, &TLS_DEFAULT_PARAMS)) {
+			if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
 				LOG(debug, "failed to decode request");
 				continue;
 			}

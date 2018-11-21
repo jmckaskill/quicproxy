@@ -71,6 +71,14 @@ int main(int argc, const char *argv[]) {
 		unmap_file(&caf);
 	}
 
+	static const qconnect_params_t params = {
+		.groups = TLS_DEFAULT_GROUPS,
+		.ciphers = TLS_DEFAULT_CIPHERS,
+		.signatures = TLS_DEFAULT_SIGNATURES,
+		.max_data = 4096,
+		.stream_data_bidi_local = 4096,
+	};
+
 	struct client c;
 	c.vtable = &client_interface;
 	c.fd = fd;
@@ -80,13 +88,13 @@ int main(int argc, const char *argv[]) {
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
 	qtx_write(&c.stream, "hello world", 11);
 	qtx_finish(&c.stream);
-	qc_add_stream(&c.conn, &c.stream);
+	qc_add_stream(&c.conn, &c.stream, true);
 	c.conn.debug = &stderr_log;
 	if (keylog_path.len) {
 		c.conn.keylog = open_file_log(&keylog_file, keylog_path.c_str);
 	}
 
-	if (qc_connect(&c.conn, host, &x509.vtable, &TLS_DEFAULT_PARAMS)) {
+	if (qc_connect(&c.conn, host, &x509.vtable, &params)) {
 		FATAL(debug, "failed to connect to [%s]:%d", host, port);
 	}
 

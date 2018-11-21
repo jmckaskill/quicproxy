@@ -7,15 +7,21 @@
 // Priority is given to x22519 and secp256r1
 #define TLS_DEFAULT_GROUPS "\x1D\x17\x18\x19\x1E"
 
-typedef struct qcrypto_params qcrypto_params_t;
-struct qcrypto_params {
+typedef struct qconnect_params qconnect_params_t;
+struct qconnect_params {
 	const char *groups;
 	const qcipher_class *const *ciphers;
 	const qsignature_class *const *signatures;
+	// these refer to the initial maximum data the remote is allowed to send us
+	uint32_t stream_data_bidi_local; // for bidi streams initiated by us
+	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
+	uint32_t stream_data_uni; // for uni streams initiated by the remote
+	// these refer to the initial maximum streams the remote is allowed to initiate
+	uint64_t bidi_streams;
+	uint64_t uni_streams;
+	// the initial maximum of the total data sent to us
+	uint32_t max_data;
 };
-
-extern const qcrypto_params_t TLS_DEFAULT_PARAMS;
-
 
 typedef struct qslice qslice_t;
 struct qslice {
@@ -33,11 +39,8 @@ int64_t decode_packet_number(qslice_t *s);
 
 int encode_client_hello(const qconnection_t *c, qslice_t *ps);
 int encode_server_hello(const qconnection_t *c, qslice_t *ps);
-int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qcrypto_params_t *params);
-
-struct encrypted_extensions {
-	char todo;
-};
+int encode_encrypted_extensions(const qconnection_t *c, qslice_t *ps);
+int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qconnect_params_t *params);
 
 int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const uint8_t *sig, size_t len);
@@ -78,6 +81,7 @@ struct finished {
 };
 
 int decode_server_hello(struct crypto_decoder *d, struct server_hello *s, unsigned off, const void *data, size_t size);
+int decode_encrypted_extensions(struct crypto_decoder *d, qconnect_params_t *p, unsigned off, const void *data, size_t size);
 int decode_certificates(struct crypto_decoder *d, const br_x509_class **x, unsigned off, const void *data, size_t size);
 int decode_verify(struct crypto_decoder *d, struct verify *v, unsigned off, const void *data, size_t size);
 int decode_finished(struct crypto_decoder *d, struct finished *f, unsigned off, const void *data, size_t size);

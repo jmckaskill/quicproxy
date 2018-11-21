@@ -1,5 +1,7 @@
 #include "buffer.h"
 
+#define MIN(A,B) ((A) < (B) ? (A) : (B))
+
 #if defined __GNUC__
 static size_t ctz(uint32_t v) {
 	return __builtin_ctz(v);
@@ -154,6 +156,25 @@ size_t qbuf_buffer(qbuffer_t *b, void **pdata) {
 	size_t end = (size_t)(b->tail % b->size);
 	*pdata = b->data + start;
 	return (end < start) ? (b->size - start) : (end - start);
+}
+
+void qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
+	size_t start = (size_t)(off % b->size);
+	size_t end = (start + sz) % b->size;
+
+	if (start <= end) {
+		size_t tocopy = MIN(sz, end - start);
+		memcpy(buf, b->data + start, tocopy);
+	} else if (start + sz < b->size) {
+		memcpy(buf, b->data + start, sz);
+	} else {
+		size_t sz1 = b->size - start;
+		memcpy(buf, b->data + start, sz1);
+		sz -= sz1;
+		buf = (char*)buf + sz1;
+		size_t sz2 = MIN(sz, end);
+		memcpy(buf, b->data, sz2);
+	}
 }
 
 void qbuf_consume(qbuffer_t *b, size_t sz) {

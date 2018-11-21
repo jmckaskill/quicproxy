@@ -11,14 +11,20 @@ enum qcrypto_level {
 enum qhandshake_state {
 	QC_RUNNING,
 	QC_PROCESS_SERVER_HELLO,
+	QC_PROCESS_EXTENSIONS,
 	QC_PROCESS_CERTIFICATE,
 	QC_PROCESS_VERIFY,
 	QC_PROCESS_FINISHED,
 };
 
+#define PENDING_BI 0
+#define PENDING_UNI 1
+
 static const char prng_nonce[] = "quic-proxy prng nonce";
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+static void send_pending_streams(qconnection_t *c);
 
 int qc_init(qconnection_t *c, const qinterface_t **iface, br_prng_seeder seedfn, void *pktbuf, size_t bufsz) {
 	memset(c, 0, sizeof(*c));
@@ -267,12 +273,13 @@ static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t 
 		}
 
 		// data
+		size_t sz = MIN((size_t)(to - from), (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
 		uint8_t *stream_header = p.p;
 		*(p.p++) = STREAM | STREAM_OFF_FLAG;
 		p.p = encode_varint(p.p, from);
-		size_t r = qbuf_read(&s->tx, p.p, (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
-		p.p += r;
-		from += r;
+		qbuf_copy(&s->tx, from, p.p, sz);
+		p.p += sz;
+		from += sz;
 
 		// set stream fin flag
 		if (from == s->tx.head && (s->flags & QSTREAM_END)) {
@@ -293,7 +300,7 @@ static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t 
 	} while (from < to);
 }
 
-int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qcrypto_params_t *params) {
+int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params) {
 	c->params = params;
 	c->server_name = server_name;
 	c->validator = validator;
@@ -404,7 +411,7 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 	c->validator = NULL;
 	c->signer = signer;
 	c->server_name = NULL;
-	c->params = NULL;
+	c->params = h->server_params;
 
 	// transcript
 	const br_hash_class *hash = c->cipher->hash;
@@ -436,6 +443,13 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 		log_key(c, "QUIC_SERVER_HANDSHAKE_TRAFFIC_SECRET", hs->tkey.secret, digest_size(hash));
 		log_key(c, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", hs->rkey.secret, digest_size(hash));
 	}
+
+	// EncryptedExtensions
+	uint8_t *ext_begin = s.p;
+	if (encode_encrypted_extensions(c, &s)) {
+		return -1;
+	}
+	hash->update(c->msg_hash, ext_begin, s.p - ext_begin);
 
 	// Certificate
 	uint8_t *cert_begin = s.p;
@@ -517,6 +531,15 @@ static const br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
 		}
 	}
 	return NULL;
+}
+
+static void set_limits_from_remote_params(qconnection_t *c, const qconnect_params_t *p) {
+	c->pending_streams[PENDING_BI].max = p->bidi_streams;
+	c->pending_streams[PENDING_UNI].max = p->uni_streams;
+	c->max_stream_data[0] = c->is_client ? p->stream_data_bidi_remote : p->stream_data_bidi_local;
+	c->max_stream_data[STREAM_SERVER] = c->is_client ? p->stream_data_bidi_local : p->stream_data_bidi_remote;
+	c->max_stream_data[STREAM_UNI] = p->stream_data_uni;
+	c->max_data = p->max_data;
 }
 
 static int process_server_hello(qconnection_t *c, const struct server_hello *h) {
@@ -633,6 +656,7 @@ static enum qcrypto_level expected_level(int crypto_state) {
 	switch (crypto_state) {
 	case QC_PROCESS_SERVER_HELLO:
 		return QC_INITIAL;
+	case QC_PROCESS_EXTENSIONS:
 	case QC_PROCESS_CERTIFICATE:
 	case QC_PROCESS_VERIFY:
 	case QC_PROCESS_FINISHED:
@@ -673,16 +697,28 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 		}
 		br_sha256_update(&c->msg_sha256, tls.p, r);
 		br_sha384_update(&c->msg_sha384, tls.p, r);
-		off += r;
-		tls.p += r;
 		if (process_server_hello(c, &c->rx_crypto_data.server_hello)) {
 			goto err;
 		}
-		c->crypto_state = QC_PROCESS_CERTIFICATE;
+		c->crypto_state = QC_PROCESS_EXTENSIONS;
 		d->state = 0;
 		(*c->validator)->start_chain(c->validator, c->server_name);
 		c->rx_crypto_off = 0;
 		return 0;
+	}
+	case QC_PROCESS_EXTENSIONS: {
+		int r = decode_encrypted_extensions(d, &c->rx_crypto_data.extensions, (unsigned)off, tls.p, tls.e - tls.p);
+		if (r < 0) {
+			goto err;
+		} else if (!r) {
+			(*msgs)->update(msgs, tls.p, tls.e - tls.p);
+			return 0;
+		}
+		(*msgs)->update(msgs, tls.p, r);
+		set_limits_from_remote_params(c, &c->rx_crypto_data.extensions);
+		tls.p += r;
+		c->crypto_state = QC_PROCESS_CERTIFICATE;
+		d->state = 0;
 	}
 	case QC_PROCESS_CERTIFICATE: {
 		int r = decode_certificates(d, c->validator, (unsigned)off, tls.p, tls.e - tls.p);
@@ -693,11 +729,10 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 			return 0;
 		}
 		(*msgs)->update(msgs, tls.p, r);
-		off += r;
-		tls.p += r;
 		if ((*c->validator)->end_chain(c->validator)) {
 			goto err;
 		}
+		tls.p += r;
 		c->crypto_state = QC_PROCESS_VERIFY;
 		d->state = 0;
 		(*msgs)->out(msgs, c->rx_crypto_data.verify.msg_hash);
@@ -711,11 +746,10 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 			return 0;
 		}
 		(*msgs)->update(msgs, tls.p, r);
-		off += r;
-		tls.p += r;
 		if (process_verify(c, &c->rx_crypto_data.verify)) {
 			goto err;
 		}
+		tls.p += r;
 		c->crypto_state = QC_PROCESS_FINISHED;
 		d->state = 0;
 		(*msgs)->out(msgs, c->rx_crypto_data.finished.msg_hash);
@@ -729,12 +763,13 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 			return 0;
 		}
 		(*msgs)->update(msgs, tls.p, r);
-		off += r;
-		tls.p += r;
 		if (process_finished(c, &c->rx_crypto_data.finished)) {
 			goto err;
 		}
 		c->crypto_state = QC_RUNNING;
+		c->rx_crypto_off = 0;
+		LOG(c->debug, "connected");
+		send_pending_streams(c);
 		return 0;
 	}
 	case QC_RUNNING:
@@ -822,9 +857,8 @@ static int64_t decrypt_packet(qkeyset_t *keys, uint8_t *pkt_begin, qslice_t *s) 
 	return pktnum;
 }
 
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rxtime, const qcrypto_params_t *params) {
+int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rxtime, const qconnect_params_t *params) {
 	memset(h, 0, sizeof(*h));
-	h->rxtime = rxtime;
 	qslice_t s;
 	s.p = (uint8_t*)buf;
 	s.e = s.p + buflen;
@@ -900,6 +934,8 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 		}
 	}
 
+	h->rxtime = rxtime;
+	h->server_params = params;
 	return have_hello ? 0 : QC_PARSE_ERROR;
 }
 
@@ -981,11 +1017,6 @@ int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rx
 }
 
 static void flush_stream(qconnection_t *c, qstream_t *s) {
-	if (s->id < 0) {
-		s->id = c->next_stream_id++;
-		rb_insert(&c->active_streams, rb_begin(&c->active_streams, RB_RIGHT), &s->rb, RB_RIGHT);
-	}
-
 	if (s->tx_next < s->tx.head 
 	|| ((s->flags & QSTREAM_END) && !(s->flags & QSTREAM_END_SENT)) 
 	|| ((s->flags & QSTREAM_RESET) && !(s->flags & QSTREAM_RESET_SENT))) {
@@ -993,21 +1024,43 @@ static void flush_stream(qconnection_t *c, qstream_t *s) {
 	}
 }
 
-void qc_add_stream(qconnection_t *c, qstream_t *s, bool bidirectional) {
-	s->id = -1;
-	s->tx_max = c->default_max_data;
+static void insert_stream(qconnection_t *c, qstream_t *s, int uni) {
+	int type = (uni ? STREAM_UNI : 0) | (c->is_client ? 0 : STREAM_SERVER);
+	s->id = (c->pending_streams[uni].next++ << 2) | type;
+	s->tx_max = c->max_stream_data[type];
+	rb_insert(&c->active_streams[type], rb_begin(&c->active_streams[type], RB_RIGHT), &s->rb, RB_RIGHT);
+}
 
-	if (c->crypto_state == QC_RUNNING && c->next_stream_id <= c->max_stream_id) {
+static void send_pending_streams(qconnection_t *c) {
+	for (int uni = 0; uni <= 1; uni++) {
+		while (c->pending_streams[uni].first && c->pending_streams[uni].next < c->pending_streams[uni].max) {
+			qstream_t *s = c->pending_streams[uni].first;
+			c->pending_streams[uni].first = s->next;
+			if (s->next) {
+				s->next->prev = NULL;
+			} else {
+				c->pending_streams[uni].last = NULL;
+			}
+			insert_stream(c, s, uni);
+			flush_stream(c, s);
+		}
+	}
+}
+
+void qc_add_stream(qconnection_t *c, qstream_t *s, bool unidirectional) {
+	int uni = unidirectional ? 1 : 0;
+	if (c->crypto_state == QC_RUNNING && c->pending_streams[uni].next < c->pending_streams[uni].max) {
+		insert_stream(c, s, uni);
 		flush_stream(c, s);
 	} else {
-		s->prev = c->last_pending_stream;
+		s->prev = c->pending_streams[uni].last;
 		s->next = NULL;
 		if (s->prev) {
 			s->prev->next = s;
 		} else {
-			c->first_pending_stream = s;
+			c->pending_streams[uni].first = s;
 		}
-		c->last_pending_stream = s;
+		c->pending_streams[uni].last = s;
 	}
 }
 

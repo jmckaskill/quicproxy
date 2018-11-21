@@ -104,3 +104,6 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define ACK_MASK 0xFE
 #define ACK_ECN_FLAG 1
 
+#define STREAM_SERVER 1
+#define STREAM_UNI 2
+

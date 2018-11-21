@@ -60,6 +60,7 @@ struct qconnection {
 		struct server_hello server_hello;
 		struct verify verify;
 		struct finished finished;
+		qconnect_params_t extensions;
 	} rx_crypto_data;
 
 	// logging
@@ -79,7 +80,7 @@ struct qconnection {
 	const br_x509_class **validator;
 	const qsigner_class *const *signer;
 	const char *server_name;
-	const qcrypto_params_t *params;
+	const qconnect_params_t *params;
 
 	// transcript digest
 	const br_hash_class **msg_hash;
@@ -87,12 +88,15 @@ struct qconnection {
 	br_sha384_context msg_sha384;
 
 	// streams
-	uint64_t max_stream_id;
-	uint64_t next_stream_id;
-	rbtree active_streams;
-	qstream_t *first_pending_stream;
-	qstream_t *last_pending_stream;
-	uint64_t default_max_data;
+	struct {
+		uint64_t max;
+		uint64_t next;
+		qstream_t *first;
+		qstream_t *last;
+	} pending_streams[2];
+	rbtree active_streams[4];
+	uint32_t max_stream_data[4];
+	uint64_t max_data;
 };
 
 int qc_init(qconnection_t *c, const qinterface_t **vt, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
@@ -103,7 +107,7 @@ void qc_rm_stream(qconnection_t *c, qstream_t *s);
 int qc_flush_stream(qconnection_t *c, qstream_t *s);
 
 // Client code
-int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qcrypto_params_t *params);
+int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params);
 
 // Server code
 typedef struct qconnect_request qconnect_request_t;
@@ -121,6 +125,9 @@ struct qconnect_request {
 	const qcipher_class *cipher;
 	uint64_t signatures;
 
+	qconnect_params_t client_params;
+	const qconnect_params_t *server_params;
+
 	const void *raw;
 	size_t raw_size;
 };
@@ -130,6 +137,6 @@ struct qconnect_request {
 #define QC_STATELESS_RETRY -3
 
 int qc_get_destination(void *buf, size_t len, uint64_t *out);
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qcrypto_params_t *params);
+int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qconnect_params_t *params);
 int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer);
 

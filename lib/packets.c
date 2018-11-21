@@ -51,14 +51,15 @@
 #define KEY_SHARE 51
 #define QUIC_TRANSPORT_PARAMETERS 0xFFA5
 
+#define TP_stream_data_bidi_local 0x00
+#define TP_stream_data_bidi_remote 0x0A
+#define TP_stream_data_uni 0x0B
+#define TP_max_data 0x01
+#define TP_bidi_streams 0x02
+#define TP_uni_streams 0x08
+
 // server name
 #define HOST_NAME_TYPE 0
-
-const qcrypto_params_t TLS_DEFAULT_PARAMS = {
-	TLS_DEFAULT_GROUPS,
-	TLS_DEFAULT_CIPHERS,
-	TLS_DEFAULT_SIGNATURES,
-};
 
 uint8_t *encode_varint(uint8_t *p, uint64_t val) {
 	if (val < 0x40) {
@@ -161,18 +162,41 @@ static int decode_slice_16(qslice_t *s, qslice_t *data) {
 	return 0;
 }
 
-static int decode_slice_24(qslice_t *s, qslice_t *data) {
-	uint8_t *p = s->p + 3;
-	if (p > s->e) {
+static int encode_transport_32(qslice_t *s, uint16_t parameter, uint32_t value) {
+	if (s->p + 2+2+4 > s->e) {
 		return -1;
 	}
-	uint8_t *e = p + big_24(s->p);
-	if (e > s->e) {
+	s->p = write_big_16(s->p, parameter);
+	s->p = write_big_16(s->p, 4);
+	s->p = write_big_32(s->p, value);
+	return 0;
+}
+
+static int encode_transport_params(qslice_t *s, const qconnect_params_t *p) {
+	if (s->p + 2 > s->e) {
 		return -1;
 	}
-	data->p = p;
-	data->e = e;
-	s->p = e;
+	s->p += 2;
+	uint8_t *params_start = s->p;
+	if (p->stream_data_bidi_local && encode_transport_32(s, TP_stream_data_bidi_local, p->stream_data_bidi_local)) {
+		return -1;
+	}
+	if (p->stream_data_bidi_remote && encode_transport_32(s, TP_stream_data_bidi_remote, p->stream_data_bidi_remote)) {
+		return -1;
+	}
+	if (p->stream_data_uni && encode_transport_32(s, TP_stream_data_uni, p->stream_data_uni)) {
+		return -1;
+	}
+	if (p->bidi_streams && encode_transport_32(s, TP_bidi_streams, (uint32_t)p->bidi_streams - 1)) {
+		return -1;
+	}
+	if (p->uni_streams && encode_transport_32(s, TP_uni_streams, (uint32_t)p->uni_streams - 1)) {
+		return -1;
+	}
+	if (p->max_data && encode_transport_32(s, TP_max_data, p->max_data)) {
+		return -1;
+	}
+	write_big_16(params_start - 2, (uint16_t)(s->p - params_start));
 	return 0;
 }
 
@@ -234,13 +258,57 @@ int encode_server_hello(const qconnection_t *c, qslice_t *ps) {
 		write_big_16(ext_start - 2, (uint16_t)(s.p - ext_start));
 	}
 
+	
 	write_big_16(list_start-2, (uint16_t)(s.p - list_start));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
 	ps->p = s.p;
 	return 0;
 }
 
+int encode_encrypted_extensions(const qconnection_t *c, qslice_t *ps) {
+	const qconnect_params_t *p = c->params;
+
+	// check fixed size headers - up to and including extensions list size & tls version
+	qslice_t s = *ps;
+	if (s.p + 1 + 3 + 2 > s.e) {
+		return -1;
+	}
+
+	// TLS header
+	*(s.p++) = ENCRYPTED_EXTENSIONS;
+	s.p += 3;
+	uint8_t *record_begin = s.p;
+
+	// extensions list
+	s.p += 2;
+	uint8_t *list_start = s.p;
+
+	// transport params
+	if (s.p + 2 + 2 + 2 > s.e) {
+		return -1;
+	}
+	s.p = write_big_16(s.p, QUIC_TRANSPORT_PARAMETERS);
+	s.p += 2;
+	uint8_t *transport_start = s.p;
+	// negotiated version
+	s.p = write_big_32(s.p, QUIC_VERSION);
+	// supported versions
+	*(s.p++) = 4;
+	s.p = write_big_32(s.p, QUIC_VERSION);
+	if (encode_transport_params(&s, p)) {
+		return -1;
+	}
+	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
+
+	write_big_16(list_start - 2, (uint16_t)(s.p - list_start));
+	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
+	ps->p = s.p;
+	return 0;
+}
+
 int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
+	const qconnect_params_t *p = c->params;
+
 	// check fixed entries - up to and including cipher list size
 	qslice_t s = *ps;
 	if (s.p + 4 + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
@@ -265,11 +333,11 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	// cipher suites
 	s.p += 2;
 	uint8_t *cipher_begin = s.p;
-	for (size_t i = 0; c->params->ciphers[i] != NULL; i++) {
+	for (size_t i = 0; p->ciphers[i] != NULL; i++) {
 		if (s.p + 2 > s.e) {
 			return -1;
 		}
-		s.p = write_big_16(s.p, c->params->ciphers[i]->cipher);
+		s.p = write_big_16(s.p, p->ciphers[i]->cipher);
 	}
 	write_big_16(cipher_begin - 2, (uint16_t)(s.p - cipher_begin));
 
@@ -302,7 +370,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	}
 
 	// supported groups
-	size_t group_len = strlen(c->params->groups);
+	size_t group_len = strlen(p->groups);
 	if (s.p + 2 + 2 + 2 + 2*group_len > s.e) {
 		return -1;
 	}
@@ -310,7 +378,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	s.p = write_big_16(s.p, (uint16_t)(2 + 2*group_len));
 	s.p = write_big_16(s.p, (uint16_t)(2*group_len));
 	for (size_t i = 0; i < group_len; i++) {
-		s.p = write_big_16(s.p, c->params->groups[i]);
+		s.p = write_big_16(s.p, p->groups[i]);
 	}
 
 	// signature algorithms
@@ -320,11 +388,11 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	s.p = write_big_16(s.p, SIGNATURE_ALGORITHMS);
 	s.p += 4;
 	uint8_t *algo_start = s.p;
-	for (size_t i = 0; c->params->signatures[i] != NULL; i++) {
+	for (size_t i = 0; p->signatures[i] != NULL; i++) {
 		if (s.p + 2 > s.e) {
 			return -1;
 		}
-		s.p = write_big_16(s.p, c->params->signatures[i]->algorithm);
+		s.p = write_big_16(s.p, p->signatures[i]->algorithm);
 	}
 	write_big_16(algo_start - 4, (uint16_t)(s.p - algo_start + 2));
 	write_big_16(algo_start - 2, (uint16_t)(s.p - algo_start));
@@ -362,6 +430,19 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 		write_big_16(keys_start - 4, (uint16_t)(s.p - keys_start + 2));
 		write_big_16(keys_start - 2, (uint16_t)(s.p - keys_start));
 	}
+
+	// transport params
+	if (s.p + 2 + 2 + 2 > s.e) {
+		return -1;
+	}
+	s.p = write_big_16(s.p, QUIC_TRANSPORT_PARAMETERS);
+	s.p += 2;
+	uint8_t *transport_start = s.p;
+	s.p = write_big_32(s.p, QUIC_VERSION);
+	if (encode_transport_params(&s, p)) {
+		return -1;
+	}
+	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
 	
 	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
@@ -444,7 +525,7 @@ int encode_finished(qslice_t *ps, const uint8_t *verify, size_t len) {
 	return 0;
 }
 
-int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_params_t *params) {
+int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qconnect_params_t *params) {
 	// check fixed size headers - up to and including cipher list size
 	qslice_t s = *ps;
 	if (s.p + 1 + 3 + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
@@ -600,6 +681,48 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qcrypto_param
 			}
 			break;
 		}
+		case QUIC_TRANSPORT_PARAMETERS: {
+			if (ext.p + 4 > ext.e) {
+				return -1;
+			}
+			ext.p += 4; // initial version
+			qslice_t p;
+			if (decode_slice_16(&ext, &p)) {
+				return -1;
+			}
+			while (p.p +2 < p.e) {
+				uint16_t key = big_16(p.p);
+				p.p += 2;
+				qslice_t value;
+				if (decode_slice_16(&p, &value)) {
+					return -1;
+				}
+				if (value.e - value.p < 4) {
+					continue;
+				}
+				switch (key) {
+				case TP_stream_data_bidi_local:
+					h->client_params.stream_data_bidi_local = big_32(value.p);
+					break;
+				case TP_stream_data_bidi_remote:
+					h->client_params.stream_data_bidi_remote = big_32(value.p);
+					break;
+				case TP_stream_data_uni:
+					h->client_params.stream_data_uni = big_32(value.p);
+					break;
+				case TP_max_data:
+					h->client_params.max_data = big_32(value.p);
+					break;
+				case TP_bidi_streams:
+					h->client_params.bidi_streams = (uint64_t)big_32(value.p) + 1;
+					break;
+				case TP_uni_streams:
+					h->client_params.uni_streams = (uint64_t)big_32(value.p) + 1;
+					break;
+				}
+			}
+			break;
+		}
 		}
 	}
 
@@ -665,15 +788,16 @@ static int getbytes(struct crypto_decoder *d, struct crypto_run *r, void *dst, s
 	}
 }
 
-#define GET1 if (r.off == d->end) {return CRYPTO_ERROR;} else if (r.off == r.have) {return CRYPTO_MORE;} else {r.p = &r.base[r.off++];}
-#define GET2 if ((err = getword(d,&r,2)) > 0) {} else return err
-#define GET3 if ((err = getword(d,&r,3)) > 0) {} else return err
-#define GET4 if ((err = getword(d,&r,4)) > 0) {} else return err
-#define GETBYTES(P,SZ) if ((err = getbytes(d,&r,(P),(SZ))) > 0) {} else return err
-#define GOTOEND if (r.have >= d->end) {r.off = d->end;} else return CRYPTO_MORE
-#define STATE(ENUM) d->state = ENUM; case ENUM
 #define PUSH_END d->stack[d->depth++] = d->end; d->end
 #define POP_END d->stack[--d->depth]
+
+#define STATE(STATE) d->state = STATE; case STATE: do{}while(0)
+#define GET_1(STATE) case STATE: if (r.off == d->end) {return CRYPTO_ERROR;} else if (r.off == r.have) {d->state = STATE; return CRYPTO_MORE;} else r.p = &r.base[r.off++]
+#define GET_2(STATE) case STATE: if ((err = getword(d,&r,2)) <= 0) {d->state = STATE; return err;} else do{}while(0)
+#define GET_3(STATE) case STATE: if ((err = getword(d,&r,3)) <= 0) {d->state = STATE; return err;} else do{}while(0)
+#define GET_4(STATE) case STATE: if ((err = getword(d,&r,4)) <= 0) {d->state = STATE; return err;} else do{}while(0)
+#define GOTO_END(STATE) case STATE: if (r.have < d->end) {d->state = STATE; return CRYPTO_MORE;} else r.off = d->end
+#define GET_BYTES(P,SZ,STATE) d->state = STATE; case STATE: if ((err = getbytes(d,&r,(P),(SZ))) <= 0) {d->state = STATE; return err;} else do{}while(0)
 
 enum server_hello_state {
 	SHELLO_START,
@@ -708,44 +832,36 @@ int decode_server_hello(struct crypto_decoder *d, struct server_hello *s, unsign
 		s->tls_version = 0;
 		s->key.curve = 0;
 		s->key.qlen = 0;
-	STATE(SHELLO_HEADER):
-		GET4;
+		GET_4(SHELLO_HEADER);
 		if (r.p[0] != SERVER_HELLO) {
 			return CRYPTO_ERROR;
 		}
 		d->end = r.off + big_24(r.p+1);
-	STATE(SHELLO_LEGACY_VERSION):
-		GET2;
+		GET_2(SHELLO_LEGACY_VERSION);
 		if (big_16(r.p) != TLS_LEGACY_VERSION) {
 			return CRYPTO_ERROR;
 		}
-	STATE(SHELLO_RANDOM):
-		GETBYTES(s->random, QUIC_RANDOM_SIZE);
-	STATE(SHELLO_LEGACY_SESSION):
-		GET1;
+		GET_BYTES(s->random, QUIC_RANDOM_SIZE, SHELLO_RANDOM);
+		GET_1(SHELLO_LEGACY_SESSION);
 		if (*r.p) {
 			// legacy sessions are not supported in QUIC
 			return CRYPTO_ERROR;
 		}
-	STATE(SHELLO_CIPHER):
-		GET2;
+		GET_2(SHELLO_CIPHER);
 		s->cipher = big_16(r.p);
-	STATE(SHELLO_COMPRESSION):
-		GET1;
+		GET_1(SHELLO_COMPRESSION);
 		if (*r.p != TLS_COMPRESSION_NULL) {
 			// only null compression is supported in TLS 1.3
 			return CRYPTO_ERROR;
 		}
-	STATE(SHELLO_EXT_LIST_SIZE):
-		GET2;
+		GET_2(SHELLO_EXT_LIST_SIZE);
 		PUSH_END = r.off + big_16(r.p);
 	start_extension:
 		if (r.off == d->end) {
 			d->end = POP_END;
 			goto finish_record;
 		}
-	STATE(SHELLO_EXT_HEADER):
-		GET4;
+		GET_4(SHELLO_EXT_HEADER);
 		PUSH_END = r.off + big_16(r.p + 2);
 		switch (big_16(r.p)) {
 		case KEY_SHARE:
@@ -756,50 +872,172 @@ int decode_server_hello(struct crypto_decoder *d, struct server_hello *s, unsign
 			goto finish_extension;
 		}
 	finish_extension:
-	STATE(SHELLO_FINISH_EXTENSION) :
-		GOTOEND;
+		GOTO_END(SHELLO_FINISH_EXTENSION);
 		d->end = POP_END;
 		goto start_extension;
-
+	finish_record:
+		GOTO_END(SHELLO_FINISH);
+		break;
 
 	supported_version:
-	STATE(SHELLO_SUPPORTED_VERSION):
-		GET2;
+		GET_2(SHELLO_SUPPORTED_VERSION);
 		s->tls_version = big_16(r.p);
 		goto finish_extension;
 
 
 
 	key_share:
-	STATE(SHELLO_KEY_GROUP):
-		GET2;
+		GET_2(SHELLO_KEY_GROUP);
 		s->key.curve = big_16(r.p);
-	STATE(SHELLO_KEY_SIZE):
-		GET2;
+		GET_2(SHELLO_KEY_SIZE);
 		s->key.qlen = big_16(r.p);
 		if (!s->key.qlen) {
 			// first byte is the key type
 			return CRYPTO_ERROR;
 		}
 		s->key.qlen--;
-	STATE(SHELLO_KEY_TYPE):
-		GET1;
+		GET_1(SHELLO_KEY_TYPE);
 		if (*r.p != EC_KEY_UNCOMPRESSED) {
 			return CRYPTO_ERROR;
 		}
-	STATE(SHELLO_KEY_DATA):
-		GETBYTES(s->key_data, (uint32_t)s->key.qlen);
+		GET_BYTES(s->key_data, (uint32_t)s->key.qlen, SHELLO_KEY_DATA);
 		s->key.q = s->key_data;
 		goto finish_extension;
-
-
-
-	finish_record:
-	STATE(SHELLO_FINISH):
-		GOTOEND;
-	    assert(!d->depth);
-		return (int)(r.off - off);
 	}
+
+	assert(!d->depth);
+	return (int)(r.off - off);
+}
+
+enum extensions_state {
+	EXTENSIONS_START,
+	EXTENSIONS_HEADER,
+	EXTENSIONS_LIST_SIZE,
+	EXTENSIONS_EXT_HEADER,
+	EXTENSIONS_FINISH_EXTENSION,
+	EXTENSIONS_FINISH,
+	EXTENSIONS_SUPPORTED_VERSIONS,
+	EXTENSIONS_SUPPORTED_VERSIONS_SIZE,
+	EXTENSIONS_NEGOTIATED_VERSION,
+	EXTENSIONS_TP_LIST_SIZE,
+	EXTENSIONS_TP_KEY,
+	EXTENSIONS_TP_FINISH,
+	EXTENSIONS_TP_stream_data_bidi_local,
+	EXTENSIONS_TP_stream_data_bidi_remote,
+	EXTENSIONS_TP_stream_data_uni,
+	EXTENSIONS_TP_bidi_streams,
+	EXTENSIONS_TP_uni_streams,
+	EXTENSIONS_TP_max_data,
+};
+
+int decode_encrypted_extensions(struct crypto_decoder *d, qconnect_params_t *p, unsigned off, const void *data, size_t size) {
+	struct crypto_run r;
+	r.off = off;
+	r.have = (unsigned)(off + size);
+	r.base = (uint8_t*)data - off;
+
+	int err;
+
+	switch (d->state) {
+	default:
+		memset(p, 0, sizeof(*p));
+		reset_decoder(d);
+		GET_4(EXTENSIONS_HEADER);
+		if (r.p[0] != ENCRYPTED_EXTENSIONS) {
+			return CRYPTO_ERROR;
+		}
+		d->end = r.off + big_24(r.p + 1);
+		GET_2(EXTENSIONS_LIST_SIZE);
+		PUSH_END = r.off = big_16(r.p);
+	next_extension:
+		if (r.off == d->end) {
+			d->end = POP_END;
+			goto finish_record;
+		}
+		GET_4(EXTENSIONS_EXT_HEADER);
+		PUSH_END = r.off + big_16(r.p + 2);
+		switch (big_16(r.p)) {
+		case QUIC_TRANSPORT_PARAMETERS:
+			goto transport_parameters;
+		default:
+			goto finish_extension;
+		}
+	finish_extension:
+		GOTO_END(EXTENSIONS_FINISH_EXTENSION);
+		d->end = POP_END;
+		goto next_extension;
+	finish_record:
+		GOTO_END(EXTENSIONS_FINISH);
+		break;
+
+	transport_parameters:
+		// ignore negotiated & supported versions
+		GET_2(EXTENSIONS_NEGOTIATED_VERSION);
+		GET_2(EXTENSIONS_SUPPORTED_VERSIONS_SIZE);
+		PUSH_END = r.off + big_16(r.p);
+		GOTO_END(EXTENSIONS_SUPPORTED_VERSIONS);
+		d->end = POP_END;
+
+		GET_2(EXTENSIONS_TP_LIST_SIZE);
+		PUSH_END = r.off + big_16(r.p);
+	next_tp:
+		if (r.off == d->end) {
+			d->end = POP_END;
+			goto finish_extension;
+		}
+		GET_4(EXTENSIONS_TP_KEY);
+		PUSH_END = r.off + big_16(r.p + 2);
+		if (r.off + 4 > d->end) {
+			goto finish_tp;
+		}
+		switch (big_16(r.p)) {
+		case TP_stream_data_bidi_local:
+			goto stream_data_bidi_local;
+		case TP_stream_data_bidi_remote:
+			goto stream_data_bidi_remote;
+		case TP_stream_data_uni:
+			goto stream_data_uni;
+		case TP_max_data:
+			goto max_data;
+		case TP_bidi_streams:
+			goto bidi_streams;
+		case TP_uni_streams:
+			goto uni_streams;
+		default:
+			goto finish_tp;
+		}
+	finish_tp:
+		GOTO_END(EXTENSIONS_TP_FINISH);
+		d->end = POP_END;
+		goto next_tp;
+	stream_data_bidi_local:
+		GET_4(EXTENSIONS_TP_stream_data_bidi_local);
+		p->stream_data_bidi_local = big_32(r.p);
+		goto finish_tp;
+	stream_data_bidi_remote:
+		GET_4(EXTENSIONS_TP_stream_data_bidi_remote);
+		p->stream_data_bidi_remote = big_32(r.p);
+		goto finish_tp;
+	stream_data_uni:
+		GET_4(EXTENSIONS_TP_stream_data_uni);
+		p->stream_data_uni = big_32(r.p);
+		goto finish_tp;
+	bidi_streams:
+		GET_4(EXTENSIONS_TP_bidi_streams);
+		p->bidi_streams = (uint64_t)big_32(r.p) + 1;
+		goto finish_tp;
+	uni_streams:
+		GET_4(EXTENSIONS_TP_uni_streams);
+		p->uni_streams = (uint64_t)big_32(r.p) + 1;
+		goto finish_tp;
+	max_data:
+		GET_4(EXTENSIONS_TP_max_data);
+		p->max_data = big_32(r.p);
+		goto finish_tp;
+	}
+
+	assert(!d->depth);
+	return (int)(r.off - off);
 }
 
 enum cert_state {
@@ -826,32 +1064,28 @@ int decode_certificates(struct crypto_decoder *d, const br_x509_class **x, unsig
 	switch (d->state) {
 	default:
 		reset_decoder(d);
-	STATE(CERTIFICATES_HEADER):
-		GET4;
+		GET_4(CERTIFICATES_HEADER);
 		if (r.p[0] != CERTIFICATE) {
 			return CRYPTO_ERROR;
 		}
 		d->end = r.off + big_24(r.p+1);
-	STATE(CERTIFICATES_CONTEXT):
-		GET1;
+		GET_1(CERTIFICATES_CONTEXT);
 		if (*r.p != 0) {
-			// QUIC does not support post handshake auth
-			// client auth during the handshake must not use the request context
+			// QUIC does not support post handshake authentication
+			// client authentication during the handshake must not use the request context
 			return CRYPTO_ERROR;
 		}
-	STATE(CERTIFICATES_LIST_SIZE):
-		GET3;
+		GET_3(CERTIFICATES_LIST_SIZE);
 		PUSH_END = r.off + big_24(r.p);
 	next_certificate:
 		if (r.off == d->end) {
 			d->end = POP_END;
 			goto finish_record;
 		}
-	STATE(CERTIFICATES_DATA_SIZE):
-		GET3;
+		GET_3(CERTIFICATES_DATA_SIZE);
 		PUSH_END = r.off + big_24(r.p);
 		(*x)->start_cert(x, big_24(r.p));
-	STATE(CERTIFICATES_DATA):
+		STATE(CERTIFICATES_DATA);
 		if (r.have < d->end) {
 			(*x)->append(x, r.base + r.off, r.have - r.off);
 			return CRYPTO_MORE;
@@ -860,21 +1094,19 @@ int decode_certificates(struct crypto_decoder *d, const br_x509_class **x, unsig
 		r.off = d->end;
 		d->end = POP_END;
 		(*x)->end_cert(x);
-	STATE(CERTIFICATES_EXT_SIZE):
-		GET2;
-		PUSH_END = r.off + big_16(r.p);
-	STATE(CERTIFICATES_EXT):
 		// we don't support any extensions currently, so just skip over the data
-		GOTOEND;
+		GET_2(CERTIFICATES_EXT_SIZE);
+		PUSH_END = r.off + big_16(r.p);
+		GOTO_END(CERTIFICATES_EXT);
 	    d->end = POP_END;
 		goto next_certificate;
-
 	finish_record:
-	STATE(CERTIFICATES_FINISH) :
-		GOTOEND;
-	    assert(!d->depth);
-	    return (int)(r.off - off);
+		GOTO_END(CERTIFICATES_FINISH);
+		break;
 	}
+
+	assert(!d->depth);
+	return (int)(r.off - off);
 }
 
 enum verify_state {
@@ -896,27 +1128,25 @@ int decode_verify(struct crypto_decoder *d, struct verify *v, unsigned off, cons
 	switch (d->state) {
 	default:
 		reset_decoder(d);
-	STATE(VERIFY_HEADER):
-		GET4;
+		GET_4(VERIFY_HEADER);
 		if (r.p[0] != CERTIFICATE_VERIFY) {
 			return CRYPTO_ERROR;
 		}
 		d->end = r.off + big_24(r.p+1);
-	STATE(VERIFY_ALGORITHM):
-		GET2;
+		GET_2(VERIFY_ALGORITHM);
 		v->algorithm = big_16(r.p);
-	STATE(VERIFY_SIG_SIZE):
-		GET2;
+		GET_2(VERIFY_SIG_SIZE);
 		v->sig_size = big_16(r.p);
 		if (v->sig_size > sizeof(v->signature)) {
 			return CRYPTO_ERROR;
 		}
-	STATE(VERIFY_SIG_DATA):
-		GETBYTES(v->signature, v->sig_size);
-	STATE(VERIFY_FINISH):
-		GOTOEND;
-		return (int)(r.off - off);
+		GET_BYTES(v->signature, v->sig_size, VERIFY_SIG_DATA);
+		GOTO_END(VERIFY_FINISH);
+		break;
 	}
+
+	assert(!d->depth);
+	return (int)(r.off - off);
 }
 
 enum finished_state {
@@ -935,8 +1165,7 @@ int decode_finished(struct crypto_decoder *d, struct finished *f, unsigned off, 
 	switch (d->state) {
 	default:
 		reset_decoder(d);
-	STATE(FINISHED_HEADER) :
-		GET4;
+		GET_4(FINISHED_HEADER);
 		if (r.p[0] != FINISHED) {
 			return CRYPTO_ERROR;
 		}
@@ -945,9 +1174,11 @@ int decode_finished(struct crypto_decoder *d, struct finished *f, unsigned off, 
 		if (f->size > QUIC_MAX_HASH_SIZE) {
 			return CRYPTO_ERROR;
 		}
-	STATE(FINISHED_DATA) :
-		GETBYTES(f->verify, f->size);
-		return (int)(r.off - off);
+		GET_BYTES(f->verify, f->size, FINISHED_DATA);
+		break;
 	}
+
+	assert(!d->depth);
+	return (int)(r.off - off);
 }
 

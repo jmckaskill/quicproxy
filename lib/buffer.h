@@ -41,7 +41,8 @@ size_t qbuf_insert(qbuffer_t *b, uint64_t off, size_t len, const void *data);
 // May not the full first valid region due to the circular buffer wrapping
 // Call again after consuming data.
 size_t qbuf_buffer(qbuffer_t *b, void **pdata);
-size_t qbuf_read(qbuffer_t *b, void *buf, size_t sz);
+
+void qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz);
 
 // Consume data from the head of the valid region.
 void qbuf_consume(qbuffer_t *b, size_t sz);

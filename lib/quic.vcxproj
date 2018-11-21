@@ -24,7 +24,6 @@
     <ClCompile Include="pem.c" />
     <ClCompile Include="stream.c" />
     <ClCompile Include="signature.c" />
-    <ClCompile Include="tx.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="buffer.h" />
@@ -36,7 +35,6 @@
     <ClInclude Include="pem.h" />
     <ClInclude Include="stream.h" />
     <ClInclude Include="signature.h" />
-    <ClInclude Include="tx.h" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>

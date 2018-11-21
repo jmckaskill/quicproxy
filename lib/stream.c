@@ -124,7 +124,7 @@ void qrx_consume(qstream_t *s, size_t sz) {
 }
 
 size_t qtx_write(qstream_t *s, const void *buf, size_t sz) {
-	assert(!s->tx_have_end && !s->tx_have_reset);
+	assert(!(s->flags & (QSTREAM_END | QSTREAM_RESET)));
 	size_t ret = 0;
 	while (ret < sz) {
 		void *tgt;
