@@ -365,6 +365,24 @@ static void log_key(qconnection_t *c, const char *label, const uint8_t *secret, 
 	LOG(c->keylog, "%s %s %s\n", label, rand_hex, sec_hex);
 }
 
+static void log_handshake(qconnection_t *c) {
+	if (c->keylog) {
+		uint8_t *ts = c->pkts[QC_HANDSHAKE].tkey.secret;
+		uint8_t *rs = c->pkts[QC_HANDSHAKE].rkey.secret;
+		log_key(c, "QUIC_SERVER_HANDSHAKE_TRAFFIC_SECRET", c->is_client ? rs : ts, digest_size(c->cipher->hash));
+		log_key(c, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", c->is_client ? ts : rs, digest_size(c->cipher->hash));
+	}
+}
+
+static void log_protected(qconnection_t *c) {
+	if (c->keylog) {
+		uint8_t *ts = c->pkts[QC_PROTECTED].tkey.secret;
+		uint8_t *rs = c->pkts[QC_PROTECTED].rkey.secret;
+		log_key(c, "QUIC_SERVER_TRAFFIC_SECRET_0", c->is_client ? rs : ts, digest_size(c->cipher->hash));
+		log_key(c, "QUIC_CLIENT_TRAFFIC_SECRET_0", c->is_client ? ts : rs, digest_size(c->cipher->hash));
+	}
+}
+
 static const qsignature_class *get_signature(const qsigner_class *const *signer, uint64_t client_mask) {
 	for (size_t i = 0;; i++) {
 		const qsignature_class *c = (*signer)->get_type(signer, i);
@@ -439,10 +457,7 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 		return -1;
 	}
 
-	if (c->keylog) {
-		log_key(c, "QUIC_SERVER_HANDSHAKE_TRAFFIC_SECRET", hs->tkey.secret, digest_size(hash));
-		log_key(c, "QUIC_CLIENT_HANDSHAKE_TRAFFIC_SECRET", hs->rkey.secret, digest_size(hash));
-	}
+	log_handshake(c);
 
 	// EncryptedExtensions
 	uint8_t *ext_begin = s.p;
@@ -484,6 +499,7 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 
 	qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
 	generate_protected_secrets(c->cipher, c->msg_hash, c->master_secret, &prot->rkey, &prot->tkey);
+	log_protected(c);
 
 	// encode and sent it
 	size_t init_sent = 0;
@@ -570,7 +586,11 @@ static int process_server_hello(qconnection_t *c, const struct server_hello *h) 
 	}
 
 	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-	return generate_handshake_secrets(c->cipher, c->msg_hash, &h->key, sk, &hs->tkey, &hs->rkey, c->master_secret);
+	if (generate_handshake_secrets(c->cipher, c->msg_hash, &h->key, sk, &hs->tkey, &hs->rkey, c->master_secret)) {
+		return -1;
+	}
+	log_handshake(c);
+	return 0;
 }
 
 static int process_verify(qconnection_t *c, const struct verify *v) {
@@ -596,6 +616,7 @@ static int process_finished(qconnection_t *c, const struct finished *fin) {
 	if (c->is_client) {
 		qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
 		generate_protected_secrets(c->cipher, c->msg_hash, c->master_secret, &prot->tkey, &prot->rkey);
+		log_protected(c);
 
 		uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
 		(*c->msg_hash)->out(c->msg_hash, msg_hash);
