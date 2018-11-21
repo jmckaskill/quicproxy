@@ -94,7 +94,7 @@ int main(int argc, const char *argv[]) {
 		c.conn.keylog = open_file_log(&keylog_file, keylog_path.c_str);
 	}
 
-	if (qc_connect(&c.conn, host, &x509.vtable, &params)) {
+	if (qc_connect(&c.conn, "localhost", &x509.vtable, &params)) {
 		FATAL(debug, "failed to connect to [%s]:%d", host, port);
 	}
 

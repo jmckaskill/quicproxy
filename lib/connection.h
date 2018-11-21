@@ -12,8 +12,9 @@ typedef int(*quic_send)(void *user, const void *buf, size_t len, tick_t *sent);
 typedef struct qinterface qinterface_t;
 struct qinterface {
 	int(*send)(const qinterface_t **iface, const void *addr, const void *buf, size_t len, tick_t *sent);
-	qstream_t*(*open)(const qinterface_t **iface, bool bidirectional);
+	qstream_t*(*open)(const qinterface_t **iface, bool unidirectional);
 	void(*close)(const qinterface_t **iface, qstream_t *s);
+	void(*read)(const qinterface_t **iface, qstream_t *s);
 	void(*change_peer_address)(const qinterface_t **iface, const void *addr);
 };
 

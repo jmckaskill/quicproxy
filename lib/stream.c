@@ -16,13 +16,13 @@ int qrx_received(qstream_t *s, bool fin, uint64_t offset, void *voidp, size_t sz
 	uint64_t end = offset + sz;
 	if (end <= s->rx.tail) {
 		// old data
-		return QRX_WAIT;
+		return 0;
 	} else if (end > qrx_max(s)) {
 		// flow control error
-		return QRX_FLOW_CONTROL;
+		return -1;
 	} else if (end > s->rx_end) {
 		// data past the end
-		return QRX_EOF;
+		return -1;
 	}
 
 	if (fin) {
@@ -30,7 +30,7 @@ int qrx_received(qstream_t *s, bool fin, uint64_t offset, void *voidp, size_t sz
 			s->rx_end = end;
 		} else if (s->rx_end != end) {
 			// the stream end has shifted
-			return QRX_EOF;
+			return -1;
 		}
 	}
 
@@ -45,10 +45,10 @@ int qrx_received(qstream_t *s, bool fin, uint64_t offset, void *voidp, size_t sz
 	if (offset == s->rx.tail) {
 		s->tail_ptr = p;
 		s->tail_size = sz;
-		return QRX_HAVE_DATA;
+		return 1;
 	} else {
 		qbuf_insert(&s->rx, offset, sz, p);
-		return QRX_WAIT;
+		return 0;
 	}
 }
 
@@ -81,30 +81,33 @@ ssize_t qrx_buffer(qstream_t *s, void **pdata) {
 	}
 }
 
-ssize_t qrx_read(qstream_t *s, void *buf, size_t sz) {
+size_t qrx_read_all(qstream_t *s, void *buf, size_t sz, bool *fin) {
 	size_t ret = 0;
-	void *src;
-	size_t have;
-
-	while ((have = qrx_buffer(s, &src)) > 0) {
-		if (ret + have > sz) {
-			memcpy((char*)buf + ret, src, sz - ret);
-			qrx_consume(s, sz - ret);
-			return sz;
-		} else {
-			memcpy((char*)buf + ret, src, have);
-			qrx_consume(s, have);
-			ret += have;
+	do {
+		ssize_t r = qrx_read(s, (char*)buf + ret, sz - ret);
+		if (r <= 0) {
+			if (fin) {
+				*fin = (r == 0);
+			}
+			return ret;
 		}
-	}
+		ret += r;
+	} while (ret < sz);
+	return ret;
+}
 
-	if (ret) {
-		return ret;
-	} else if (s->rx.tail == s->rx_end) {
-		return QRX_EOF;
-	} else {
-		return QRX_WAIT;
+ssize_t qrx_read(qstream_t *s, void *buf, size_t sz) {
+	void *src;
+	ssize_t have = qrx_buffer(s, &src);
+	if (have <= 0) {
+		return have;
 	}
+	if ((size_t)have > sz) {
+		have = sz;
+	}
+	memcpy(buf, src, have);
+	qrx_consume(s, have);
+	return have;
 }
 
 void qrx_consume(qstream_t *s, size_t sz) {
@@ -112,15 +115,14 @@ void qrx_consume(qstream_t *s, size_t sz) {
 		assert(sz <= s->tail_size);
 		s->tail_size -= sz;
 		s->tail_ptr += sz;
-	} else {
-#ifdef DEBUG
-		uint64_t off;
-		size_t have;
-		qbuf_buffer(&s->rx, &off, &have);
-		assert(sz <= have);
-#endif
-		qbuf_consume(&s->rx, sz);
+		qbuf_insert(&s->rx, s->rx.tail, sz, NULL);
 	}
+#ifndef NDEBUG
+	void *ptr;
+	size_t have = qbuf_buffer(&s->rx, &ptr);
+	assert(sz <= have);
+#endif
+	qbuf_consume(&s->rx, sz);
 }
 
 size_t qtx_write(qstream_t *s, const void *buf, size_t sz) {

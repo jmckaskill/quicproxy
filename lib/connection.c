@@ -275,8 +275,12 @@ static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t 
 		// data
 		size_t sz = MIN((size_t)(to - from), (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
 		uint8_t *stream_header = p.p;
-		*(p.p++) = STREAM | STREAM_OFF_FLAG;
-		p.p = encode_varint(p.p, from);
+		*(p.p++) = STREAM;
+		p.p = encode_varint(p.p, s->id);
+		if (from > 0) {
+			*stream_header |= STREAM_OFF_FLAG;
+			p.p = encode_varint(p.p, from);
+		}
 		qbuf_copy(&s->tx, from, p.p, sz);
 		p.p += sz;
 		from += sz;
@@ -805,8 +809,110 @@ err:
 	return -1;
 }
 
+static qstream_t *find_stream(qconnection_t *c, int64_t id, rbnode **parent, rbdirection *pdir) {
+	rbnode *n = c->active_streams[id & 3].root;
+	*parent = NULL;
+	*pdir = RB_LEFT;
+	while (n) {
+		qstream_t *s = container_of(n, qstream_t, rb);
+		if (s->id == id) {
+			return s;
+		}
+		*parent = n;
+		*pdir = (id < s->id) ? RB_LEFT : RB_RIGHT;
+		n = n->child[*pdir];
+	}
+	return NULL;
+}
+
+static void insert_new_stream(qconnection_t *c, qstream_t *s, int uni) {
+	int type = (uni ? STREAM_UNI : 0) | (c->is_client ? 0 : STREAM_SERVER);
+	s->id = (c->pending_streams[uni].next++ << 2) | type;
+	s->tx_max = c->max_stream_data[type];
+	rb_insert(&c->active_streams[type], rb_begin(&c->active_streams[type], RB_RIGHT), &s->rb, RB_RIGHT);
+}
+
+static void insert_existing_stream(qconnection_t *c, qstream_t *s, int64_t id, rbnode *parent, rbdirection dir) {
+	int type = (int)(id & 3);
+	s->id = id;
+	s->tx_max = c->max_stream_data[type];
+	rb_insert(&c->active_streams[type], parent, &s->rb, dir);
+}
+
+static int decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *p) {
+	int64_t id = decode_varint(p);
+	int64_t off = 0;
+	if (hdr & STREAM_OFF_FLAG) {
+		off = decode_varint(p);
+	}
+	int64_t len = p->e - p->p;
+	if (hdr & STREAM_LEN_FLAG) {
+		len = decode_varint(p);
+	}
+	if (id < 0 || off < 0 || len < 0 || len > (int64_t)(p->e - p->p) || off + len >= STREAM_MAX) {
+		return -1;
+	}
+	bool fin = (hdr & STREAM_FIN_FLAG) != 0;
+	void *data = p->p;
+	p->p += (size_t)len;
+	rbnode *parent;
+	rbdirection insert_dir;
+	qstream_t *s = find_stream(c, id, &parent, &insert_dir);
+	if (!s) {
+		if ((id & STREAM_SERVER) == (c->is_client ? 0 : STREAM_SERVER)) {
+			// message on one of our streams, we'll ignore the data
+			// TODO - send reset
+			return 0;
+		}
+		s = (*c->iface)->open(c->iface, (id & STREAM_UNI) != 0);
+		if (!s) {
+			return 0;
+		}
+		insert_existing_stream(c, s, id, parent, insert_dir);
+	}
+	int err = qrx_received(s, fin, (uint64_t)off, data, (size_t)len);
+	if (err < 0) {
+		// flow control error
+		// TODO better error reporting
+		return -1;
+	} 
+	if (err > 0) {
+		// we have new data
+		(*c->iface)->read(c->iface, s);
+		qrx_fold(s);
+	}
+	return 0;
+}
+
 static int process_protected(qconnection_t *c, qslice_t s) {
-	// TODO
+	qpacket_buffer_t *pkts = &c->pkts[QC_PROTECTED];
+	while (s.p < s.e) {
+		uint8_t hdr = *(s.p++);
+		if ((hdr & STREAM_MASK) == STREAM) {
+			if (decode_stream(c, hdr, &s)) {
+				return -1;
+			}
+		} else {
+			switch (hdr) {
+			case PADDING:
+				s.p = find_non_padding(s.p, s.e);
+				break;
+			case ACK:
+				if (decode_ack(pkts, &s)) {
+					return -1;
+				}
+				break;
+			case CRYPTO:
+				if (decode_crypto(c, QC_PROTECTED, &s)) {
+					return -1;
+				}
+				break;
+			default:
+				return -1;
+			}
+		}
+	}
+
 	return 0;
 }
 
@@ -1045,13 +1151,6 @@ static void flush_stream(qconnection_t *c, qstream_t *s) {
 	}
 }
 
-static void insert_stream(qconnection_t *c, qstream_t *s, int uni) {
-	int type = (uni ? STREAM_UNI : 0) | (c->is_client ? 0 : STREAM_SERVER);
-	s->id = (c->pending_streams[uni].next++ << 2) | type;
-	s->tx_max = c->max_stream_data[type];
-	rb_insert(&c->active_streams[type], rb_begin(&c->active_streams[type], RB_RIGHT), &s->rb, RB_RIGHT);
-}
-
 static void send_pending_streams(qconnection_t *c) {
 	for (int uni = 0; uni <= 1; uni++) {
 		while (c->pending_streams[uni].first && c->pending_streams[uni].next < c->pending_streams[uni].max) {
@@ -1062,7 +1161,7 @@ static void send_pending_streams(qconnection_t *c) {
 			} else {
 				c->pending_streams[uni].last = NULL;
 			}
-			insert_stream(c, s, uni);
+			insert_new_stream(c, s, uni);
 			flush_stream(c, s);
 		}
 	}
@@ -1071,7 +1170,7 @@ static void send_pending_streams(qconnection_t *c) {
 void qc_add_stream(qconnection_t *c, qstream_t *s) {
 	int uni = s->rx.size ? 0 : 1;
 	if (c->crypto_state == QC_RUNNING && c->pending_streams[uni].next < c->pending_streams[uni].max) {
-		insert_stream(c, s, uni);
+		insert_new_stream(c, s, uni);
 		flush_stream(c, s);
 	} else {
 		s->prev = c->pending_streams[uni].last;

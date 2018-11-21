@@ -42,9 +42,9 @@ static int server_send(const qinterface_t **vt, const void *addr, const void *bu
 	return 0;
 }
 
-static qstream_t *server_open(const qinterface_t **vt, bool bidirectional) {
+static qstream_t *server_open(const qinterface_t **vt, bool unidirectional) {
 	struct server *s = (struct server*) vt;
-	if (!s->stream_opened) {
+	if (s->stream_opened) {
 		return NULL;
 	}
 	qinit_stream(&s->stream, s->txbuf, sizeof(s->txbuf), s->rxbuf, sizeof(s->rxbuf));
@@ -57,10 +57,18 @@ static void server_close(const qinterface_t **vt, qstream_t *stream) {
 	s->stream_opened = false;
 }
 
+static void server_read(const qinterface_t **vt, qstream_t *stream) {
+	char buf[1024];
+	size_t sz = qrx_read_all(stream, buf, sizeof(buf)-1, NULL);
+	buf[sz] = 0;
+	LOG(debug, "received '%s'", buf);
+}
+
 static const qinterface_t server_interface = {
 	&server_send,
 	&server_open,
 	&server_close,
+	&server_read,
 	NULL,
 };
 
@@ -139,6 +147,8 @@ int main(int argc, const char *argv[]) {
 	s.fd = fd;
 	s.stream_opened = false;
 	s.connected = false;
+
+	LOG(debug, "starting server");
 
 	for (;;) {
 		s.salen = sizeof(s.ss);
