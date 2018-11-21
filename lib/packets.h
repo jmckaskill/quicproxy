@@ -21,6 +21,7 @@ struct qconnect_params {
 	uint32_t uni_streams;
 	// the initial maximum of the total data sent to us
 	uint32_t max_data;
+	qmicrosecs_t idle_timeout;
 };
 
 typedef struct qslice qslice_t;

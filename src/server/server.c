@@ -28,7 +28,7 @@ struct server {
 	uint8_t rxbuf[4096];
 };
 
-static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, qmicrosecs_t *sent) {
 	struct server *s = (struct server*) vt;
 	struct sockaddr_string in;
 	print_sockaddr(&in, (struct sockaddr*)&s->ss, s->salen);
@@ -40,6 +40,11 @@ static int server_send(const qinterface_t **vt, const void *addr, const void *bu
 	}
 	*sent = get_tick();
 	return 0;
+}
+
+static void server_disconnect(const qinterface_t **vt) {
+	struct server *s = (struct server*) vt;
+	s->connected = false;
 }
 
 static qstream_t *server_open(const qinterface_t **vt, bool unidirectional) {
@@ -65,6 +70,7 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 }
 
 static const qinterface_t server_interface = {
+	&server_disconnect,
 	&server_send,
 	&server_open,
 	&server_close,
@@ -157,7 +163,7 @@ int main(int argc, const char *argv[]) {
 		if (sz < 0) {
 			break;
 		}
-		tick_t rxtime = get_tick();
+		qmicrosecs_t rxtime = get_tick();
 
 		struct sockaddr_string in;
 		print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);

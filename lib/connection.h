@@ -5,17 +5,18 @@
 #include "cipher.h"
 #include "packets.h"
 #include "signature.h"
+#include <cutils/stopwatch.h>
 
 
-typedef int(*quic_send)(void *user, const void *buf, size_t len, tick_t *sent);
+typedef int(*quic_send)(void *user, const void *buf, size_t len, qmicrosecs_t *sent);
 
 typedef struct qinterface qinterface_t;
 struct qinterface {
-	int(*send)(const qinterface_t **iface, const void *addr, const void *buf, size_t len, tick_t *sent);
+	int(*send)(const qinterface_t **iface, const void *addr, size_t addrlen, const void *buf, size_t len, qmicrosecs_t *sent);
 	qstream_t*(*open)(const qinterface_t **iface, bool unidirectional);
 	void(*close)(const qinterface_t **iface, qstream_t *s);
 	void(*read)(const qinterface_t **iface, qstream_t *s);
-	void(*change_peer_address)(const qinterface_t **iface, const void *addr);
+	void(*change_peer_address)(const qinterface_t **iface, const void *addr, size_t len);
 };
 
 typedef struct qtx_packet qtx_packet_t;
@@ -23,7 +24,7 @@ struct qtx_packet {
 	uint64_t off;
 	size_t len;
 	qstream_t *stream;
-	tick_t sent;
+	qmicrosecs_t sent;
 };
 
 typedef struct qpacket_buffer qpacket_buffer_t;
@@ -98,22 +99,28 @@ struct qconnection {
 	rbtree active_streams[4];
 	uint32_t max_stream_data[4];
 	uint64_t max_data;
+
+	// timeout
+	qmicrosecs_t retransmit_timer;
+	qmicrosecs_t idle_timer;
+	qmicrosecs_t rtt;
 };
 
 int qc_init(qconnection_t *c, const qinterface_t **vt, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
-int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime);
+int qc_recv(qconnection_t *c, const void *addr, size_t addrlen, void *buf, size_t len, qmicrosecs_t rxtime, qmicrosecs_t *ptimeout);
+int qc_timeout(qconnection_t *c, qmicrosecs_t now, qmicrosecs_t *ptimeout);
 
 void qc_add_stream(qconnection_t *c, qstream_t *s);
 void qc_rm_stream(qconnection_t *c, qstream_t *s);
 int qc_flush_stream(qconnection_t *c, qstream_t *s);
 
 // Client code
-int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params);
+int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params, qmicrosecs_t *ptimeout);
 
 // Server code
 typedef struct qconnect_request qconnect_request_t;
 struct qconnect_request {
-	tick_t rxtime;
+	qmicrosecs_t rxtime;
 	uint64_t destination;
 	uint8_t source[QUIC_ADDRESS_SIZE];
 
@@ -138,6 +145,6 @@ struct qconnect_request {
 #define QC_STATELESS_RETRY -3
 
 int qc_get_destination(void *buf, size_t len, uint64_t *out);
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qconnect_params_t *params);
-int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer);
+int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, qmicrosecs_t rxtime, const qconnect_params_t *params);
+int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer, qmicrosecs_t *ptimeout);
 

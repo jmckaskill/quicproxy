@@ -8,9 +8,9 @@
 
 #define MAX(x, y)   ((x) > (y) ? (x) : (y))
 
-static uint32_t get_tick() {
+static qmicrosecs_t get_tick() {
 	uint64_t ns = monotonic_ns();
-	return (uint32_t)(ns / 1000);
+	return (qmicrosecs_t)(ns / 1000);
 }
 
 struct client {
@@ -23,7 +23,11 @@ struct client {
 	uint8_t pktbuf[4096];
 };
 
-static int client_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+static void client_disconnect(const qinterface_t **vt) {
+
+}
+
+static int client_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, qmicrosecs_t *sent) {
 	struct client *c = (struct client*) vt;
 	if (send(c->fd, buf, (int)len, 0) != (int)len) {
 		return -1;
@@ -94,23 +98,35 @@ int main(int argc, const char *argv[]) {
 		c.conn.keylog = open_file_log(&keylog_file, keylog_path.c_str);
 	}
 
-	if (qc_connect(&c.conn, "localhost", &x509.vtable, &params)) {
+	qmicrosecs_t timeout;
+	if (qc_connect(&c.conn, "localhost", &x509.vtable, &params, &timeout)) {
 		FATAL(debug, "failed to connect to [%s]:%d", host, port);
 	}
 
 	for (;;) {
-		char buf[4096];
-		int w = recv(fd, buf, sizeof(buf), 0);
-		if (w < 0) {
-			LOG(debug, "receive error");
-			break;
+		qmicrosecs_t now = get_tick();
+		long delta = (long)(timeout - now);
+		if (delta < 0) {
+			timeout = qc_timeout(&c.conn, now);
 		} else {
-			qc_recv(&c.conn, NULL, buf, w, get_tick());
+			struct pollfd pfd = { .events = POLLIN,.fd = fd };
+			switch (poll(&pfd, 1, (delta + 999) / 1000)) {
+			case -1:
+				return 2;
+			case 0:
+				continue;
+			case 1:
+				break;
+			}
+			char buf[4096];
+			int w = recv(fd, buf, sizeof(buf), 0);
+			if (w < 0) {
+				LOG(debug, "receive error");
+				break;
+			} else {
+				timeout = qc_recv(&c.conn, NULL, 0, buf, w, get_tick());
+			}
 		}
 	}
-
-	closesocket(fd);
-	free(args);
-	return 0;
 }
 

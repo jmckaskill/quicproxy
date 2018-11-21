@@ -54,6 +54,7 @@ int qc_init(qconnection_t *c, const qinterface_t **iface, br_prng_seeder seedfn,
 	br_sha256_init(&c->msg_sha256);
 	br_sha384_init(&c->msg_sha384);
 	c->iface = iface;
+	c->rtt = QUIC_DEFAULT_RTT;
 
 	return 0;
 }
@@ -299,12 +300,12 @@ static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t 
 		(*cipher)->protect(cipher, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
 
 		qtx_packet_t *pkt = &pkts->sent[(pkts->tx_next++) % pkts->sent_len];
-		(*c->iface)->send(c->iface, NULL, buf, (size_t)(p.p - buf), &pkt->sent);
+		(*c->iface)->send(c->iface, NULL, 0, buf, (size_t)(p.p - buf), &pkt->sent);
 
 	} while (from < to);
 }
 
-int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params) {
+int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params, qmicrosecs_t *ptimeout) {
 	c->params = params;
 	c->server_name = server_name;
 	c->validator = validator;
@@ -349,7 +350,15 @@ int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **
 	}
 
 	// send it
-	return (*c->iface)->send(c->iface, NULL, udpbuf, (size_t)(udp.p - udpbuf), &pkt->sent);
+	if ((*c->iface)->send(c->iface, NULL, 0, udpbuf, (size_t)(udp.p - udpbuf), &pkt->sent)) {
+		return -1;
+	}
+
+	c->idle_timer = pkt->sent + (params->idle_timeout ? params->idle_timeout : QUIC_DEFAULT_IDLE_TIMEOUT);
+	c->retransmit_timer = pkt->sent + (2 * c->rtt);
+	long diff = (long)(c->idle_timer - c->retransmit_timer);
+	*ptimeout = (diff > 0) ? c->retransmit_timer : c->idle_timer;
+	return 0;
 }
 
 static void log_key(qconnection_t *c, const char *label, const uint8_t *secret, size_t len) {
@@ -400,11 +409,12 @@ static const qsignature_class *get_signature(const qsigner_class *const *signer,
 	return NULL;
 }
 
-int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer) {
+int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer, qmicrosecs_t *ptimeout) {
 	// general setup
 	memcpy(c->peer_id, h->source, QUIC_ADDRESS_SIZE);
 	c->local_id = h->destination;
 	c->is_client = false;
+	c->idle_timer = h->rxtime + (h->server_params->idle_timeout ? h->server_params->idle_timeout : QUIC_DEFAULT_IDLE_TIMEOUT);
 
 	// nonces
 	memcpy(c->client_random, h->random, QUIC_RANDOM_SIZE);
@@ -524,8 +534,8 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 				hs_sent += pkts[1]->len;
 			}
 		}
-		tick_t txtime;
-		if ((*c->iface)->send(c->iface, NULL, udpbuf, (size_t)(udp.p - udpbuf), &txtime)) {
+		qmicrosecs_t txtime;
+		if ((*c->iface)->send(c->iface, NULL, 0, udpbuf, (size_t)(udp.p - udpbuf), &txtime)) {
 			return -1;
 		}
 		if (pkts[0]) {
@@ -540,7 +550,8 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 	c->rx_crypto.state = 0;
 	c->rx_crypto_off = 0;
 	hash->out(c->msg_hash, c->rx_crypto_data.finished.msg_hash);
-	
+	*ptimeout = c->idle_timer;
+
 	return 0;
 }
 
@@ -639,7 +650,7 @@ static int process_finished(qconnection_t *c, const struct finished *fin) {
 		uint8_t udpbuf[512];
 		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
 		qtx_packet_t *pkt = encode_crypto_packet(c, &udp, QC_HANDSHAKE, 0, tls, s.p - tls, 0);
-		if (!pkt || (*c->iface)->send(c->iface, NULL, udpbuf, udp.p - udpbuf, &pkt->sent)) {
+		if (!pkt || (*c->iface)->send(c->iface, NULL, 0, udpbuf, udp.p - udpbuf, &pkt->sent)) {
 			return -1;
 		}
 	}
@@ -984,7 +995,7 @@ static int64_t decrypt_packet(qkeyset_t *keys, uint8_t *pkt_begin, qslice_t *s) 
 	return pktnum;
 }
 
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rxtime, const qconnect_params_t *params) {
+int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, qmicrosecs_t rxtime, const qconnect_params_t *params) {
 	memset(h, 0, sizeof(*h));
 	qslice_t s;
 	s.p = (uint8_t*)buf;
@@ -1066,7 +1077,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 	return have_hello ? 0 : QC_PARSE_ERROR;
 }
 
-int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime) {
+int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, qmicrosecs_t rxtime) {
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
