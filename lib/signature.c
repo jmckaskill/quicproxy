@@ -201,8 +201,18 @@ static int sign_ecdsa(const qsigner_class *const *c, const qsignature_class *typ
 	return ret ? (int)ret : -1;
 }
 
+const qsignature_class *find_curve(const qsignature_class *const *s, int curve) {
+	while (*s) {
+		if ((*s)->curve == curve) {
+			return *s;
+		}
+		s++;
+	}
+	return NULL;
+}
+
 int qsigner_ecdsa_init(qsigner_ecdsa *s, const qsignature_class *const *signatures, const br_ec_private_key *sk, const br_x509_certificate *certs, size_t num) {
-	s->sig = find_signature(signatures, (uint16_t) sk->curve);
+	s->sig = find_curve(signatures, sk->curve);
 	if (!s->sig) {
 		return -1;
 	}

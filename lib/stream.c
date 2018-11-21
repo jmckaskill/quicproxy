@@ -135,6 +135,7 @@ size_t qtx_write(qstream_t *s, const void *buf, size_t sz) {
 			have = sz - ret;
 		}
 		memcpy(tgt, (char*)buf + ret, have);
+		qbuf_consume(&s->tx, have);
 		ret += have;
 	}
 	return ret;

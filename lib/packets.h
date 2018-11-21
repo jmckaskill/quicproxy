@@ -17,8 +17,8 @@ struct qconnect_params {
 	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
 	uint32_t stream_data_uni; // for uni streams initiated by the remote
 	// these refer to the initial maximum streams the remote is allowed to initiate
-	uint64_t bidi_streams;
-	uint64_t uni_streams;
+	uint32_t bidi_streams;
+	uint32_t uni_streams;
 	// the initial maximum of the total data sent to us
 	uint32_t max_data;
 };

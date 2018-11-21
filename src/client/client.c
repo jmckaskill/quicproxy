@@ -88,7 +88,7 @@ int main(int argc, const char *argv[]) {
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
 	qtx_write(&c.stream, "hello world", 11);
 	qtx_finish(&c.stream);
-	qc_add_stream(&c.conn, &c.stream, true);
+	qc_add_stream(&c.conn, &c.stream);
 	c.conn.debug = &stderr_log;
 	if (keylog_path.len) {
 		c.conn.keylog = open_file_log(&keylog_file, keylog_path.c_str);

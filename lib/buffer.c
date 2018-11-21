@@ -35,20 +35,20 @@ void qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size) {
 	char *s = (char*)ALIGN_UP(uintptr_t, (uintptr_t)buf, 4);
 	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + size, 4);
 	b->size = 32 * ((e - s) / (4 + 32));
+	b->head = 0;
 	if (b->size) {
 		b->valid = (uint32_t*)s;
-		b->data = (char*)(s + (b->size / 4));
-		memset(b->valid, tx ? 0xFF : 0, b->size / 4);
+		b->data = (char*)s + (b->size / 8);
+		memset(b->valid, tx ? 0xFF : 0, b->size / 8);
 		if (tx) {
-			b->tail = UINT32_MAX;
-			b->valid[0] &= (UINT32_C(1) << 31) - 1;
+			b->tail = b->size - 1;
+			b->valid[b->size / 32 - 1] = UINT32_C(0x7FFFFFFF);
 		}
 	} else {
 		b->valid = NULL;
 		b->data = NULL;
+		b->tail = 0;
 	}
-	b->tail = 0;
-	b->head = 0;
 }
 
 static inline uint32_t set_bits_one_chunk(uint32_t valid, uint32_t value, uint32_t mask) {

@@ -102,7 +102,7 @@ struct qconnection {
 int qc_init(qconnection_t *c, const qinterface_t **vt, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
 int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime);
 
-void qc_add_stream(qconnection_t *c, qstream_t *s, bool bidirectional);
+void qc_add_stream(qconnection_t *c, qstream_t *s);
 void qc_rm_stream(qconnection_t *c, qstream_t *s);
 int qc_flush_stream(qconnection_t *c, qstream_t *s);
 

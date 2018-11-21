@@ -493,13 +493,13 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
 		qtx_packet_t *pkts[2] = { NULL, NULL };
 		if (init_sent < init_len) {
-			pkts[0] = encode_crypto_packet(c, &udp, QC_INITIAL, init_sent, tlsbuf + init_sent, init_len - init_sent, DEFAULT_PACKET_SIZE);
+			pkts[0] = encode_crypto_packet(c, &udp, QC_INITIAL, init_sent, tlsbuf + init_sent, init_len - init_sent, 0);
 			if (pkts[0]) {
 				init_sent += pkts[0]->len;
 			}
 		}
 		if (hs_sent < hs_len) {
-			pkts[1] = encode_crypto_packet(c, &udp, QC_HANDSHAKE, hs_sent, tlsbuf + init_len + hs_sent, hs_len - hs_sent, DEFAULT_PACKET_SIZE);
+			pkts[1] = encode_crypto_packet(c, &udp, QC_HANDSHAKE, hs_sent, tlsbuf + init_len + hs_sent, hs_len - hs_sent, 0);
 			if (pkts[1]) {
 				hs_sent += pkts[1]->len;
 			}
@@ -702,7 +702,6 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 		}
 		c->crypto_state = QC_PROCESS_EXTENSIONS;
 		d->state = 0;
-		(*c->validator)->start_chain(c->validator, c->server_name);
 		c->rx_crypto_off = 0;
 		return 0;
 	}
@@ -717,6 +716,7 @@ static int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *s
 		(*msgs)->update(msgs, tls.p, r);
 		set_limits_from_remote_params(c, &c->rx_crypto_data.extensions);
 		tls.p += r;
+		(*c->validator)->start_chain(c->validator, c->server_name);
 		c->crypto_state = QC_PROCESS_CERTIFICATE;
 		d->state = 0;
 	}
@@ -1047,8 +1047,8 @@ static void send_pending_streams(qconnection_t *c) {
 	}
 }
 
-void qc_add_stream(qconnection_t *c, qstream_t *s, bool unidirectional) {
-	int uni = unidirectional ? 1 : 0;
+void qc_add_stream(qconnection_t *c, qstream_t *s) {
+	int uni = s->rx.size ? 0 : 1;
 	if (c->crypto_state == QC_RUNNING && c->pending_streams[uni].next < c->pending_streams[uni].max) {
 		insert_stream(c, s, uni);
 		flush_stream(c, s);
