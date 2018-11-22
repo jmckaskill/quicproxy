@@ -887,13 +887,13 @@ static int decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *p) {
 		}
 		insert_existing_stream(c, s, id, parent, insert_dir);
 	}
-	int err = qrx_received(s, fin, (uint64_t)off, data, (size_t)len);
-	if (err < 0) {
+	ssize_t have = qrx_received(s, fin, (uint64_t)off, data, (size_t)len);
+	if (have < 0) {
 		// flow control error
 		// TODO better error reporting
 		return -1;
 	} 
-	if (err > 0) {
+	if (have > 0) {
 		// we have new data
 		(*c->iface)->read(c->iface, s);
 		qrx_fold(s);

@@ -28,7 +28,7 @@ static size_t ctz(uint32_t v) {
 }
 #endif
 
-void qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size) {
+void qbuf_init(qbuffer_t *b, void *buf, size_t size) {
 	// buffer is split into two circular buffers
 	// Data bytes in chunks of 32B
 	// Valid bits in chunks of 32b
@@ -36,19 +36,13 @@ void qbuf_init(qbuffer_t *b, bool tx, void *buf, size_t size) {
 	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + size, 4);
 	b->size = 32 * ((e - s) / (4 + 32));
 	b->head = 0;
-	if (b->size) {
-		b->valid = (uint32_t*)s;
-		b->data = (char*)s + (b->size / 8);
-		memset(b->valid, tx ? 0xFF : 0, b->size / 8);
-		if (tx) {
-			b->tail = b->size - 1;
-			b->valid[b->size / 32 - 1] = UINT32_C(0x7FFFFFFF);
-		}
-	} else {
-		b->valid = NULL;
-		b->data = NULL;
-		b->tail = 0;
-	}
+	b->tail = 0;
+	b->ext_off = 0;
+	b->ext_data = NULL;
+	b->ext_len = 0;
+	b->valid = (uint32_t*)s;
+	b->data = (char*)s + (b->size / 8);
+	memset(b->valid, 0, b->size / 8);
 }
 
 static inline uint32_t set_bits_one_chunk(uint32_t valid, uint32_t value, uint32_t mask) {
@@ -90,96 +84,158 @@ static void set_bits(qbuffer_t *b, uint32_t value, size_t start, size_t end) {
 	}
 }
 
-
-size_t qbuf_insert(qbuffer_t *b, uint64_t off, size_t len, const void *data) {
-	size_t start = (size_t)(off % b->size);
-	size_t end = (start + len) % b->size;
-
-	if (data) {
-		if (end < start) {
-			memcpy(b->data + start, data, b->size - start);
-			memcpy(b->data, (char*)data + len - end, end);
-		} else {
-			memcpy(b->data + start, data, len);
+static size_t iterate_bits(qbuffer_t *b, uint32_t value, size_t idx) {
+	// look through the bits leading in
+	size_t ret = 0;
+	if (idx & 31) {
+		uint32_t head_valid = b->valid[idx / 32] >> (idx & 31);
+		size_t count = ctz(head_valid ^ value);
+		ret += count;
+		if ((idx + count) & 31) {
+			return ret;
 		}
 	}
 
-	if (off != b->tail) {
-		set_bits(b, ~UINT32_C(0), start, end);
-		return 0;
-	} else {
-		// the new chunk is directly on the tail
-		// move the buffer forward for the new data
-		// and then work through the valid_buf to move
-		// forward for later data that arrived earlier
-		size_t ret = len;
+	// look through the valid chunks until the end of the circular buffer
+	size_t c = (idx + 31) >> 5;
+	size_t csz = b->size >> 5;
+	while (c < csz && b->valid[c] == value) {
+		c++;
+		ret += 32;
+	}
 
-		// look through the bits leading in
-		if (end & 31) {
-			uint32_t head_valid = b->valid[end / 32] >> (end & 31);
-			size_t count = ctz(~head_valid);
-			ret += count;
-			if ((end + count) & 31) {
-				goto end;
-			}
-		}
-
-		// look through the valid chunks until the end of the circular buffer
-		size_t c = (end + 31) >> 5;
-		size_t csz = b->size >> 5;
-		while (c < csz && b->valid[c] == ~UINT32_C(0)) {
+	if (c == csz) {
+		// look through the valid chunks at the start of the circular buffer
+		c = 0;
+		while (b->valid[c] == value) {
 			c++;
 			ret += 32;
 		}
+	}
 
-		if (c == csz) {
-			// look through the valid chunks at the start of the circular buffer
-			c = 0;
-			while (b->valid[c] == ~UINT32_C(0)) {
-				c++;
-				ret += 32;
-			}
+	// look through the bits leading out
+	uint32_t tail_valid = b->valid[c];
+	ret += ctz(tail_valid ^ value);
+	return ret;
+}
+
+void qbuf_fold(qbuffer_t *b) {
+	if (b->ext_len) {
+		size_t start = (size_t)(b->ext_off % b->size);
+		size_t end = (start + b->ext_len) % b->size;
+
+		// The ideal is to iterate over the valid bitset and only
+		// copy when the bit is 1. That's too complex and is rarely needed.
+		// The most common use case is a received packet that was contiguously
+		// consumed from the front. So restrict the start point, but don't
+		// bother with the rear or holes in between.
+		size_t shift = iterate_bits(b, 0, start);
+		start = (start + shift) % b->size;
+
+		if (end < start) {
+			memcpy(b->data + start, b->ext_data + shift, b->size - start);
+			memcpy(b->data, b->ext_data + b->ext_len - end, end);
+		} else if (end > start) {
+			memcpy(b->data + start, b->ext_data + shift, b->ext_len - shift);
 		}
 
-		// look through the bits leading out
-		uint32_t tail_valid = b->valid[c];
-		ret += ctz(~tail_valid);
-
-	end:
-		b->tail += ret;
-		return ret;
+		b->ext_off = 0;
+		b->ext_data = NULL;
+		b->ext_len = 0;
 	}
 }
 
-size_t qbuf_buffer(qbuffer_t *b, void **pdata) {
-	size_t start = (size_t)(b->head % b->size);
-	size_t end = (size_t)(b->tail % b->size);
-	*pdata = b->data + start;
-	return (end < start) ? (b->size - start) : (end - start);
-}
+size_t qbuf_insert(qbuffer_t *b, uint64_t off, const void *data, size_t len) {
+	if (off + len <= b->tail) {
+		// old data
+		return 0;
+	}
+	if (off < b->tail) {
+		// old start, but going into new territory
+		size_t shift = (size_t)(b->tail - off);
+		off = b->tail;
+		data = (char*)data + shift;
+		len -= shift;
+	}
+	assert(qbuf_min(b) <= off && off + len <= qbuf_max(b));
+	assert(!b->ext_data);
+	b->ext_off = off;
+	b->ext_data = (const char*)data;
+	b->ext_len = len;
 
-void qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
 	size_t start = (size_t)(off % b->size);
-	size_t end = (start + sz) % b->size;
+	size_t end = (start + len) % b->size;
+	set_bits(b, ~UINT32_C(0), start, end);
 
-	if (start <= end) {
-		size_t tocopy = MIN(sz, end - start);
-		memcpy(buf, b->data + start, tocopy);
-	} else if (start + sz < b->size) {
-		memcpy(buf, b->data + start, sz);
+	if (off == b->tail) {
+		len += iterate_bits(b, ~UINT32_C(0), end);
+		b->tail += len;
+		return len;
 	} else {
-		size_t sz1 = b->size - start;
-		memcpy(buf, b->data + start, sz1);
-		sz -= sz1;
-		buf = (char*)buf + sz1;
-		size_t sz2 = MIN(sz, end);
-		memcpy(buf, b->data, sz2);
+		return 0;
 	}
 }
 
-void qbuf_consume(qbuffer_t *b, size_t sz) {
-	size_t start = (size_t)(b->head % b->size);
-	size_t end = (start + sz) % b->size;
+size_t qbuf_remove(qbuffer_t *b, uint64_t off, size_t len) {
+	assert(qbuf_min(b) <= off && off + len <= qbuf_max(b));
+	size_t start = (size_t)(off % b->size);
+	size_t end = (start + len) % b->size;
 	set_bits(b, 0, start, end);
-	b->head += sz;
+
+	if (off == b->head) {
+		len += iterate_bits(b, 0, end);
+		b->head = MIN(b->tail, b->head + len);
+		return len;
+	} else {
+		return 0;
+	}
+}
+
+static size_t get_internal_data(qbuffer_t *b, size_t start, size_t len, const void **pdata) {
+	size_t end = (start + len) % b->size;
+	if (start <= end) {
+		*pdata = b->data + start;
+		return len;
+	} else {
+		// internal buffer has wrapped around, take the rest up to the end
+		*pdata = b->data + start;
+		return b->size - start;
+	}
+}
+
+size_t qbuf_data(qbuffer_t *b, uint64_t off, const void **pdata) {
+	assert(qbuf_min(b) <= off && off <= qbuf_max(b));
+	size_t start = (size_t)(off % b->size);
+	size_t len = iterate_bits(b, ~UINT32_C(0), start);
+
+	if (!len) {
+		*pdata = NULL;
+		return 0;
+
+	} else if (off >= b->ext_off + b->ext_len) {
+		// we start after the external buffer
+		return get_internal_data(b, start, len, pdata);
+
+	} else if (off >= b->ext_off) {
+		// we start in the external buffer
+		size_t into_ext = (size_t)(off - b->ext_off);
+		*pdata = b->ext_data + into_ext;
+		return MIN(len, b->ext_len - into_ext);
+
+	} else {
+		// we start before the external buffer
+		return get_internal_data(b, start, MIN(len, (size_t)(b->ext_off - off)), pdata);
+	}
+}
+
+size_t qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
+	assert(qbuf_min(b) <= off && off <= qbuf_max(b));
+	size_t ret = 0;
+	size_t have;
+	void *src;
+	while (ret < sz && (have = qbuf_data(b, off + ret, &src)) != 0) {
+		memcpy((char*)buf + ret, src, have);
+		ret += have;
+	}
+	return ret;
 }

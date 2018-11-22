@@ -59,7 +59,7 @@ static void server_close(const qinterface_t **vt, qstream_t *stream) {
 
 static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	char buf[1024];
-	size_t sz = qrx_read_all(stream, buf, sizeof(buf)-1, NULL);
+	size_t sz = qrx_read(stream, buf, sizeof(buf)-1);
 	buf[sz] = 0;
 	LOG(debug, "received '%s'", buf);
 }
