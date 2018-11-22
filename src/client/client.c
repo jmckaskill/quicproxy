@@ -124,15 +124,16 @@ int main(int argc, const char *argv[]) {
 			case 1:
 				break;
 			}
-			char buf[4096];
-			int w = recv(fd, buf, sizeof(buf), 0);
-			if (w < 0) {
-				LOG(c.debug, "receive error");
-				continue;
-			}
-			LOG(c.debug, "RX %d bytes", w);
-			if (qc_recv(&c.conn, NULL, 0, buf, w, get_tick(), &timeout)) {
-				goto disconnect;
+			for (;;) {
+				char buf[4096];
+				int w = recv(fd, buf, sizeof(buf), 0);
+				if (w < 0) {
+					break;
+				}
+				LOG(c.debug, "RX %d bytes", w);
+				if (qc_recv(&c.conn, NULL, 0, buf, w, get_tick(), &timeout)) {
+					goto disconnect;
+				}
 			}
 		}
 	}

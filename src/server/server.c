@@ -175,45 +175,47 @@ int main(int argc, const char *argv[]) {
 			break;
 		}
 
-		s.salen = sizeof(s.ss);
-		char buf[4096];
-		int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&s.ss, &s.salen);
-		if (sz < 0) {
-			continue;
-		}
-		qmicrosecs_t rxtime = get_tick();
-
-		struct sockaddr_string in;
-		print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);
-		LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
-
-		uint64_t dest;
-		if (qc_get_destination(buf, sz, &dest)) {
-			continue;
-		}
-
-		if (s.connected && dest == s.id) {
-			if (qc_recv(&s.conn, NULL, 0, buf, sz, rxtime, &timeout)) {
-				s.connected = false;
+		for (;;) {
+			s.salen = sizeof(s.ss);
+			char buf[4096];
+			int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&s.ss, &s.salen);
+			if (sz < 0) {
+				break;
 			}
-		} else if (!s.connected) {
-			qconnect_request_t req;
-			if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
-				LOG(debug, "failed to decode request");
+			qmicrosecs_t rxtime = get_tick();
+
+			struct sockaddr_string in;
+			print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);
+			LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
+
+			uint64_t dest;
+			if (qc_get_destination(buf, sz, &dest)) {
 				continue;
 			}
-			if (qc_init(&s.conn, &s.vtable, br_prng_seeder_system(NULL), s.pktbuf, sizeof(s.pktbuf))) {
-				FATAL(debug, "failed to init connection");
+
+			if (s.connected && dest == s.id) {
+				if (qc_recv(&s.conn, NULL, 0, buf, sz, rxtime, &timeout)) {
+					s.connected = false;
+				}
+			} else if (!s.connected) {
+				qconnect_request_t req;
+				if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
+					LOG(debug, "failed to decode request");
+					continue;
+				}
+				if (qc_init(&s.conn, &s.vtable, br_prng_seeder_system(NULL), s.pktbuf, sizeof(s.pktbuf))) {
+					FATAL(debug, "failed to init connection");
+				}
+				s.conn.debug = &stderr_log;
+				if (keylog_path.len) {
+					s.conn.keylog = open_file_log(&keylogger, keylog_path.c_str);
+				}
+				if (qc_accept(&s.conn, &req, &signer.vtable, &timeout)) {
+					LOG(debug, "failed to accept request");
+				}
+				s.id = req.destination;
+				s.connected = true;
 			}
-			s.conn.debug = &stderr_log;
-			if (keylog_path.len) {
-				s.conn.keylog = open_file_log(&keylogger, keylog_path.c_str);
-			}
-			if (qc_accept(&s.conn, &req, &signer.vtable, &timeout)) {
-				LOG(debug, "failed to accept request");
-			}
-			s.id = req.destination;
-			s.connected = true;
 		}
 	}
 
