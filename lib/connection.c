@@ -305,6 +305,11 @@ static void send_stream(qconnection_t *c, qstream_t *s, uint64_t from, uint64_t 
 	} while (from < to);
 }
 
+static void calculate_timeout(qconnection_t *c, qmicrosecs_t *ptimeout) {
+	long diff = (long)(c->idle_timer - c->retransmit_timer);
+	*ptimeout = (diff > 0) ? c->retransmit_timer : c->idle_timer;
+}
+
 int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params, qmicrosecs_t *ptimeout) {
 	c->params = params;
 	c->server_name = server_name;
@@ -356,8 +361,7 @@ int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **
 
 	c->idle_timer = pkt->sent + (params->idle_timeout ? params->idle_timeout : QUIC_DEFAULT_IDLE_TIMEOUT);
 	c->retransmit_timer = pkt->sent + (2 * c->rtt);
-	long diff = (long)(c->idle_timer - c->retransmit_timer);
-	*ptimeout = (diff > 0) ? c->retransmit_timer : c->idle_timer;
+	calculate_timeout(c, ptimeout);
 	return 0;
 }
 
@@ -414,7 +418,6 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 	memcpy(c->peer_id, h->source, QUIC_ADDRESS_SIZE);
 	c->local_id = h->destination;
 	c->is_client = false;
-	c->idle_timer = h->rxtime + (h->server_params->idle_timeout ? h->server_params->idle_timeout : QUIC_DEFAULT_IDLE_TIMEOUT);
 
 	// nonces
 	memcpy(c->client_random, h->random, QUIC_RANDOM_SIZE);
@@ -550,7 +553,10 @@ int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class
 	c->rx_crypto.state = 0;
 	c->rx_crypto_off = 0;
 	hash->out(c->msg_hash, c->rx_crypto_data.finished.msg_hash);
-	*ptimeout = c->idle_timer;
+
+	c->idle_timer = h->rxtime + (h->server_params->idle_timeout ? h->server_params->idle_timeout : QUIC_DEFAULT_IDLE_TIMEOUT);
+	c->retransmit_timer = c->idle_timer + 1;
+	calculate_timeout(c, ptimeout);
 
 	return 0;
 }
@@ -1077,7 +1083,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, qmicrosec
 	return have_hello ? 0 : QC_PARSE_ERROR;
 }
 
-int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, qmicrosecs_t rxtime) {
+int qc_recv(qconnection_t *c, const void *addr, size_t addrlen, void *buf, size_t len, qmicrosecs_t rxtime, qmicrosecs_t *ptimeout) {
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
@@ -1151,6 +1157,7 @@ int qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, qmicrosec
 		}
 	}
 
+	calculate_timeout(c, ptimeout);
 	return 0;
 }
 
@@ -1194,6 +1201,19 @@ void qc_add_stream(qconnection_t *c, qstream_t *s) {
 		c->pending_streams[uni].last = s;
 	}
 }
+
+int qc_timeout(qconnection_t *c, qmicrosecs_t now, qmicrosecs_t *ptimeout) {
+	long delta = (long)(c->idle_timer - now);
+	if (delta <= 0) {
+		return -1;
+	}
+	c->rtt *= 2;
+	c->retransmit_timer = now + 2 * c->rtt;
+	calculate_timeout(c, ptimeout);
+	LOG(c->debug, "RTT %d ms, timeout %08x, now %08x", c->rtt / 1000, *ptimeout, now);
+	return 0;
+}
+
 
 
 

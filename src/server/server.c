@@ -28,7 +28,7 @@ struct server {
 	uint8_t rxbuf[4096];
 };
 
-static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, qmicrosecs_t *sent) {
+static int server_send(const qinterface_t **vt, const void *addr, size_t addrlen, const void *buf, size_t len, qmicrosecs_t *sent) {
 	struct server *s = (struct server*) vt;
 	struct sockaddr_string in;
 	print_sockaddr(&in, (struct sockaddr*)&s->ss, s->salen);
@@ -40,11 +40,6 @@ static int server_send(const qinterface_t **vt, const void *addr, const void *bu
 	}
 	*sent = get_tick();
 	return 0;
-}
-
-static void server_disconnect(const qinterface_t **vt) {
-	struct server *s = (struct server*) vt;
-	s->connected = false;
 }
 
 static qstream_t *server_open(const qinterface_t **vt, bool unidirectional) {
@@ -70,7 +65,6 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 }
 
 static const qinterface_t server_interface = {
-	&server_disconnect,
 	&server_send,
 	&server_open,
 	&server_close,
@@ -98,6 +92,7 @@ int main(int argc, const char *argv[]) {
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
 
 	int fd = must_open_server_socket(SOCK_DGRAM, host, port);
+	set_non_blocking(fd);
 
 	br_skey_decoder_context skey;
 	br_x509_certificate *certs;
@@ -155,13 +150,36 @@ int main(int argc, const char *argv[]) {
 	s.connected = false;
 
 	LOG(debug, "starting server");
+	qmicrosecs_t timeout = 0;
 
 	for (;;) {
+		long delta = -1;
+		if (s.connected) {
+			qmicrosecs_t now = get_tick();
+			delta = (long)(timeout - now);
+			if (delta <= 0) {
+				if (qc_timeout(&s.conn, now, &timeout)) {
+					s.connected = false;
+				}
+				continue;
+			}
+		}
+
+		struct pollfd pfd = { .events = POLLIN,.fd = s.fd };
+		switch (poll(&pfd, 1, (delta + 999) / 1000)) {
+		case -1:
+			return 2;
+		case 0:
+			continue;
+		case 1:
+			break;
+		}
+
 		s.salen = sizeof(s.ss);
 		char buf[4096];
 		int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&s.ss, &s.salen);
 		if (sz < 0) {
-			break;
+			continue;
 		}
 		qmicrosecs_t rxtime = get_tick();
 
@@ -175,7 +193,9 @@ int main(int argc, const char *argv[]) {
 		}
 
 		if (s.connected && dest == s.id) {
-			qc_recv(&s.conn, NULL, buf, sz, rxtime);
+			if (qc_recv(&s.conn, NULL, 0, buf, sz, rxtime, &timeout)) {
+				s.connected = false;
+			}
 		} else if (!s.connected) {
 			qconnect_request_t req;
 			if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
@@ -189,7 +209,7 @@ int main(int argc, const char *argv[]) {
 			if (keylog_path.len) {
 				s.conn.keylog = open_file_log(&keylogger, keylog_path.c_str);
 			}
-			if (qc_accept(&s.conn, &req, &signer.vtable)) {
+			if (qc_accept(&s.conn, &req, &signer.vtable, &timeout)) {
 				LOG(debug, "failed to accept request");
 			}
 			s.id = req.destination;
