@@ -1,6 +1,7 @@
 #include "handshake.h"
 #include "connection.h"
 #include "kdf.h"
+#include <cutils/log.h>
 
 
 // TLS records
@@ -1292,12 +1293,26 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		}
 		update_msg_hash(c->msg_hash, &r, d->u.f.msg_hash);
 		if (c->is_client) {
-			err = send_client_finished(c, d->u.f.msg_hash);
-			if (err) {
-				return err;
-			}
+			qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
+			size_t flen = generate_finish_verify(&hs->tkey, d->u.f.msg_hash, c->client_finished);
+
+			qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
+			generate_protected_secrets(c->cipher, d->u.f.msg_hash, c->master_secret, &prot->tkey, &prot->rkey);
+			log_protected(&prot->tkey, &prot->rkey, c->client_random, c->keylog);
+
+			uint8_t fin[4];
+			fin[0] = FINISHED;
+			write_big_24(fin + 1, (uint32_t)flen);
+			(*c->msg_hash)->update(c->msg_hash, fin, 4);
+			(*c->msg_hash)->update(c->msg_hash, c->client_finished, flen);
+
+			c->finished_sent = false;
+		} else {
+			c->finished_sent = true;
+			c->handshake_acknowledged = true;
 		}
-		handshake_finished(c);
+		c->handshake_complete = true;
+		LOG(c->debug, "handshake complete");
 		GOTO_LEVEL(QC_PROTECTED, FINISHED_LEVEL);
 		goto start_ticket;
 

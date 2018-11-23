@@ -37,6 +37,16 @@ static inline void *append(void *to, const void *from, size_t sz) {
 	return (uint8_t*)to + sz;
 }
 
+static qmicrosecs_t timer_min(qmicrosecs_t a, qmicrosecs_t b) {
+	int32_t diff = (int32_t)(a - b);
+	return (diff > 0) ? a : b;
+}
+
+static bool timer_expired(qmicrosecs_t a, qmicrosecs_t now) {
+	int32_t diff = (int32_t)(now - a);
+	return diff >= 0;
+}
+
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
 
@@ -49,6 +59,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_RANDOM_SIZE 32
 #define QUIC_DEFAULT_RTT (100 * 1000) // 100ms
 #define QUIC_DEFAULT_IDLE_TIMEOUT (120 * 1000 * 1000) // 30s
+#define QUIC_MIN_RTT 1000 //1ms
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
@@ -111,6 +122,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define STREAM_SERVER 1
 #define STREAM_BIDI 0
 #define STREAM_UNI 2
+#define STREAM_UNI_MASK 2
 
 #define PENDING_BIDI 0
 #define PENDING_UNI 1

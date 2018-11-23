@@ -35,10 +35,19 @@ static int client_send(const qinterface_t **vt, const void *addr, size_t addrlen
 	return 0;
 }
 
+static void client_read(const qinterface_t **vt, qstream_t *stream) {
+	struct client *c = (struct client*) vt;
+	char buf[1024];
+	size_t sz = qrx_read(stream, buf, sizeof(buf) - 1);
+	buf[sz] = 0;
+	LOG(c->debug, "received '%s'", buf);
+}
+
 static const qinterface_t client_interface = {
 	&client_send,
 	NULL,
 	NULL,
+	&client_read,
 };
 
 int main(int argc, const char *argv[]) {

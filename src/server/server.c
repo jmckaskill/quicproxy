@@ -62,6 +62,9 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	size_t sz = qrx_read(stream, buf, sizeof(buf)-1);
 	buf[sz] = 0;
 	LOG(debug, "received '%s'", buf);
+	qtx_write(stream, "reply ", strlen("reply "));
+	qtx_write(stream, buf, sz);
+	qtx_set_finish(stream);
 }
 
 static const qinterface_t server_interface = {
@@ -153,20 +156,21 @@ int main(int argc, const char *argv[]) {
 	qmicrosecs_t timeout = 0;
 
 	for (;;) {
-		long delta = -1;
+		int polltimeout = -1;
 		if (s.connected) {
 			qmicrosecs_t now = get_tick();
-			delta = (long)(timeout - now);
+			int32_t delta = (int32_t)(timeout - now);
 			if (delta <= 0) {
 				if (qc_timeout(&s.conn, now, &timeout)) {
 					s.connected = false;
 				}
 				continue;
 			}
+			polltimeout = (delta + 999) / 1000;
 		}
 
 		struct pollfd pfd = { .events = POLLIN,.fd = s.fd };
-		switch (poll(&pfd, 1, (delta + 999) / 1000)) {
+		switch (poll(&pfd, 1, polltimeout)) {
 		case -1:
 			return 2;
 		case 0:

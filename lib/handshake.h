@@ -99,8 +99,6 @@ const br_hash_class **init_cipher(qconnection_t *c, const qcipher_class *cipher)
 void init_client_decoder(qconnection_t *c);
 void init_server_decoder(qconnection_t *c);
 int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *frame_data);
-int send_client_finished(qconnection_t *c, const uint8_t *msg_hash);
-void handshake_finished(qconnection_t *c);
 
 
 

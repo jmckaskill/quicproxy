@@ -21,6 +21,7 @@ struct qinterface {
 
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
+	rbnode rb;
 	uint64_t off;
 	size_t len;
 	qstream_t *stream;
@@ -34,6 +35,7 @@ struct qpacket_buffer {
 	uint64_t received;	// receive bitset - one bit per packet
 	uint64_t rx_next;   // next packet to receive (highest received + 1)
 	uint64_t tx_next;   // next packet to send (highest sent + 1)
+	uint64_t tx_oldest; // oldest packet still outstanding
 	qkeyset_t tkey;
 	qkeyset_t rkey;
 };
@@ -47,11 +49,13 @@ struct qconnection {
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
 	bool is_client;
 	bool handshake_complete;
+	bool finished_sent;
 	bool handshake_acknowledged;
 
 	// crypto management
 	qpacket_buffer_t pkts[3];
 	uint8_t master_secret[QUIC_MAX_HASH_SIZE];
+	uint8_t client_finished[QUIC_MAX_HASH_SIZE];
 	uint8_t client_random[QUIC_RANDOM_SIZE];
 	uint8_t server_random[QUIC_RANDOM_SIZE];
 	br_hmac_drbg_context rand;
@@ -90,7 +94,8 @@ struct qconnection {
 		qstream_t *first;
 		qstream_t *last;
 	} pending_streams[2];
-	rbtree active_streams[4];
+	qstream_t *tx_streams;
+	rbtree sorted_streams[4];
 	uint32_t max_stream_data[4];
 	uint64_t max_data;
 
@@ -98,6 +103,8 @@ struct qconnection {
 	qmicrosecs_t retransmit_timer;
 	qmicrosecs_t idle_timer;
 	qmicrosecs_t rtt;
+
+
 };
 
 int qc_init(qconnection_t *c, const qinterface_t **vt, br_prng_seeder seedfn, void *pktbuf, size_t bufsz);
