@@ -20,7 +20,7 @@
     <ClCompile Include="cipher.c" />
     <ClCompile Include="connection.c" />
     <ClCompile Include="kdf.c" />
-    <ClCompile Include="packets.c" />
+    <ClCompile Include="handshake.c" />
     <ClCompile Include="pem.c" />
     <ClCompile Include="stream.c" />
     <ClCompile Include="signature.c" />
@@ -31,7 +31,7 @@
     <ClInclude Include="common.h" />
     <ClInclude Include="connection.h" />
     <ClInclude Include="kdf.h" />
-    <ClInclude Include="packets.h" />
+    <ClInclude Include="handshake.h" />
     <ClInclude Include="pem.h" />
     <ClInclude Include="stream.h" />
     <ClInclude Include="signature.h" />

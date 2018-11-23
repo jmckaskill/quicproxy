@@ -232,7 +232,7 @@ size_t qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
 	assert(qbuf_min(b) <= off && off <= qbuf_max(b));
 	size_t ret = 0;
 	size_t have;
-	void *src;
+	const void *src;
 	while (ret < sz && (have = qbuf_data(b, off + ret, &src)) != 0) {
 		memcpy((char*)buf + ret, src, have);
 		ret += have;

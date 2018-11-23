@@ -3,7 +3,7 @@
 #include "common.h"
 #include "stream.h"
 #include "cipher.h"
-#include "packets.h"
+#include "handshake.h"
 #include "signature.h"
 #include <cutils/stopwatch.h>
 
@@ -46,6 +46,8 @@ struct qconnection {
 	uint64_t local_id;
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
 	bool is_client;
+	bool handshake_complete;
+	bool handshake_acknowledged;
 
 	// crypto management
 	qpacket_buffer_t pkts[3];
@@ -55,15 +57,7 @@ struct qconnection {
 	br_hmac_drbg_context rand;
 
 	// receiving
-	int crypto_state;
-	int64_t rx_crypto_off;
 	struct crypto_decoder rx_crypto;
-	union {
-		struct server_hello server_hello;
-		struct verify verify;
-		struct finished finished;
-		qconnect_params_t extensions;
-	} rx_crypto_data;
 
 	// logging
 	log_t *debug;
@@ -140,9 +134,6 @@ struct qconnect_request {
 	size_t raw_size;
 };
 
-#define QC_PARSE_ERROR -1
-#define QC_WRONG_VERSION -2
-#define QC_STATELESS_RETRY -3
 
 int qc_get_destination(void *buf, size_t len, uint64_t *out);
 int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, qmicrosecs_t rxtime, const qconnect_params_t *params);

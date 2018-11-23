@@ -33,10 +33,10 @@ struct qslice {
 static inline uint8_t encode_id_len(uint8_t len) {return len ? (len - 3) : 0;}
 static inline uint8_t decode_id_len(uint8_t val) {return val ? (val + 3) : 0;}
 uint8_t *encode_varint(uint8_t *p, uint64_t val);
-int64_t decode_varint(qslice_t *s);
+int decode_varint(qslice_t *s, uint64_t *pval);
 size_t packet_number_length(uint64_t val);
 uint8_t *encode_packet_number(uint8_t *p, uint64_t val);
-int64_t decode_packet_number(qslice_t *s);
+int decode_packet_number(qslice_t *s, uint64_t *pval);
 
 int encode_client_hello(const qconnection_t *c, qslice_t *ps);
 int encode_server_hello(const qconnection_t *c, qslice_t *ps);
@@ -47,45 +47,60 @@ int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const uint8_t *sig, size_t len);
 int encode_finished(qslice_t *s, const uint8_t *verify, size_t len);
 
-#define CRYPTO_ERROR -1
-#define CRYPTO_MORE 0
+#define QC_PARSE_ERROR -6
+#define QC_WRONG_VERSION -5
+#define QC_STATELESS_RETRY -4
+#define QC_ERR_UNKNOWN_FRAME -3
+#define CRYPTO_ERROR -2
+#define QC_ERR_DROP -1
+
+enum qcrypto_level {
+	QC_INITIAL,
+	QC_HANDSHAKE,
+	QC_PROTECTED,
+	QC_UNKNOWN,
+};
 
 struct crypto_decoder {
-	unsigned state;
-	unsigned end;
-	unsigned stack[4];
-	unsigned have_bytes;
+	int level;
+	uint32_t next;
+	int state;
+	uint32_t end;
+	uint32_t stack[4];
+	uint32_t have_bytes;
 	uint8_t buf[3];
 	uint8_t bufsz;
 	uint8_t depth;
+
+	union {
+		struct {
+			uint16_t tls_version;
+			br_ec_public_key k;
+			uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
+			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+		} sh;
+
+		struct {
+			uint16_t algorithm;
+			size_t len;
+			uint8_t sig[QUIC_MAX_SIG_SIZE];
+			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+		} v;
+
+		struct {
+			size_t len;
+			uint8_t fin[QUIC_MAX_HASH_SIZE];
+			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+		} f;
+	} u;
 };
 
-struct server_hello {
-	uint16_t tls_version;
-	uint16_t cipher;
-	br_ec_public_key key;
-	uint8_t random[QUIC_RANDOM_SIZE];
-	uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
-};
-
-struct verify {
-	uint16_t algorithm;
-	size_t sig_size;
-	uint8_t signature[QUIC_MAX_SIG_SIZE];
-	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
-};
-
-struct finished {
-	size_t size;
-	uint8_t verify[QUIC_MAX_HASH_SIZE];
-	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
-};
-
-int decode_server_hello(struct crypto_decoder *d, struct server_hello *s, unsigned off, const void *data, size_t size);
-int decode_encrypted_extensions(struct crypto_decoder *d, qconnect_params_t *p, unsigned off, const void *data, size_t size);
-int decode_certificates(struct crypto_decoder *d, const br_x509_class **x, unsigned off, const void *data, size_t size);
-int decode_verify(struct crypto_decoder *d, struct verify *v, unsigned off, const void *data, size_t size);
-int decode_finished(struct crypto_decoder *d, struct finished *f, unsigned off, const void *data, size_t size);
+const br_hash_class **init_cipher(qconnection_t *c, const qcipher_class *cipher);
+void init_client_decoder(qconnection_t *c);
+void init_server_decoder(qconnection_t *c);
+int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *frame_data);
+int send_client_finished(qconnection_t *c, const uint8_t *msg_hash);
+void handshake_finished(qconnection_t *c);
 
 
 

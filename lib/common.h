@@ -23,7 +23,7 @@ typedef ptrdiff_t ssize_t;
 #endif
 
 typedef struct logger log_t;
-typedef unsigned long qmicrosecs_t;
+typedef uint32_t qmicrosecs_t;
 typedef struct qconnection qconnection_t;
 typedef struct qconnect_request qconnect_request_t;
 
@@ -48,7 +48,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_MAX_SIG_SIZE 512 // allow for up to 4096 bit rsa keys
 #define QUIC_RANDOM_SIZE 32
 #define QUIC_DEFAULT_RTT (100 * 1000) // 100ms
-#define QUIC_DEFAULT_IDLE_TIMEOUT (30 * 1000 * 1000) // 30s
+#define QUIC_DEFAULT_IDLE_TIMEOUT (120 * 1000 * 1000) // 30s
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
@@ -107,6 +107,11 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define ACK_MASK 0xFE
 #define ACK_ECN_FLAG 1
 
+#define STREAM_CLIENT 0
 #define STREAM_SERVER 1
+#define STREAM_BIDI 0
 #define STREAM_UNI 2
+
+#define PENDING_BIDI 0
+#define PENDING_UNI 1
 

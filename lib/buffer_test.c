@@ -11,7 +11,7 @@ int main(int argc, const char *argv[]) {
 	qbuf_init(&b, buf, sizeof(buf));
 	EXPECT_EQ(64, b.size);
 
-	void *p;
+	const void *p;
 	size_t sz;
 
 	// receive a chunk in order
