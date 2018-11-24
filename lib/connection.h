@@ -36,8 +36,6 @@ struct qpacket_buffer {
 	uint64_t rx_next;   // next packet to receive (highest received + 1)
 	uint64_t tx_next;   // next packet to send (highest sent + 1)
 	uint64_t tx_oldest; // oldest packet still outstanding
-	qkeyset_t tkey;
-	qkeyset_t rkey;
 };
 
 struct qconnection {
@@ -45,22 +43,24 @@ struct qconnection {
 	const qinterface_t **iface;
 
 	// send/recv
-	uint64_t local_id;
+	uint8_t local_id[QUIC_ADDRESS_SIZE];
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
 	bool is_client;
-	bool handshake_complete;
+	bool have_prot_keys;
+	bool peer_verified;
 	bool finished_sent;
 	bool handshake_acknowledged;
 
 	// crypto management
-	qpacket_buffer_t pkts[3];
-	uint8_t master_secret[QUIC_MAX_HASH_SIZE];
-	uint8_t client_finished[QUIC_MAX_HASH_SIZE];
+	qcipher_compat prot_tx;
+	qcipher_compat prot_rx;
 	uint8_t client_random[QUIC_RANDOM_SIZE];
 	uint8_t server_random[QUIC_RANDOM_SIZE];
+	uint8_t hs_secret[QUIC_MAX_HASH_SIZE];
+	uint8_t hs_rx[QUIC_MAX_HASH_SIZE];
+	uint8_t hs_tx[QUIC_MAX_HASH_SIZE];
+	uint8_t client_finished[QUIC_MAX_HASH_SIZE];
 	br_hmac_drbg_context rand;
-
-	// receiving
 	struct crypto_decoder rx_crypto;
 
 	// logging
@@ -71,7 +71,6 @@ struct qconnection {
 	const qcipher_class *cipher;
 
 	// key group
-	size_t key_num;
 	br_ec_private_key keys[QUIC_MAX_KEYSHARE];
 	uint8_t key_data[QUIC_MAX_KEYSHARE][BR_EC_KBUF_PRIV_MAX_SIZE];
 
@@ -88,6 +87,7 @@ struct qconnection {
 	br_sha384_context msg_sha384;
 
 	// streams
+	qpacket_buffer_t pkts[3];
 	struct {
 		uint64_t max;
 		uint64_t next;
@@ -122,7 +122,7 @@ int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **
 typedef struct qconnect_request qconnect_request_t;
 struct qconnect_request {
 	qmicrosecs_t rxtime;
-	uint64_t destination;
+	uint8_t destination[QUIC_ADDRESS_SIZE];
 	uint8_t source[QUIC_ADDRESS_SIZE];
 
 	const uint8_t *random;
@@ -142,7 +142,7 @@ struct qconnect_request {
 };
 
 
-int qc_get_destination(void *buf, size_t len, uint64_t *out);
+int qc_get_destination(void *buf, size_t len, uint8_t *out);
 int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, qmicrosecs_t rxtime, const qconnect_params_t *params);
 int qc_accept(qconnection_t *c, const qconnect_request_t *h, const qsigner_class *const *signer, qmicrosecs_t *ptimeout);
 

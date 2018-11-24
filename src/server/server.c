@@ -15,7 +15,7 @@ static log_t *debug;
 
 struct server {
 	const qinterface_t *vtable;
-	uint64_t id;
+	uint8_t id[QUIC_ADDRESS_SIZE];
 	bool connected;
 	int fd;
 	socklen_t salen;
@@ -192,12 +192,12 @@ int main(int argc, const char *argv[]) {
 			print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);
 			LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
 
-			uint64_t dest;
-			if (qc_get_destination(buf, sz, &dest)) {
+			uint8_t dest[QUIC_ADDRESS_SIZE];
+			if (qc_get_destination(buf, sz, dest)) {
 				continue;
 			}
 
-			if (s.connected && dest == s.id) {
+			if (s.connected && !memcmp(dest, s.id, QUIC_ADDRESS_SIZE)) {
 				if (qc_recv(&s.conn, NULL, 0, buf, sz, rxtime, &timeout)) {
 					s.connected = false;
 				}
@@ -217,7 +217,7 @@ int main(int argc, const char *argv[]) {
 				if (qc_accept(&s.conn, &req, &signer.vtable, &timeout)) {
 					LOG(debug, "failed to accept request");
 				}
-				s.id = req.destination;
+				memcpy(s.id, req.destination, QUIC_ADDRESS_SIZE);
 				s.connected = true;
 			}
 		}

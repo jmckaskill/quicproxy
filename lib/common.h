@@ -68,7 +68,7 @@ static bool timer_expired(qmicrosecs_t a, qmicrosecs_t now) {
 #define QUIC_CRYPTO_BUF_SIZE 4096
 #define QUIC_CRYPTO_PACKETS 8
 
-#define QUIC_ADDRESS_SIZE 19 // +1 for size
+#define QUIC_ADDRESS_SIZE 19 // + 1 for size
 
 #define QUIC_MAX_KEYSHARE 2
 #define QUIC_VERSION UINT32_C(0xFF00000F)

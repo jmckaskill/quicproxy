@@ -256,24 +256,21 @@ int encode_server_hello(const qconnection_t *c, qslice_t *ps) {
 	s.p = write_big_16(s.p, TLS_VERSION);
 
 	// key share
-	if (c->key_num) {
-		if (s.p + 2 + 2 + 2 + 2 + 1 + BR_EC_KBUF_PUB_MAX_SIZE > s.e) {
-			return -1;
-		}
-		const br_ec_private_key *sk = &c->keys[0];
-		s.p = write_big_16(s.p, KEY_SHARE);
-		s.p += 2;
-		uint8_t *ext_start = s.p;
-		s.p = write_big_16(s.p, (uint16_t)sk->curve);
-		s.p += 2;
-		uint8_t *key_start = s.p;
-		*(s.p++) = EC_KEY_UNCOMPRESSED;
-		s.p += br_ec_compute_pub(br_ec_get_default(), NULL, s.p, sk);
-
-		write_big_16(key_start - 2, (uint16_t)(s.p - key_start));
-		write_big_16(ext_start - 2, (uint16_t)(s.p - ext_start));
+	if (s.p + 2 + 2 + 2 + 2 + 1 + BR_EC_KBUF_PUB_MAX_SIZE > s.e) {
+		return -1;
 	}
+	const br_ec_private_key *sk = &c->keys[0];
+	s.p = write_big_16(s.p, KEY_SHARE);
+	s.p += 2;
+	uint8_t *ext_start = s.p;
+	s.p = write_big_16(s.p, (uint16_t)sk->curve);
+	s.p += 2;
+	uint8_t *key_start = s.p;
+	*(s.p++) = EC_KEY_UNCOMPRESSED;
+	s.p += br_ec_compute_pub(br_ec_get_default(), NULL, s.p, sk);
 
+	write_big_16(key_start - 2, (uint16_t)(s.p - key_start));
+	write_big_16(ext_start - 2, (uint16_t)(s.p - ext_start));
 	
 	write_big_16(list_start-2, (uint16_t)(s.p - list_start));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
@@ -424,28 +421,29 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	s.p = write_big_16(s.p, TLS_VERSION);
 
 	// key share
-	if (c->key_num) {
-		if (s.p + 6 > s.e) {
+	if (s.p + 6 > s.e) {
+		return -1;
+	}
+	s.p = write_big_16(s.p, KEY_SHARE);
+	s.p += 4; // fill out the header later once we know the length
+	uint8_t *keys_start = s.p;
+	for (size_t i = 0; i < QUIC_MAX_KEYSHARE; i++) {
+		if (s.p + 2 + 2 + 1 + BR_EC_KBUF_PUB_MAX_SIZE > s.e) {
 			return -1;
 		}
-		s.p = write_big_16(s.p, KEY_SHARE);
-		s.p += 4; // fill out the header later once we know the length
-		uint8_t *keys_start = s.p;
-		for (size_t i = 0; i < c->key_num; i++) {
-			if (s.p + 2 + 2 + 1 + BR_EC_KBUF_PUB_MAX_SIZE > s.e) {
-				return -1;
-			}
-			const br_ec_private_key *sk = &c->keys[i];
-			s.p = write_big_16(s.p, (uint16_t)sk->curve);
-			s.p += 2;
-			uint8_t *key_start = s.p;
-			*(s.p++) = EC_KEY_UNCOMPRESSED;
-			s.p += br_ec_compute_pub(br_ec_get_default(), NULL, s.p, sk);
-			write_big_16(key_start - 2, (uint16_t)(s.p - key_start));
+		const br_ec_private_key *sk = &c->keys[i];
+		if (!sk->curve) {
+			break;
 		}
-		write_big_16(keys_start - 4, (uint16_t)(s.p - keys_start + 2));
-		write_big_16(keys_start - 2, (uint16_t)(s.p - keys_start));
+		s.p = write_big_16(s.p, (uint16_t)sk->curve);
+		s.p += 2;
+		uint8_t *key_start = s.p;
+		*(s.p++) = EC_KEY_UNCOMPRESSED;
+		s.p += br_ec_compute_pub(br_ec_get_default(), NULL, s.p, sk);
+		write_big_16(key_start - 2, (uint16_t)(s.p - key_start));
 	}
+	write_big_16(keys_start - 4, (uint16_t)(s.p - keys_start + 2));
+	write_big_16(keys_start - 2, (uint16_t)(s.p - keys_start));
 
 	// transport params
 	if (s.p + 2 + 2 + 2 > s.e) {
@@ -502,7 +500,7 @@ int encode_certificates(qslice_t *ps, const qsigner_class *const *signer) {
 	return 0;
 }
 
-int encode_verify(qslice_t *ps, const qsignature_class *type, const uint8_t *sig, size_t len) {
+int encode_verify(qslice_t *ps, const qsignature_class *type, const void *sig, size_t len) {
 	qslice_t s = *ps;
 	if (s.p + 4 + 2 + 2 + len > s.e) {
 		return -1;
@@ -525,8 +523,9 @@ int encode_verify(qslice_t *ps, const qsignature_class *type, const uint8_t *sig
 	return 0;
 }
 
-int encode_finished(qslice_t *ps, const uint8_t *verify, size_t len) {
+int encode_finished(qslice_t *ps, const br_hash_class *digest, const void *verify) {
 	qslice_t s = *ps;
+	size_t len = digest_size(digest);
 	if (s.p + 4 + len > s.e) {
 		return -1;
 	}
@@ -773,7 +772,7 @@ const br_hash_class **init_cipher(qconnection_t *c, const qcipher_class *cipher)
 }
 
 static const br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
-	for (size_t i = 0; i < c->key_num; i++) {
+	for (size_t i = 0; i < QUIC_MAX_KEYSHARE; i++) {
 		if (c->keys[i].curve == curve) {
 			return &c->keys[i];
 		}
@@ -781,18 +780,20 @@ static const br_ec_private_key *find_private_key(qconnection_t *c, int curve) {
 	return NULL;
 }
 
-static int set_server_key(qconnection_t *c, const br_ec_public_key *pk, const uint8_t *msg_hash) {
+static int set_server_key(qconnection_t *c, const br_ec_public_key *pk, const void *msg_hash) {
 	assert(c->is_client);
 	const br_ec_private_key *sk = find_private_key(c, pk->curve);
 	if (!sk) {
 		return -1;
 	}
 
-	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-	if (generate_handshake_secrets(c->cipher, msg_hash, pk, sk, &hs->tkey, &hs->rkey, c->master_secret)) {
+	const br_hash_class *digest = c->cipher->hash;
+	if (calc_handshake_secret(c->hs_secret, digest, msg_hash, pk, sk)) {
 		return -1;
 	}
-	log_handshake(&hs->tkey, &hs->rkey, c->client_random, c->keylog);
+	derive_secret(c->hs_tx, digest, c->hs_secret, HANDSHAKE_CLIENT, msg_hash);
+	derive_secret(c->hs_rx, digest, c->hs_secret, HANDSHAKE_SERVER, msg_hash);
+	log_handshake(c->keylog, digest, c->hs_tx, c->hs_rx, c->client_random);
 	return 0;
 }
 
@@ -803,16 +804,15 @@ static int check_signature(qconnection_t *c, uint16_t algorithm, const void *sig
 	}
 
 	uint8_t verify[QUIC_MAX_CERT_VERIFY_SIZE];
-	size_t vlen = generate_cert_verify(*c->msg_hash, !c->is_client, msg_hash, verify);
+	size_t vlen = calc_cert_verify(verify, !c->is_client, *c->msg_hash, msg_hash);
 	const br_x509_pkey *pk = (*c->validator)->get_pkey(c->validator, NULL);
 	return type->verify(type, pk, verify, vlen, sig, slen);
 }
 
-static int check_finish(qconnection_t *c, const void *fin, size_t flen, const uint8_t *msg_hash) {
-	qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
+static int check_finish(qconnection_t *c, const void *fin, size_t flen, const void *msg_hash) {
 	uint8_t verify[QUIC_MAX_HASH_SIZE];
-	size_t vlen = generate_finish_verify(&hs->rkey, msg_hash, verify);
-	if (vlen != flen || memcmp(fin, verify, vlen)) {
+	calc_finish_verify(verify, c->cipher->hash, msg_hash, c->hs_rx);
+	if (flen != digest_size(c->cipher->hash) || memcmp(fin, verify, flen)) {
 		return CRYPTO_ERROR;
 	}
 	return 0;
@@ -1019,7 +1019,9 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		if (big_16(r.p) != TLS_LEGACY_VERSION) {
 			return CRYPTO_ERROR;
 		}
-		GET_BYTES(c->server_random, QUIC_RANDOM_SIZE, SHELLO_RANDOM);
+		PUSH_END = r.off + QUIC_RANDOM_SIZE;
+		GOTO_END(SHELLO_RANDOM);
+		d->end = POP_END;
 		GET_1(SHELLO_LEGACY_SESSION);
 		if (*r.p) {
 			// legacy sessions are not supported in QUIC
@@ -1060,8 +1062,8 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 			return CRYPTO_ERROR;
 		}
 		GOTO_END(SHELLO_FINISH);
-		update_msg_hash(c->msg_hash, &r, d->u.sh.msg_hash);
-		if (set_server_key(c, &d->u.sh.k, d->u.sh.msg_hash)) {
+		update_msg_hash(c->msg_hash, &r, d->msg_hash);
+		if (set_server_key(c, &d->u.sh.k, d->msg_hash)) {
 			return CRYPTO_ERROR;
 		}
 		goto start_encrypted_extensions;
@@ -1246,7 +1248,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		// CERTIFICATE_VERIFY
 
 	start_verify:
-		update_msg_hash(c->msg_hash, &r, d->u.v.msg_hash);
+		update_msg_hash(c->msg_hash, &r, d->msg_hash);
 		assert(!d->depth);
 		d->end = UINT32_MAX;
 		GET_4(VERIFY_HEADER);
@@ -1263,7 +1265,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		}
 		GET_BYTES(d->u.v.sig, d->u.v.len, VERIFY_SIG_DATA);
 		GOTO_END(VERIFY_FINISH);
-		err = check_signature(c, d->u.v.algorithm, d->u.v.sig, d->u.v.len, d->u.v.msg_hash);
+		err = check_signature(c, d->u.v.algorithm, d->u.v.sig, d->u.v.len, d->msg_hash);
 		if (err) {
 			return err;
 		}
@@ -1274,7 +1276,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 
 	start_finish:
 	case FINISHED_START:
-		update_msg_hash(c->msg_hash, &r, d->u.f.msg_hash);
+		update_msg_hash(c->msg_hash, &r, d->msg_hash);
 		assert(!d->depth);
 		d->end = UINT32_MAX;
 		GET_4(FINISHED_HEADER);
@@ -1287,31 +1289,35 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 			return CRYPTO_ERROR;
 		}
 		GET_BYTES(d->u.f.fin, d->u.f.len, FINISHED_DATA);
-		err = check_finish(c, d->u.f.fin, d->u.f.len, d->u.f.msg_hash);
+		err = check_finish(c, d->u.f.fin, d->u.f.len, d->msg_hash);
 		if (err) {
 			return err;
 		}
-		update_msg_hash(c->msg_hash, &r, d->u.f.msg_hash);
 		if (c->is_client) {
-			qpacket_buffer_t *hs = &c->pkts[QC_HANDSHAKE];
-			size_t flen = generate_finish_verify(&hs->tkey, d->u.f.msg_hash, c->client_finished);
+			uint8_t msg_hash[QUIC_MAX_HASH_SIZE], master[QUIC_MAX_HASH_SIZE], client[QUIC_MAX_HASH_SIZE], server[QUIC_MAX_HASH_SIZE];
+			update_msg_hash(c->msg_hash, &r, msg_hash);
+			calc_finish_verify(c->client_finished, *c->msg_hash, msg_hash, c->hs_tx);
+			calc_master_secret(master, *c->msg_hash, c->hs_secret);
+			derive_secret(client, *c->msg_hash, master, PROT_CLIENT, msg_hash);
+			derive_secret(server, *c->msg_hash, master, PROT_SERVER, msg_hash);
+			c->cipher->init(&c->prot_tx.vtable, client);
+			c->cipher->init(&c->prot_rx.vtable, server);
+			log_protected(c->keylog, *c->msg_hash, client, server, c->client_random);
 
-			qpacket_buffer_t *prot = &c->pkts[QC_PROTECTED];
-			generate_protected_secrets(c->cipher, d->u.f.msg_hash, c->master_secret, &prot->tkey, &prot->rkey);
-			log_protected(&prot->tkey, &prot->rkey, c->client_random, c->keylog);
-
+			size_t hash_len = digest_size(*c->msg_hash);
 			uint8_t fin[4];
 			fin[0] = FINISHED;
-			write_big_24(fin + 1, (uint32_t)flen);
+			write_big_24(fin + 1, (uint32_t)hash_len);
 			(*c->msg_hash)->update(c->msg_hash, fin, 4);
-			(*c->msg_hash)->update(c->msg_hash, c->client_finished, flen);
+			(*c->msg_hash)->update(c->msg_hash, c->client_finished, hash_len);
 
 			c->finished_sent = false;
+			c->handshake_acknowledged = false;
 		} else {
 			c->finished_sent = true;
 			c->handshake_acknowledged = true;
 		}
-		c->handshake_complete = true;
+		c->peer_verified = true;
 		LOG(c->debug, "handshake complete");
 		GOTO_LEVEL(QC_PROTECTED, FINISHED_LEVEL);
 		goto start_ticket;
