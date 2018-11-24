@@ -1095,8 +1095,8 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		// ENCRYPTED_EXTENSIONS
 
 	start_encrypted_extensions:
-		c->pending_streams[0].max = 0;
-		c->pending_streams[1].max = 0;
+		c->pending[0].max = 0;
+		c->pending[1].max = 0;
 		memset(&c->max_stream_data, 0, sizeof(c->max_stream_data));
 		c->max_data = 0;
 		assert(!d->depth);
@@ -1181,11 +1181,11 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		goto finish_tp;
 	bidi_streams:
 		GET_2(EXTENSIONS_TP_bidi_streams);
-		c->pending_streams[PENDING_BIDI].max = (uint64_t)big_16(r.p) + 1;
+		c->pending[PENDING_BIDI].max = (uint64_t)big_16(r.p) + 1;
 		goto finish_tp;
 	uni_streams:
 		GET_2(EXTENSIONS_TP_uni_streams);
-		c->pending_streams[PENDING_UNI].max = (uint64_t)big_16(r.p) + 1;
+		c->pending[PENDING_UNI].max = (uint64_t)big_16(r.p) + 1;
 		goto finish_tp;
 	max_data:
 		GET_4(EXTENSIONS_TP_max_data);

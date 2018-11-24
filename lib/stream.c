@@ -46,7 +46,6 @@ void qtx_write(qstream_t *s, const void *data, size_t len) {
 }
 
 void qtx_lost(qstream_t *s, uint64_t offset, size_t sz) {
-	s->flags |= QSTREAM_TX_DIRTY;
 	qbuf_mark_valid(&s->tx, offset, sz);
 }
 

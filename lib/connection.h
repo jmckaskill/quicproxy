@@ -91,11 +91,10 @@ struct qconnection {
 	struct {
 		uint64_t max;
 		uint64_t next;
-		qstream_t *first;
-		qstream_t *last;
-	} pending_streams[2];
-	qstream_t *tx_streams;
-	rbtree sorted_streams[4];
+		rbtree streams;
+	} pending[2];
+	rbtree tx_streams;
+	rbtree rx_streams[4];
 	uint32_t max_stream_data[4];
 	uint64_t max_data;
 
@@ -113,7 +112,7 @@ int qc_timeout(qconnection_t *c, qmicrosecs_t now, qmicrosecs_t *ptimeout);
 
 void qc_add_stream(qconnection_t *c, qstream_t *s);
 void qc_rm_stream(qconnection_t *c, qstream_t *s);
-int qc_flush_stream(qconnection_t *c, qstream_t *s);
+void qc_flush_stream(qconnection_t *c, qstream_t *s);
 
 // Client code
 int qc_connect(qconnection_t *c, const char *server_name, const br_x509_class **validator, const qconnect_params_t *params, qmicrosecs_t *ptimeout);
