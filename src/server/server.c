@@ -28,7 +28,7 @@ struct server {
 	uint8_t rxbuf[4096];
 };
 
-static void server_disconnect(const qinterface_t **vt, int error) {
+static void server_close(const qinterface_t **vt) {
 	struct server *s = (struct server*) vt;
 	s->connected = false;
 	s->stream_opened = false;
@@ -47,7 +47,7 @@ static int server_send(const qinterface_t **vt, const void *addr, const void *bu
 	return 0;
 }
 
-static qstream_t *server_open(const qinterface_t **vt, bool unidirectional) {
+static qstream_t *server_open_stream(const qinterface_t **vt, bool unidirectional) {
 	struct server *s = (struct server*) vt;
 	if (s->stream_opened) {
 		return NULL;
@@ -57,7 +57,7 @@ static qstream_t *server_open(const qinterface_t **vt, bool unidirectional) {
 	return &s->stream;
 }
 
-static void server_close(const qinterface_t **vt, qstream_t *stream) {
+static void server_close_stream(const qinterface_t **vt, qstream_t *stream) {
 	struct server *s = (struct server*) vt;
 	s->stream_opened = false;
 }
@@ -75,10 +75,11 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 }
 
 static const qinterface_t server_interface = {
-	&server_disconnect,
-	&server_send,
-	&server_open,
 	&server_close,
+	NULL,
+	&server_send,
+	&server_open_stream,
+	&server_close_stream,
 	&server_read,
 	NULL,
 };

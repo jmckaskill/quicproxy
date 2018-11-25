@@ -12,21 +12,40 @@ typedef int(*quic_send)(void *user, const void *buf, size_t len, tick_t *sent);
 
 typedef struct qinterface qinterface_t;
 struct qinterface {
-	void(*disconnect)(const qinterface_t **iface, int error);
+	void(*close)(const qinterface_t **iface);
+	void(*shutdown)(const qinterface_t **iface, int error);
 	int(*send)(const qinterface_t **iface, const void *addr, const void *buf, size_t len, tick_t *sent);
-	qstream_t*(*open)(const qinterface_t **iface, bool unidirectional);
-	void(*close)(const qinterface_t **iface, qstream_t *s);
+	qstream_t*(*open_stream)(const qinterface_t **iface, bool unidirectional);
+	void(*close_stream)(const qinterface_t **iface, qstream_t *s);
 	void(*read)(const qinterface_t **iface, qstream_t *s);
 	void(*change_peer_address)(const qinterface_t **iface, const void *addr);
 };
 
+#define QTX_PKT_PATH_CHALLENGE	0x0001
+#define QTX_PKT_PATH_RESPONSE	0x0002
+#define QTX_PKT_ACK				0x0004
+#define QTX_PKT_FIN				0x0008
+#define QTX_PKT_RST				0x0010
+#define QTX_PKT_MAX_STREAM_DATA 0x0020
+#define QTX_PKT_MAX_DATA		0x0040
+#define QTX_PKT_MAX_ID_UNI		0x0080
+#define QTX_PKT_MAX_ID_BIDI		0x0100
+#define QTX_PKT_NEW_TOKEN		0x0200
+#define QTX_PKT_RETRANSMIT		0x0400
+#define QTX_PKT_CLOSE			0x0800
+#define QTX_PKT_NEW_ID			0x1000
+#define QTX_PKT_RETIRE_ID		0x2000
+#define QTX_PKT_STOP_SENDING	0x4000
+#define QTX_PKT_CRYPTO			0x8000
+
 typedef struct qtx_packet qtx_packet_t;
 struct qtx_packet {
-	rbnode rb;
 	uint64_t off;
-	size_t len;
+	rbnode rb;
 	qstream_t *stream;
 	tick_t sent;
+	uint16_t len;
+	uint16_t flags;
 };
 
 typedef struct qpacket_buffer qpacket_buffer_t;
@@ -50,6 +69,9 @@ struct qconnection {
 	bool have_prot_keys;
 	bool peer_verified;
 	bool handshake_complete;
+	bool closing;
+	bool draining;
+	int close_errnum;
 
 	// crypto management
 	qcipher_compat prot_tx;
@@ -84,7 +106,7 @@ struct qconnection {
 
 	// streams
 	qpacket_buffer_t pkts[3];
-	size_t tx_stream_packets;
+	size_t retransmit_packets;
 	struct {
 		uint64_t max;
 		uint64_t next;
@@ -102,9 +124,11 @@ struct qconnection {
 	apc_t ack_timer;
 	dispatcher_t *dispatcher;
 	tickdiff_t rtt;
+	uint64_t retransmit_pktnum;
 };
 
 void qc_close(qconnection_t *c);
+void qc_shutdown(qconnection_t *c, int error);
 void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime);
 void qc_move(qconnection_t *c, dispatcher_t *d);
 

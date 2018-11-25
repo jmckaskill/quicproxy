@@ -8,3 +8,4 @@ download.done
 .ninja_log
 .vs
 *.vcxproj.user
+/Debug

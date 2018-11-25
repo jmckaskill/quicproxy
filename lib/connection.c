@@ -18,8 +18,9 @@ static const char prng_nonce[] = "quicproxy prng nonce";
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
+static int send_data(qconnection_t *c, int ignore_cwnd_pkts);
+static void do_shutdown(qconnection_t *c, int error);
 static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t pktnum, tick_t rxtime);
-static void send_data(qconnection_t *c, bool force_send);
 
 static tickdiff_t crypto_timeout(qconnection_t *c, bool reset);
 static int send_client_hello(qconnection_t *c, bool first_time, tick_t *psent);
@@ -176,6 +177,7 @@ void qc_move(qconnection_t *c, dispatcher_t *d) {
 	if (c->dispatcher != d) {
 		move_apc(c->dispatcher, d, &c->idle_timer);
 		move_apc(c->dispatcher, d, &c->retransmit_timer);
+		move_apc(c->dispatcher, d, &c->ack_timer);
 		c->dispatcher = d;
 	}
 }
@@ -183,6 +185,7 @@ void qc_move(qconnection_t *c, dispatcher_t *d) {
 void qc_close(qconnection_t *c) {
 	cancel_apc(c->dispatcher, &c->idle_timer);
 	cancel_apc(c->dispatcher, &c->retransmit_timer);
+	cancel_apc(c->dispatcher, &c->ack_timer);
 }
 
 
@@ -297,28 +300,23 @@ struct long_packet {
 	size_t crypto_off;
 	const uint8_t *crypto_data;
 	size_t crypto_size;
-	size_t padsz;
+	bool pad;
 };
-
-static size_t skip_crypto(struct long_packet *p, size_t sz) {
-	size_t use = MIN(sz, p->crypto_size);
-	p->crypto_off += use;
-	p->crypto_data += use;
-	p->crypto_size -= use;
-	return sz - use;
-}
 
 static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, struct long_packet *p) {
 	qpacket_buffer_t *pkts = &c->pkts[p->level];
-	if (pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
+	if (c->closing) {
+		return NULL;
+	} else if (pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
 		// we've run out of room in the transmit packet buffer
 		// need to wait for some packets to be ack'ed or lost
 		return NULL;
 	} else if (s->p + 1 + 4 + 2 * QUIC_ADDRESS_SIZE + 1 + 2 + 4 + QUIC_TAG_SIZE > s->e) {
 		return NULL;
-	} else if (s->p + p->padsz > s->e) {
-		return NULL;
 	}
+
+	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
+	memset(pkt, 0, sizeof(*pkt));
 
 	// header
 	static const uint8_t headers[] = { INITIAL_PACKET,HANDSHAKE_PACKET,PROTECTED_PACKET };
@@ -345,31 +343,36 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, struct lo
 	uint8_t *enc_begin = s->p;
 
 	// ack frame
-	if (pkts->rx_next && encode_ack_frame(c, s, pkts)) {
-		return NULL;
+	if (pkts->received) {
+		if (encode_ack_frame(c, s, pkts)) {
+			return NULL;
+		}
+		pkt->flags |= QTX_PKT_ACK;
 	}
 
 	// crypto frame
-	uint64_t off = 0;
-	size_t csz = 0;
 	if (p->crypto_size) {
 		size_t chdr = 1 + 4 + 4;
 		if (s->p + chdr + QUIC_TAG_SIZE > s->e) {
 			return NULL;
 		}
-		off = p->crypto_off;
-		csz = MIN(p->crypto_size, (size_t)(s->e - s->p) - chdr);
+		p->crypto_off;
+		size_t sz = MIN(p->crypto_size, (size_t)(s->e - s->p) - chdr);
 		*(s->p++) = CRYPTO;
 		s->p = encode_varint(s->p, p->crypto_off);
-		s->p = encode_varint(s->p, csz);
-		s->p = append(s->p, p->crypto_data, csz);
-		skip_crypto(p, csz);
+		s->p = encode_varint(s->p, sz);
+		s->p = append(s->p, p->crypto_data, sz);
+		pkt->flags |= QTX_PKT_CRYPTO;
+		pkt->off = p->crypto_off;
+		pkt->len = (uint16_t)sz;
+		p->crypto_off += sz;
+		p->crypto_data += sz;
+		p->crypto_size -= sz;
 	}
 
 	// padding
-	size_t pkt_sz = (size_t)(s->p - pkt_begin) + QUIC_TAG_SIZE;
-	if (pkt_sz < p->padsz) {
-		size_t pad = p->padsz - pkt_sz;
+	if (p->pad) {
+		size_t pad = (size_t)(s->e - s->p) - QUIC_TAG_SIZE;
 		memset(s->p, PADDING, pad);
 		s->p += pad;
 	}
@@ -383,13 +386,9 @@ static qtx_packet_t *encode_long_packet(qconnection_t *c, qslice_t *s, struct lo
 
 	(*p->key)->encrypt(p->key, pkts->tx_next, pkt_begin, enc_begin, tag);
 	(*p->key)->protect(p->key, packet_number, (size_t)(enc_begin - packet_number), (size_t)(s->p - packet_number));
-
-	qtx_packet_t *pkt = &pkts->sent[(pkts->tx_next++) % pkts->sent_len];
-	pkt->off = off;
-	pkt->len = csz;
-	pkt->stream = NULL;
 	return pkt;
 }
+
 
 
 
@@ -405,17 +404,10 @@ static tickdiff_t crypto_timeout(qconnection_t *c, bool reset) {
 	return (2 << c->retransmit_count) * c->rtt;
 }
 
-static void call_disconnect(qconnection_t *c, int error) {
-	// disconnect may delete our memory, so need to make sure we are decoupled before calling it
-	LOG(c->params->debug, "disconnect 0x%X", error);
-	qc_close(c);
-	(*c->iface)->disconnect(c->iface, error);
-}
-
 static void on_idle_timeout(apc_t *w, tick_t now) {
 	qconnection_t *c = container_of(w, qconnection_t, idle_timer);
 	LOG(c->params->debug, "idle timeout");
-	call_disconnect(c, QC_ERR_IDLE_TIMEOUT);
+	do_shutdown(c, QC_ERR_IDLE_TIMEOUT);
 }
 
 
@@ -449,7 +441,7 @@ static int send_client_hello(qconnection_t *c, bool first_time, tick_t *psent) {
 	struct long_packet lp = {
 		.level = QC_INITIAL,
 		.key = &key.vtable,
-		.padsz = DEFAULT_PACKET_SIZE,
+		.pad = true,
 		.crypto_off = 0,
 		.crypto_data = tlsbuf,
 		.crypto_size = (size_t)(tls.p - tlsbuf),
@@ -465,6 +457,7 @@ static int send_client_hello(qconnection_t *c, bool first_time, tick_t *psent) {
 		return -1;
 	}
 
+	c->pkts[QC_INITIAL].tx_next++;
 	*psent = pkt->sent;
 	return 0;
 }
@@ -561,7 +554,6 @@ static int send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_
 		.crypto_off = 0,
 		.crypto_data = tlsbuf,
 		.crypto_size = init_len,
-		.padsz = 0,
 	};
 	struct long_packet hp = {
 		.level = QC_HANDSHAKE,
@@ -569,7 +561,6 @@ static int send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_
 		.crypto_off = 0,
 		.crypto_data = ext_begin,
 		.crypto_size = (size_t)(s.p - ext_begin),
-		.padsz = 0,
 	};
 
 	LOG(c->params->debug, "TX SERVER HELLO");
@@ -578,24 +569,26 @@ static int send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_
 	while (ip.crypto_size || hp.crypto_size) {
 		uint8_t udpbuf[DEFAULT_PACKET_SIZE];
 		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
-		qtx_packet_t *pkts[2] = { NULL, NULL };
+		qtx_packet_t *ipkt = NULL, *hpkt = NULL;
 		if (ip.crypto_size) {
-			pkts[0] = encode_long_packet(c, &udp, &ip);
+			ipkt = encode_long_packet(c, &udp, &ip);
 		}
 		if (hp.crypto_size) {
-			pkts[1] = encode_long_packet(c, &udp, &hp);
+			hpkt = encode_long_packet(c, &udp, &hp);
 		}
-		if (!pkts[0] && !pkts[1]) {
+		if (!ipkt && !hpkt) {
 			return -1;
 		}
 		if ((*c->iface)->send(c->iface, NULL, udpbuf, (size_t)(udp.p - udpbuf), psent)) {
 			return -1;
 		}
-		if (pkts[0]) {
-			pkts[0]->sent = *psent;
+		if (ipkt) {
+			ipkt->sent = *psent;
+			c->pkts[QC_INITIAL].tx_next++;
 		}
-		if (pkts[1]) {
-			pkts[1]->sent = *psent;
+		if (hpkt) {
+			hpkt->sent = *psent;
+			c->pkts[QC_HANDSHAKE].tx_next++;
 		}
 	}
 
@@ -635,12 +628,15 @@ static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64
 		}
 
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		qstream_t *s = pkt->stream;
-		if (s) {
+		if (pkt->stream && pkt->len) {
+			qstream_t *s = pkt->stream;
 			rbnode *next_pkt = rb_next(&pkt->rb, RB_RIGHT);
 			qtx_ack(s, pkt->off, pkt->len, next_pkt ? container_of(next_pkt, qtx_packet_t, rb)->off : s->tx.tail);
 			rb_remove(&s->tx_packets, &pkt->rb);
-			c->tx_stream_packets--;
+		}
+
+		if (pkt->flags & QTX_PKT_RETRANSMIT) {
+			c->retransmit_packets--;
 		}
 		pkt->off = UINT64_MAX;
 
@@ -662,13 +658,17 @@ static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64
 			continue;
 		}
 		// packet is lost
-		qstream_t *s = pkt->stream;
-		if (s) {
+		if (pkt->stream && pkt->len) {
+			qstream_t *s = pkt->stream;
 			qtx_lost(s, pkt->off, pkt->len);
 			rb_remove(&s->tx_packets, &pkt->rb);
-			c->tx_stream_packets--;
-		} else {
+		} 
+		if (!c->peer_verified && (pkt->flags & QTX_PKT_CRYPTO)) {
 			add_apc(c->dispatcher, &c->retransmit_timer, &on_handshake_timeout);
+		}
+
+		if (pkt->flags & QTX_PKT_RETRANSMIT) {
+			c->retransmit_packets--;
 		}
 		pkt->off = UINT64_MAX;
 
@@ -694,6 +694,8 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, qslice_t *s, t
 	} else if (largest >= b->tx_next) {
 		return -1;
 	}
+
+	size_t retransmit_begin = c->retransmit_packets;
 
 	qtx_packet_t *pkt = &b->sent[largest % b->sent_len];
 	int32_t diff = (int32_t)(rxtime - pkt->sent);
@@ -722,7 +724,8 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, qslice_t *s, t
 	if (b->tx_oldest < next) {
 		process_gap_range(c, level, b->tx_oldest, next-1, largest, lost);
 	}
-	if (!c->tx_stream_packets && c->peer_verified) {
+
+	if (retransmit_begin && !c->retransmit_packets && c->peer_verified) {
 		// cancel the tail loss probe, we've got all our packets acknowledged
 		if (c->params->ping_timeout) {
 			add_timed_apc(c->dispatcher, &c->retransmit_timer, rxtime + c->params->ping_timeout, &on_ping_timeout);
@@ -751,46 +754,97 @@ static void enable_ack_timer(qconnection_t *c, tick_t timeout) {
 	}
 }
 
-static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level, tick_t rxtime) {
-	int err = 0;
-	while (!err && s.p < s.e) {
+static int process_protected_packet(qconnection_t *c, qslice_t s, tick_t rxtime) {
+	while (s.p < s.e) {
+		int err;
 		uint8_t hdr = *(s.p++);
-		if (level == QC_PROTECTED && (hdr & STREAM_MASK) == STREAM) {
+		if ((hdr & STREAM_MASK) == STREAM) {
 			if (!c->peer_verified) {
 				return QC_ERR_DROP;
 			}
-			err = decode_stream(c, hdr, &s);
+			if ((err = decode_stream(c, hdr, &s)) != 0) {
+				return err;
+			}
 			enable_ack_timer(c, rxtime + QUIC_LONG_ACK_TIMEOUT);
 		} else {
 			switch (hdr) {
 			default:
-				return QC_ERR_UNKNOWN_FRAME;
+				return QC_ERR_FRAME_ENCODING;
 			case PADDING:
 				s.p = find_non_padding(s.p, s.e);
 				break;
+			case APPLICATION_CLOSE:
+			case CONNECTION_CLOSE:
+				if ((err = decode_close(&s, hdr, &c->close_errnum)) != 0) {
+					return err;
+				}
+				c->draining = true;
+				do_shutdown(c, c->close_errnum);
+				break;
 			case ACK:
-				LOG(c->params->debug, "RX ACK %d", level);
-				err = decode_ack(c, level, &s, rxtime);
+				LOG(c->params->debug, "RX ACK");
+				if ((err = decode_ack(c, QC_PROTECTED, &s, rxtime)) != 0) {
+					return err;
+				}
 				break;
 			case CRYPTO:
-				LOG(c->params->debug, "RX CRYPTO %d", level);
-				err = decode_crypto(c, level, &s);
-				if (level == QC_PROTECTED) {
-					enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
+				LOG(c->params->debug, "RX CRYPTO");
+				if ((err = decode_crypto(c, QC_PROTECTED, &s)) != 0) {
+					return err;
 				}
+				enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
 				break;
 			case PING:
-				LOG(c->params->debug, "RX PING %d", level);
-				if (c->peer_verified) {
-					enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
-				} else {
-					add_apc(c->dispatcher, &c->retransmit_timer, &on_handshake_timeout);
-				}
+				LOG(c->params->debug, "RX PING");
+				enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
 				break;
 			}
 		}
 	}
-	return err;
+	return 0;
+}
+
+static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level, tick_t rxtime) {
+	if (level == QC_PROTECTED) {
+		return process_protected_packet(c, s, rxtime);
+	}
+
+	while (s.p < s.e) {
+		int err = 0;
+		uint8_t hdr = *(s.p++);
+		switch (hdr) {
+		default:
+			return QC_ERR_FRAME_ENCODING;
+		case PADDING:
+			s.p = find_non_padding(s.p, s.e);
+			break;
+		case APPLICATION_CLOSE:
+		case CONNECTION_CLOSE:
+			if ((err = decode_close(&s, hdr, &c->close_errnum)) != 0) {
+				return err;
+			}
+			c->draining = true;
+			do_shutdown(c, c->close_errnum);
+			break;
+		case ACK:
+			LOG(c->params->debug, "RX ACK %d", level);
+			if ((err = decode_ack(c, level, &s, rxtime)) != 0) {
+				return err;
+			}
+			break;
+		case CRYPTO:
+			LOG(c->params->debug, "RX CRYPTO %d", level);
+			if ((err = decode_crypto(c, level, &s)) != 0) {
+				return err;
+			}
+			if (level == QC_PROTECTED) {
+				enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
+			}
+			break;
+		}
+	}
+
+	return 0;
 }
 
 int qc_get_destination(void *buf, size_t len, uint8_t *out) {
@@ -986,11 +1040,11 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			if (err == QC_ERR_DROP) {
 				continue;
 			} else if (err) {
-				call_disconnect(c, err);
+				do_shutdown(c, err);
 				return;
 			}
 			receive_packet(c, level, pktnum, rxtime);
-			send_data(c, false);
+			send_data(c, 0);
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
@@ -1003,12 +1057,12 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 				return;
 			}
 			add_timed_apc(c->dispatcher, &c->idle_timer, rxtime + idle_timeout(c), &on_idle_timeout);
-			int err = process_packet(c, s, QC_PROTECTED, rxtime);
+			int err = process_protected_packet(c, s, rxtime);
 			if (!err) {
 				receive_packet(c, QC_PROTECTED, pktnum, rxtime);
-				send_data(c, false);
+				send_data(c, 0);
 			} else if (err != QC_ERR_DROP) {
-				call_disconnect(c, err);
+				do_shutdown(c, err);
 			}
 			return;
 		}
@@ -1054,6 +1108,7 @@ void qc_add_stream(qconnection_t *c, qstream_t *s) {
 
 
 
+
 /////////////////////////
 // Stream sending
 
@@ -1071,167 +1126,223 @@ static void insert_stream_packet(qstream_t *s, qtx_packet_t *pkt) {
 	rb_insert(&s->tx_packets, p, &pkt->rb, dir);
 }
 
-static void send_stream(qconnection_t *c, qstream_t *s, bool send_ping) {
+struct short_packet {
+	qstream_t *stream;
+	uint64_t stream_off;
+	int close_errnum;
+	bool force_ack;
+	bool ignore_cwnd;
+	bool ignore_closing;
+	bool send_close;
+	bool send_ack;
+};
+
+static int send_short_packet(qconnection_t *c, struct short_packet *s) {
 	qpacket_buffer_t *pkts = &c->pkts[QC_PROTECTED];
-
-	uint64_t off = 0;
-	if (s) {
-		off = s->tx.head;
-		qbuf_next_valid(&s->tx, &off);
+	if (!c->peer_verified || (!s->ignore_closing && c->closing) || c->draining) {
+		return -1;
+	} else if (pkts->tx_next == pkts->tx_oldest + pkts->sent_len) {
+		return -1;
 	}
 
-	for (;;) {
-		uint8_t buf[DEFAULT_PACKET_SIZE];
-		qslice_t p = { buf, buf + sizeof(buf) };
-		qtx_packet_t *init = NULL;
-		qtx_packet_t *hs = NULL;
+	bool include_client_finished = !c->handshake_complete;
+	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
+	memset(pkt, 0, sizeof(*pkt));
 
-		if (!c->handshake_complete) {
-			// get the ack for QC_INITIAL & QC_HANDSHAKE
-			qcipher_aes_gcm ik;
-			qcipher_compat hk;
-			struct long_packet ip = { .level = QC_INITIAL,.key = &ik.vtable };
-			struct long_packet hp = { .level = QC_HANDSHAKE,.key = &hk.vtable };
-			init_initial_cipher(&ik, true, c->peer_id);
-			c->cipher->init(&hk.vtable, c->hs_tx);
-			init = encode_long_packet(c, &p, &ip);
-			hs = encode_long_packet(c, &p, &hp);
-			if (!init || !hs) {
-				return;
-			}
+	uint8_t buf[DEFAULT_PACKET_SIZE];
+	qslice_t p = { buf, buf + sizeof(buf) };
+	qtx_packet_t *init = NULL;
+	qtx_packet_t *hs = NULL;
+
+	// get the ack for QC_INITIAL & QC_HANDSHAKE
+	if (include_client_finished) {
+		qcipher_aes_gcm ik;
+		qcipher_compat hk;
+		struct long_packet ip = { .level = QC_INITIAL,.key = &ik.vtable };
+		struct long_packet hp = { .level = QC_HANDSHAKE,.key = &hk.vtable };
+		init_initial_cipher(&ik, true, c->peer_id);
+		c->cipher->init(&hk.vtable, c->hs_tx);
+		init = encode_long_packet(c, &p, &ip);
+		hs = encode_long_packet(c, &p, &hp);
+		if (!init || !hs) {
+			return -1;
+		}
+	}
+
+	if (p.p + 1 + c->peer_id[0] + QUIC_TAG_SIZE > p.e) {
+		return -1;
+	}
+
+	// Header
+	uint8_t *pkt_begin = p.p;
+	*(p.p++) = SHORT_PACKET;
+
+	// destination
+	p.p = append(p.p, c->peer_id + 1, c->peer_id[0]);
+
+	// packet number
+	uint8_t *packet_number = p.p;
+	p.p = encode_packet_number(p.p, pkts->tx_next);
+	uint8_t *enc_begin = p.p;
+
+	// ack
+	if (s->send_ack && pkts->received) {
+		int err = encode_ack_frame(c, &p, pkts);
+		if (err) {
+			return err;
+		}
+		pkt->flags |= QTX_PKT_ACK;
+	}
+
+	// client finished
+	if (include_client_finished) {
+		if (p.p + 1 + 1 + 2 > p.e) {
+			return -1;
+		}
+		*(p.p++) = CRYPTO;
+		*(p.p++) = 0; // offset
+		p.p += 2; // length
+		uint8_t *fin_start = p.p;
+		int err = encode_finished(&p, c->cipher->hash, c->finished_hash);
+		if (err) {
+			return err;
+		}
+		write_big_16(fin_start - 2, VARINT_16 | (uint16_t)(p.p - fin_start));
+	}
+
+	if (s->send_close) {
+		if (encode_close(&p, s->close_errnum)) {
+			return -1;
+		}
+		pkt->flags |= QTX_PKT_CLOSE;
+	}
+
+	// stream data
+	if (s->stream) {
+		if (p.p + 1 + 8 + 8 + 2 > p.e) {
+			return -1;
+		}
+		uint8_t *stream_header = p.p;
+		*(p.p++) = STREAM;
+		p.p = encode_varint(p.p, s->stream->id);
+		if (s->stream_off > 0) {
+			*stream_header |= STREAM_OFF_FLAG;
+			p.p = encode_varint(p.p, s->stream_off);
 		}
 
-		// Header
-		uint8_t *pkt_begin = p.p;
-		*(p.p++) = SHORT_PACKET;
-
-		// destination
-		p.p = append(p.p, c->peer_id + 1, c->peer_id[0]);
-
-		// packet number
-		uint8_t *packet_number = p.p;
-		p.p = encode_packet_number(p.p, pkts->tx_next);
-		uint8_t *enc_begin = p.p;
-
-		// ack
-		if (pkts->rx_next && encode_ack_frame(c, &p, pkts)) {
-			return;
+		uint8_t *stream_len = NULL;
+		if (include_client_finished) {
+			// specify a length so we can pad the frame out
+			p.p += 2;
+			stream_len = p.p;
+			*stream_header |= STREAM_LEN_FLAG;
 		}
 
-		// client finished
-		if (!c->handshake_complete) {
-			*(p.p++) = CRYPTO;
-			*(p.p++) = 0; // offset
-			p.p += 2; // length
-			uint8_t *fin_start = p.p;
-			if (encode_finished(&p, c->cipher->hash, c->finished_hash)) {
-				return;
-			}
-			write_big_16(fin_start - 2, VARINT_16 | (uint16_t)(p.p - fin_start));
+		size_t sz = qbuf_copy(&s->stream->tx, s->stream_off, p.p, (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
+		pkt->stream = s->stream;
+		pkt->off = s->stream_off;
+		pkt->len = (uint16_t)sz;
+		pkt->flags |= QTX_PKT_RETRANSMIT;
+		p.p += sz;
+		s->stream_off += sz;
+
+		if (stream_len) {
+			write_big_16(stream_len - 2, VARINT_16 | (uint16_t)(sz));
 		}
 
-		// data
-		size_t len = 0;
-		if (s) {
-			uint8_t *stream_header = p.p;
-			*(p.p++) = STREAM;
-			p.p = encode_varint(p.p, s->id);
-			if (off > 0) {
-				*stream_header |= STREAM_OFF_FLAG;
-				p.p = encode_varint(p.p, off);
-			}
-
-			uint8_t *stream_len = NULL;
-			if (!c->handshake_complete) {
-				// specify a length so we can pad the frame out
-				p.p += 2;
-				stream_len = p.p;
-				*stream_header |= STREAM_LEN_FLAG;
-			}
-
-			len = qbuf_copy(&s->tx, off, p.p, (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
-			p.p += len;
-			off += len;
-
-			if (stream_len) {
-				write_big_16(stream_len - 2, VARINT_16 | (uint16_t)(len));
-			}
-
-			// set stream fin flag
-			if (off == s->tx.tail && (s->flags & QSTREAM_END)) {
-				*stream_header |= STREAM_FIN_FLAG;
-			}
-
-			LOG(c->params->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d, cfin %d", s->id, off, (int)len, (int)!c->handshake_complete);
-		} else if (send_ping) {
-			// this is a forced packet
-			// add a ping to force the other side to respond
-			*(p.p++) = PING;
-			LOG(c->params->debug, "TX PING");
-		} else {
-			LOG(c->params->debug, "TX ACK");
+		// set stream fin flag
+		if (qtx_eof(s->stream, s->stream_off)) {
+			*stream_header |= STREAM_FIN_FLAG;
+			pkt->flags |= QTX_PKT_FIN;
 		}
 
-		// padding
-		if (!c->handshake_complete) {
-			size_t pad = (size_t)(p.e - p.p) - QUIC_TAG_SIZE;
-			memset(p.p, PADDING, pad);
-			p.p += pad;
-		}
+		LOG(c->params->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d, cfin %d", s->stream->id, pkt->off, pkt->len, (int)include_client_finished);
 
-		// tag
-		uint8_t *tag = p.p;
-		p.p += QUIC_TAG_SIZE;
-
-		const qcipher_class **k = &c->prot_tx.vtable;
-		(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
-		(*k)->protect(k, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
-
-
-		qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
-		if ((*c->iface)->send(c->iface, NULL, buf, (size_t)(p.p - buf), &pkt->sent)) {
-			return;
+	} else if (s->force_ack) {
+		// this is a forced packet
+		// add a ping to force the other side to respond
+		if (p.p == p.e) {
+			return -1;
 		}
-		if (init) {
-			init->sent = pkt->sent;
-		}
-		if (hs) {
-			hs->sent = pkt->sent;
-		}
-		pkt->off = off - len;
-		pkt->len = len;
-		pkt->stream = s;
-		if (s) {
-			c->tx_stream_packets++;
-			insert_stream_packet(s, pkt);
-		}
-		pkts->tx_next++;
+		*(p.p++) = PING;
+		LOG(c->params->debug, "TX PING");
+	} else {
+		LOG(c->params->debug, "TX ACK");
+	}
 
+	if (p.p + QUIC_TAG_SIZE > p.e) {
+		return -1;
+	}
+
+	// As the server has not yet verified our address, we need to pad out the packet
+	if (include_client_finished) {
+		size_t pad = (size_t)(p.e - p.p) - QUIC_TAG_SIZE;
+		memset(p.p, PADDING, pad);
+		p.p += pad;
+	}
+
+	// tag
+	uint8_t *tag = p.p;
+	p.p += QUIC_TAG_SIZE;
+
+	const qcipher_class **k = &c->prot_tx.vtable;
+	(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
+	(*k)->protect(k, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
+
+	int err = (*c->iface)->send(c->iface, NULL, buf, (size_t)(p.p - buf), &pkt->sent);
+	if (err) {
+		return err;
+	}
+	if (init) {
+		init->sent = pkt->sent;
+		c->pkts[QC_INITIAL].tx_next++;
+	}
+	if (hs) {
+		hs->sent = pkt->sent;
+		c->pkts[QC_HANDSHAKE].tx_next++;
+	}
+	if (pkt->flags & QTX_PKT_RETRANSMIT) {
+		c->retransmit_packets++;
+		add_timed_apc(c->dispatcher, &c->retransmit_timer, pkt->sent + retransmission_timeout(c, true), &on_retransmission_timeout);
+	}
+	if (pkt->flags & QTX_PKT_ACK) {
 		cancel_apc(c->dispatcher, &c->ack_timer);
-		if (s) {
-			add_timed_apc(c->dispatcher, &c->retransmit_timer, pkt->sent + retransmission_timeout(c, true), &on_retransmission_timeout);
-		}
-
-		if (!s) {
-			return;
-		} else if (!qbuf_next_valid(&s->tx, &off)) {
-			rb_remove(&c->tx_streams, &s->txnode);
-			s->flags &= ~QSTREAM_IN_TX_QUEUE;
-			return;
-		}
 	}
+	if (pkt->stream) {
+		insert_stream_packet(pkt->stream, pkt);
+	}
+	pkts->tx_next++;
+	return 0;
 }
 
-static void send_data(qconnection_t *c, bool force_send) {
+static int send_stream(qconnection_t *c, qstream_t *s, int ignore_cwnd_pkts) {
+	struct short_packet sp = {
+		.stream = s,
+		.stream_off = s->tx.head,
+		.send_ack = true,
+	};
+	qbuf_next_valid(&s->tx, &sp.stream_off);
+	int sent = -1;
+	do {
+		sent++;
+		sp.ignore_cwnd = (sent < ignore_cwnd_pkts);
+	} while (!send_short_packet(c, &sp) && qbuf_next_valid(&s->tx, &sp.stream_off));
+
+	return sent;
+}
+
+static int send_data(qconnection_t *c, int ignore_cwnd_pkts) {
 	if (!c->peer_verified) {
-		return;
+		return -1;
 	}
-	uint64_t pktnum = force_send ? c->pkts[QC_PROTECTED].tx_next : 0;
+	int sent = 0;
 
 	for (rbnode *n = rb_begin(&c->tx_streams, RB_LEFT); n != NULL;) {
 		qstream_t *s = container_of(n, qstream_t, txnode);
 		n = rb_next(n, RB_RIGHT);
-		send_stream(c, s, false);
+		int ret = send_stream(c, s, ignore_cwnd_pkts);
+		ignore_cwnd_pkts -= ret;
+		sent += ret;
 	}
 
 	for (int uni = 0; uni <= 1; uni++) {
@@ -1240,17 +1351,22 @@ static void send_data(qconnection_t *c, bool force_send) {
 			n = rb_next(n, RB_RIGHT);
 			rb_remove(&c->pending[uni].streams, &s->txnode);
 			insert_local_stream(c, s, uni);
-			send_stream(c, s, false);
+			int ret = send_stream(c, s, ignore_cwnd_pkts);
+			ignore_cwnd_pkts -= ret;
+			sent += ret;
 		}
 	}
 
-	if (c->pkts[QC_PROTECTED].tx_next == pktnum) {
+	if (c->pkts[QC_PROTECTED].tx_next) {
+		return sent;
+	} else {
 		// we need to send something to get the client finished through
 		// for the client, we need a packet for the finished data
 		// for the server, we need a packet to return the ack
-		// this also stops the crypto timeouts as it replaces it with the tail loss probe
-		// this is also used for forcing a packet through for tail loss probe and RTO
-		send_stream(c, NULL, force_send);
+		struct short_packet sp = {
+			.ignore_cwnd = true,
+		};
+		return send_short_packet(c, &sp) ? 0 : 1;
 	}
 }
 
@@ -1271,7 +1387,16 @@ static tickdiff_t retransmission_timeout(qconnection_t *c, bool reset) {
 static void on_retransmission_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, retransmit_timer);
 	LOG(c->params->debug, "RTO %d", c->retransmit_count);
-	send_data(c, true);
+	// tail loss probes only send one packet
+	// retransmit timeouts send two packets
+	if (c->retransmit_count <= 2) {
+		send_data(c, 1);
+	} else {
+		if (c->retransmit_count == 3) {
+			c->retransmit_pktnum = c->pkts[QC_PROTECTED].tx_next;
+		}
+		send_data(c, 2);
+	}
 	add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, false), &on_retransmission_timeout);
 	LOG(c->params->debug, "");
 }
@@ -1279,16 +1404,95 @@ static void on_retransmission_timeout(apc_t *a, tick_t now) {
 static void on_ack_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, ack_timer);
 	LOG(c->params->debug, "ACK timeout");
-	send_stream(c, NULL, false);
+	// try and send a packet with data
+	if (send_data(c, 0) == 0) { 
+		// otherwise fall back to just an ack
+		struct short_packet sp = {
+			.ignore_cwnd = true,
+			.ignore_closing = true,
+			.send_ack = true,
+			.send_close = c->closing,
+		};
+		send_short_packet(c, &sp);
+	}
 	LOG(c->params->debug, "");
 }
 
 static void on_ping_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, retransmit_timer);
 	LOG(c->params->debug, "PING timeout");
-	send_data(c, true);
+	struct short_packet sp = {
+		.force_ack = true,
+		.ignore_cwnd = true,
+	};
+	send_short_packet(c, &sp);
 	add_timed_apc(c->dispatcher, a, now + c->params->ping_timeout, &on_ping_timeout);
 	LOG(c->params->debug, "");
+}
+
+
+
+
+///////////////////////////////////
+// Shutdown handling
+
+static void send_close(qconnection_t *c) {
+	struct short_packet sp = {
+		.ignore_cwnd = true,
+		.ignore_closing = true,
+		.send_close = true,
+		.close_errnum = c->close_errnum,
+		.send_ack = true,
+	};
+	send_short_packet(c, &sp);
+}
+
+
+static void on_destroy_timeout(apc_t *a, tick_t now) {
+	qconnection_t *c = container_of(a, qconnection_t, idle_timer);
+	qc_close(c);
+	(*c->iface)->close(c->iface);
+}
+
+static void on_resend_close(apc_t *a, tick_t now) {
+	qconnection_t *c = container_of(a, qconnection_t, retransmit_timer);
+	send_close(c);
+	add_timed_apc(c->dispatcher, a, now + crypto_timeout(c, false), &on_resend_close);
+}
+
+static tickdiff_t destroy_timeout(qconnection_t *c) {
+	return 3 * retransmission_timeout(c, true);
+}
+
+static void register_close(apc_t *a, tick_t now) {
+	qconnection_t *c = container_of(a, qconnection_t, idle_timer);
+	send_close(c);
+	add_timed_apc(c->dispatcher, &c->idle_timer, now + destroy_timeout(c), &on_destroy_timeout);
+	add_timed_apc(c->dispatcher, &c->retransmit_timer, now + crypto_timeout(c, true), &on_resend_close);
+	// leave the ack timer as is
+}
+
+void qc_shutdown(qconnection_t *c, int error) {
+	if (!c->closing) {
+		c->closing = true;
+		c->close_errnum = error;
+		if ((*c->iface)->close_stream) {
+			for (int i = 0; i < 4; i++) {
+				for (rbnode *n = rb_begin(&c->rx_streams[i], RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
+					(*c->iface)->close_stream(c->iface, container_of(n, qstream_t, rxnode));
+				}
+			}
+			memset(&c->rx_streams, 0, sizeof(c->rx_streams));
+		}
+		add_apc(c->dispatcher, &c->idle_timer, &register_close);
+	}
+}
+
+static void do_shutdown(qconnection_t *c, int error) {
+	if ((*c->iface)->shutdown) {
+		(*c->iface)->shutdown(c->iface, error);
+	}
+	qc_shutdown(c, error);
 }
 
 
@@ -1318,39 +1522,40 @@ static int decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *p) {
 	uint64_t id;
 	uint64_t off = 0;
 	if (decode_varint(p, &id) || ((hdr & STREAM_OFF_FLAG) && decode_varint(p, &off))) {
-		return -1;
+		return QC_ERR_FRAME_ENCODING;
 	}
 	uint64_t len = (uint64_t)(p->e - p->p);
 	if ((hdr & STREAM_LEN_FLAG) && (decode_varint(p, &len) || len > (uint64_t)(p->e - p->p))) {
-		return -1;
-	}
-	if (off + len >= STREAM_MAX) {
-		return -1;
+		return QC_ERR_FRAME_ENCODING;
 	}
 	bool fin = (hdr & STREAM_FIN_FLAG) != 0;
 	void *data = p->p;
 	p->p += (size_t)len;
+
+	if (c->closing) {
+		return 0;
+	}
 	rbnode *parent;
 	rbdirection insert_dir;
 	qstream_t *s = find_rx_stream(c, id, &parent, &insert_dir);
 	if (!s) {
 		if ((id & STREAM_SERVER) == (c->is_client ? 0 : STREAM_SERVER)) {
 			// message on one of our streams, we'll ignore the data
-			// TODO - send reset
 			return 0;
 		}
-		s = (*c->iface)->open ? (*c->iface)->open(c->iface, (id & STREAM_UNI) != 0) : NULL;
+		s = (*c->iface)->open_stream ? (*c->iface)->open_stream(c->iface, (id & STREAM_UNI) != 0) : NULL;
 		if (!s) {
 			// TODO - send reset
 			return 0;
 		}
 		insert_remote_stream(c, s, id, parent, insert_dir);
 	}
+	if (off + len >= STREAM_MAX) {
+		return QC_ERR_FINAL_OFFSET;
+	}
 	ssize_t have = qrx_received(s, fin, off, data, (size_t)len);
 	if (have < 0) {
-		// flow control error
-		// TODO better error reporting
-		return -1;
+		return QC_ERR_FLOW_CONTROL;
 	}
 	if (have > 0) {
 		// we have new data

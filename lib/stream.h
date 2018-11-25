@@ -36,6 +36,7 @@ void qinit_stream(qstream_t *s, void *txbuf, size_t txlen, void *rxbuf, size_t r
 
 static inline uint64_t qrx_offset(qstream_t *s) {return s->rx.head;}
 static inline bool qrx_eof(qstream_t *s) {return s->rx.head == s->rx_end;}
+static inline bool qtx_eof(qstream_t *s, uint64_t off) {return off == s->tx.tail && (s->flags & QSTREAM_END);}
 
 // These are used by the quic transport library
 // append data, the stream may continue to use the provided buffer until the next call to fold

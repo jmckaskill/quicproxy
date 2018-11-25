@@ -24,9 +24,8 @@ struct client {
 	log_t *debug;
 };
 
-static void client_disconnect(const qinterface_t **vt, int error) {
-	struct client *c = (struct client*) vt;
-	FATAL(c->debug, "client disconnected 0x%X", error);
+static void client_close(const qinterface_t **vt) {
+	exit(2);
 }
 
 static int client_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
@@ -49,7 +48,8 @@ static void client_read(const qinterface_t **vt, qstream_t *stream) {
 }
 
 static const qinterface_t client_interface = {
-	&client_disconnect,
+	&client_close,
+	NULL,
 	&client_send,
 	NULL,
 	NULL,

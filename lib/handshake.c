@@ -540,6 +540,46 @@ int encode_finished(qslice_t *ps, const br_hash_class *digest, const void *verif
 	return 0;
 }
 
+int encode_close(qslice_t *s, int errnum) {
+	if (s->p + 1 + 2 + 1 + 1 > s->e) {
+		return -1;
+	}
+
+	if (QC_ERR_APP_OFFSET <= errnum && errnum < QC_ERR_APP_END) {
+		*(s->p++) = APPLICATION_CLOSE;
+		s->p = write_big_16(s->p, (uint16_t)(errnum - QC_ERR_APP_OFFSET));
+		*(s->p++) = 0; // reason
+	} else if (0 <= errnum && errnum < QC_ERR_QUIC_MAX) {
+		*(s->p++) = CONNECTION_CLOSE;
+		s->p = write_big_16(s->p, (uint16_t)(errnum));
+		*(s->p++) = 0; // frame type
+		*(s->p++) = 0; // reason phrase
+	} else {
+		*(s->p++) = CONNECTION_CLOSE;
+		s->p = write_big_16(s->p, QC_ERR_INTERNAL);
+		*(s->p++) = 0; // frame type
+		*(s->p++) = 0; // reason phrase
+	}
+	return 0;
+}
+
+int decode_close(qslice_t *s, uint8_t type, int *perror) {
+	if (s->p + 2 + 1 > s->e) {
+		return QC_ERR_FRAME_ENCODING;
+	}
+	*perror = (type == APPLICATION_CLOSE ? QC_ERR_APP_OFFSET : 0) + big_16(s->p);
+	s->p += 2;
+	if (type == CONNECTION_CLOSE) {
+		s->p++; // frame type
+	}
+	uint64_t reason_len;
+	if (decode_varint(s, &reason_len) || reason_len > (s->e - s->p)) {
+		return QC_ERR_FRAME_ENCODING;
+	}
+	s->p += reason_len;
+	return 0;
+}
+
 int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qconnect_params_t *params) {
 	// check fixed size headers - up to and including cipher list size
 	qslice_t s = *ps;
@@ -664,7 +704,7 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qconnect_para
 			if (ext.p == ext.e) {
 				return -1;
 			}
-			uint8_t vlen = *(ext.p++);
+			size_t vlen = *(ext.p++);
 			if (ext.p + vlen > ext.e || (vlen & 1)) {
 				return -1;
 			}

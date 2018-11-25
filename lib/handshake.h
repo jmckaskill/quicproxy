@@ -32,6 +32,8 @@ int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qconnect_param
 int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const void *sig, size_t len);
 int encode_finished(qslice_t *s, const br_hash_class *digest, const void *verify);
+int encode_close(qslice_t *s, int errnum);
+int decode_close(qslice_t *s, uint8_t type, int *perror);
 
 #define QC_PARSE_ERROR -6
 #define QC_WRONG_VERSION -5
@@ -81,11 +83,15 @@ int encode_finished(qslice_t *s, const br_hash_class *digest, const void *verify
 #define QC_ERR_TLS_CERTIFICATE_REQUIRED 0x174
 #define QC_ERR_TLS_NO_APPLICATION_PROTOCOL 0x178
 
-#define QC_ERR_IDLE_TIMEOUT 0x1000
+#define QC_ERR_QUIC_MAX 0x1000
 
-#define QC_ERR_BR_X509_OFFSET 0x2000
-#define QC_ERR_BR_X509_MAX 0x2100
+#define QC_ERR_APP_OFFSET 0x10000
+#define QC_ERR_APP_END 0x20000
 
+#define QC_ERR_BR_X509_OFFSET 0x20000
+#define QC_ERR_BR_X509_MAX 0x21000
+
+#define QC_ERR_IDLE_TIMEOUT 0x30000
 
 struct crypto_decoder {
 	int level;

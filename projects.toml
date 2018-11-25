@@ -11,8 +11,9 @@ defines = []
 
 [[target]]
 vs = "Debug"
-ninja = "msvc-debug"
-default = "msvc-debug check-msvc-debug"
+platform = "Win32"
+ninja = "win32-debug"
+default = "win32-debug check-win32-debug"
 defines = [
 	"WIN32",
 	"DEBUG",
@@ -20,8 +21,29 @@ defines = [
 
 [[target]]
 vs = "Release"
-ninja = "msvc-release"
-default = "msvc-release check-msvc-release"
+platform = "Win32"
+ninja = "win32-release"
+default = "win32-release check-win32-release"
+defines = [
+	"WIN32",
+	"NDEBUG",
+]
+
+[[target]]
+vs = "Debug"
+platform = "x64"
+ninja = "win64-debug"
+default = "win64-debug check-win64-debug"
+defines = [
+	"WIN32",
+	"DEBUG",
+]
+
+[[target]]
+vs = "Release"
+platform = "x64"
+ninja = "win64-release"
+default = "win64-release check-win64-release"
 defines = [
 	"WIN32",
 	"NDEBUG",
