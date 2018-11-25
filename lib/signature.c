@@ -5,6 +5,19 @@
 #define RSA_PKCS1_SHA384_CURVE 62
 #define RSA_PKCS1_SHA512_CURVE 61
 
+const qsignature_class *choose_signature(const qsigner_class *const *signer, uint64_t client_mask) {
+	for (size_t i = 0;; i++) {
+		const qsignature_class *c = (*signer)->get_type(signer, i);
+		if (!c) {
+			break;
+		}
+		if ((UINT64_C(1) << c->curve) & client_mask) {
+			return c;
+		}
+	}
+	return NULL;
+}
+
 const qsignature_class *find_signature(const qsignature_class *const *s, uint16_t code) {
 	while (*s) {
 		if ((*s)->algorithm == code) {

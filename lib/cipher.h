@@ -1,6 +1,10 @@
 #pragma once
 #include "common.h"
 
+// By default we support the 5 ECDHE groups in TLS 1.3
+// Priority is given to x22519 and secp256r1
+#define TLS_DEFAULT_GROUPS "\x1D\x17\x18\x19\x1E"
+
 typedef struct qcipher_class qcipher_class;
 struct qcipher_class {
 	uint16_t cipher;

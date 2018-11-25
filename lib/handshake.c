@@ -369,7 +369,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	uint8_t *ext_start = s.p;
 
 	// server name
-	size_t name_len = strlen(c->server_name);
+	size_t name_len = strlen(c->params->server_name);
 	if (name_len) {
 		if (s.p + 2+2+2+1+2 + name_len > s.e) {
 			return -1;
@@ -379,7 +379,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 		s.p = write_big_16(s.p, (uint16_t)(1 + 2 + name_len));
 		*(s.p++) = HOST_NAME_TYPE;
 		s.p = write_big_16(s.p, (uint16_t)name_len);
-		s.p = append(s.p, c->server_name, name_len);
+		s.p = append(s.p, c->params->server_name, name_len);
 	}
 
 	// supported groups
@@ -566,7 +566,7 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qconnect_para
 	s.p += 2;
 
 	// random nonce
-	h->random = s.p;
+	h->client_random = s.p;
 	s.p += QUIC_RANDOM_SIZE;
 
 	// legacy session - not supported in QUIC
@@ -793,8 +793,19 @@ static int set_server_key(qconnection_t *c, const br_ec_public_key *pk, const vo
 	}
 	derive_secret(c->hs_tx, digest, c->hs_secret, HANDSHAKE_CLIENT, msg_hash);
 	derive_secret(c->hs_rx, digest, c->hs_secret, HANDSHAKE_SERVER, msg_hash);
-	log_handshake(c->keylog, digest, c->hs_tx, c->hs_rx, c->client_random);
+	log_handshake(c->params->keylog, digest, c->hs_tx, c->hs_rx, c->client_random);
 	return 0;
+}
+
+void init_protected_keys(qconnection_t *c, const uint8_t *msg_hash) {
+	uint8_t master[QUIC_MAX_HASH_SIZE], client[QUIC_MAX_HASH_SIZE], server[QUIC_MAX_HASH_SIZE];
+	calc_master_secret(master, *c->msg_hash, c->hs_secret);
+	derive_secret(client, *c->msg_hash, master, PROT_CLIENT, msg_hash);
+	derive_secret(server, *c->msg_hash, master, PROT_SERVER, msg_hash);
+	c->cipher->init(&c->prot_rx.vtable, c->is_client ? server : client);
+	c->cipher->init(&c->prot_tx.vtable, c->is_client ? client : server);
+	log_protected(c->params->keylog, *c->msg_hash, client, server, c->client_random);
+	c->have_prot_keys = true;
 }
 
 static int check_signature(qconnection_t *c, uint16_t algorithm, const void *sig, size_t slen, const uint8_t *msg_hash) {
@@ -1198,7 +1209,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 	start_certificates:
 		assert(!d->depth);
 		d->end = UINT32_MAX;
-		(*c->validator)->start_chain(c->validator, c->server_name);
+		(*c->validator)->start_chain(c->validator, c->params->server_name);
 		GET_4(CERTIFICATES_HEADER);
 		if (r.p[0] != CERTIFICATE) {
 			return CRYPTO_ERROR;
@@ -1294,31 +1305,30 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 			return err;
 		}
 		if (c->is_client) {
-			uint8_t msg_hash[QUIC_MAX_HASH_SIZE], master[QUIC_MAX_HASH_SIZE], client[QUIC_MAX_HASH_SIZE], server[QUIC_MAX_HASH_SIZE];
+			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
 			update_msg_hash(c->msg_hash, &r, msg_hash);
-			calc_finish_verify(c->client_finished, *c->msg_hash, msg_hash, c->hs_tx);
-			calc_master_secret(master, *c->msg_hash, c->hs_secret);
-			derive_secret(client, *c->msg_hash, master, PROT_CLIENT, msg_hash);
-			derive_secret(server, *c->msg_hash, master, PROT_SERVER, msg_hash);
-			c->cipher->init(&c->prot_tx.vtable, client);
-			c->cipher->init(&c->prot_rx.vtable, server);
-			log_protected(c->keylog, *c->msg_hash, client, server, c->client_random);
+			init_protected_keys(c, msg_hash);
 
+			// add the client finished message to the message transcript
+			// we will send it later with each outgoing message until the server acks one of them
 			size_t hash_len = digest_size(*c->msg_hash);
 			uint8_t fin[4];
 			fin[0] = FINISHED;
 			write_big_24(fin + 1, (uint32_t)hash_len);
+			calc_finish_verify(c->finished_hash, *c->msg_hash, msg_hash, c->hs_tx);
 			(*c->msg_hash)->update(c->msg_hash, fin, 4);
-			(*c->msg_hash)->update(c->msg_hash, c->client_finished, hash_len);
+			(*c->msg_hash)->update(c->msg_hash, c->finished_hash, hash_len);
 
-			c->finished_sent = false;
-			c->handshake_acknowledged = false;
+			// handshake is not complete until the server acks a packet containing the finished frame
+			c->handshake_complete = false;
+			LOG(c->params->debug, "sending client finished");
 		} else {
-			c->finished_sent = true;
-			c->handshake_acknowledged = true;
+			c->handshake_complete = true;
+			LOG(c->params->debug, "server handshake complete");
 		}
+		cancel_apc(c->dispatcher, &c->retransmit_timer);
+		c->retransmit_count = 0;
 		c->peer_verified = true;
-		LOG(c->debug, "handshake complete");
 		GOTO_LEVEL(QC_PROTECTED, FINISHED_LEVEL);
 		goto start_ticket;
 

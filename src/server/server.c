@@ -23,18 +23,23 @@ struct server {
 	qconnection_t conn;
 	qstream_t stream;
 	bool stream_opened;
-	uint8_t pktbuf[4096];
+	qtx_packet_t pktbuf[256];
 	uint8_t txbuf[4096];
 	uint8_t rxbuf[4096];
 };
 
-static int server_send(const qinterface_t **vt, const void *addr, size_t addrlen, const void *buf, size_t len, qmicrosecs_t *sent) {
+static void server_disconnect(const qinterface_t **vt, int error) {
 	struct server *s = (struct server*) vt;
-	struct sockaddr_string in;
-	print_sockaddr(&in, (struct sockaddr*)&s->ss, s->salen);
-	LOG(debug, "TX to %s:%s %d bytes", in.host.c_str, in.port.c_str, (int)len);
+	s->connected = false;
+	s->stream_opened = false;
+}
 
-	if (sendto(s->fd, buf, (int)len, 0, (struct sockaddr*)&s->ss, s->salen) != (int)len) {
+static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+	struct server *s = (struct server*) vt;
+	stack_string str;
+	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, (struct sockaddr*)(addr ? addr : &s->ss), s->salen), (int)len);
+
+	if (sendto(s->fd, buf, (int)len, 0, (struct sockaddr*)(addr ? addr : &s->ss), s->salen) != (int)len) {
 		LOG(debug, "TX failed");
 		return -1;
 	}
@@ -58,6 +63,7 @@ static void server_close(const qinterface_t **vt, qstream_t *stream) {
 }
 
 static void server_read(const qinterface_t **vt, qstream_t *stream) {
+	struct server *s = (struct server*) vt;
 	char buf[1024];
 	size_t sz = qrx_read(stream, buf, sizeof(buf)-1);
 	buf[sz] = 0;
@@ -65,9 +71,11 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	qtx_write(stream, "reply ", strlen("reply "));
 	qtx_write(stream, buf, sz);
 	qtx_set_finish(stream);
+	qc_flush_stream(&s->conn, stream);
 }
 
 static const qinterface_t server_interface = {
+	&server_disconnect,
 	&server_send,
 	&server_open,
 	&server_close,
@@ -137,14 +145,19 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
-	static const qconnect_params_t params = {
+	qconnect_params_t params = {
 		.groups = TLS_DEFAULT_GROUPS,
 		.ciphers = TLS_DEFAULT_CIPHERS,
 		.signatures = TLS_DEFAULT_SIGNATURES,
 		.bidi_streams = 1,
 		.max_data = 4096,
 		.stream_data_bidi_remote = 4096,
+		.debug = &stderr_log,
+		.keylog = keylog_path.len ? open_file_log(&keylogger, keylog_path.c_str) : NULL,
 	};
+
+	dispatcher_t d;
+	init_dispatcher(&d);
 
 	struct server s;
 	s.vtable = &server_interface;
@@ -152,45 +165,35 @@ int main(int argc, const char *argv[]) {
 	s.stream_opened = false;
 	s.connected = false;
 
+	stack_string str;
 	LOG(debug, "starting server");
-	qmicrosecs_t timeout = 0;
 
 	for (;;) {
-		int polltimeout = -1;
-		if (s.connected) {
-			qmicrosecs_t now = get_tick();
-			int32_t delta = (int32_t)(timeout - now);
-			if (delta <= 0) {
-				if (qc_timeout(&s.conn, now, &timeout)) {
-					s.connected = false;
-				}
-				continue;
-			}
-			polltimeout = (delta + 999) / 1000;
-		}
-
+		int timeoutms = dispatch_apcs(&d, get_tick(), 1000);
 		struct pollfd pfd = { .events = POLLIN,.fd = s.fd };
-		switch (poll(&pfd, 1, polltimeout)) {
-		case -1:
-			return 2;
-		case 0:
+		int w = poll(&pfd, 1, timeoutms);
+		if (w < 0) {
+			FATAL(debug, "poll failed: %s", syserr_string(&str));
+		} else if (!w) {
 			continue;
-		case 1:
-			break;
 		}
 
 		for (;;) {
-			s.salen = sizeof(s.ss);
+			struct sockaddr_storage ss;
+			socklen_t salen = sizeof(ss);
 			char buf[4096];
-			int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&s.ss, &s.salen);
+			int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&ss, &salen);
 			if (sz < 0) {
-				break;
+				if (would_block()) {
+					break;
+				} else if (call_again()) {
+					continue;
+				}
+				FATAL(debug, "recv failed: %s", syserr_string(&str));
 			}
-			qmicrosecs_t rxtime = get_tick();
 
-			struct sockaddr_string in;
-			print_sockaddr(&in, (struct sockaddr*)&s.ss, s.salen);
-			LOG(debug, "RX from %s:%s %d bytes", in.host.c_str, in.port.c_str, sz);
+			tick_t rxtime = get_tick();
+			LOG(debug, "RX from %s %d bytes", sockaddr_string(&str, (struct sockaddr*)&ss, salen), sz);
 
 			uint8_t dest[QUIC_ADDRESS_SIZE];
 			if (qc_get_destination(buf, sz, dest)) {
@@ -198,28 +201,24 @@ int main(int argc, const char *argv[]) {
 			}
 
 			if (s.connected && !memcmp(dest, s.id, QUIC_ADDRESS_SIZE)) {
-				if (qc_recv(&s.conn, NULL, 0, buf, sz, rxtime, &timeout)) {
-					s.connected = false;
-				}
+				qc_recv(&s.conn, NULL, buf, sz, rxtime );
 			} else if (!s.connected) {
 				qconnect_request_t req;
 				if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
 					LOG(debug, "failed to decode request");
 					continue;
 				}
-				if (qc_init(&s.conn, &s.vtable, br_prng_seeder_system(NULL), s.pktbuf, sizeof(s.pktbuf))) {
-					FATAL(debug, "failed to init connection");
-				}
-				s.conn.debug = &stderr_log;
-				if (keylog_path.len) {
-					s.conn.keylog = open_file_log(&keylogger, keylog_path.c_str);
-				}
-				if (qc_accept(&s.conn, &req, &signer.vtable, &timeout)) {
+				s.salen = salen;
+				memcpy(&s.ss, &ss, salen);
+				if (qc_accept(&s.conn, &d, &s.vtable, &req, &signer.vtable, s.pktbuf, sizeof(s.pktbuf)/sizeof(s.pktbuf[0]))) {
 					LOG(debug, "failed to accept request");
+					continue;
 				}
 				memcpy(s.id, req.destination, QUIC_ADDRESS_SIZE);
 				s.connected = true;
 			}
+
+			LOG(debug, "");
 		}
 	}
 

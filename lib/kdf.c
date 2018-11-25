@@ -27,7 +27,6 @@ void hkdf_expand_label(void *out, size_t outsz, const br_hash_class *digest, con
 	uint8_t hk_label[2 + 1 + 32 + 1 + 32], *p = hk_label;
 	size_t labelsz = strlen(label);
 	assert(labelsz <= 32);
-	assert(ctxsz <= 32);
 	assert(outsz <= UINT16_MAX);
 	p = write_big_16(p, (uint16_t)outsz);
 	*(p++) = (uint8_t)labelsz;

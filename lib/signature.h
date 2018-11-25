@@ -32,6 +32,7 @@ struct qsigner_class {
 	int(*sign)(const qsigner_class *const*c, const qsignature_class *type, const void *text, size_t text_len, void *out);
 };
 
+
 typedef struct qsigner_ecdsa qsigner_ecdsa;
 struct qsigner_ecdsa {
 	const qsigner_class *vtable;
@@ -62,6 +63,7 @@ extern const qsigner_class TLS_ECDSA_signer;
 
 int qsigner_rsa_pkcs1_init(qsigner_rsa_pkcs1 *s, const qsignature_class *const *sigs, const br_rsa_private_key *sk, const br_x509_certificate *certs, size_t num);
 int qsigner_ecdsa_init(qsigner_ecdsa *s, const qsignature_class *const *sigs, const br_ec_private_key *sk, const br_x509_certificate *certs, size_t num);
+const qsignature_class *choose_signature(const qsigner_class *const *signer, uint64_t client_mask);
 
 
 

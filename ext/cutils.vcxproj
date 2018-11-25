@@ -28,7 +28,7 @@
     <ClCompile Include="cutils\src\rbtree.c" />
     <ClCompile Include="cutils\src\rbtree_test.c" />
     <ClCompile Include="cutils\src\socket.c" />
-    <ClCompile Include="cutils\src\stopwatch.c" />
+    <ClCompile Include="cutils\src\apc.c" />
     <ClCompile Include="cutils\src\str.c" />
     <ClCompile Include="cutils\src\str_test.c" />
     <ClCompile Include="cutils\src\test.c" />
@@ -52,7 +52,7 @@
     <ClInclude Include="cutils\inc\cutils\mersenne-twister.h" />
     <ClInclude Include="cutils\inc\cutils\rbtree.h" />
     <ClInclude Include="cutils\inc\cutils\socket.h" />
-    <ClInclude Include="cutils\inc\cutils\stopwatch.h" />
+    <ClInclude Include="cutils\inc\cutils\apc.h" />
     <ClInclude Include="cutils\inc\cutils\str.h" />
     <ClInclude Include="cutils\inc\cutils\stream.h" />
     <ClInclude Include="cutils\inc\cutils\test.h" />

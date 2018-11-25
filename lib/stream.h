@@ -13,7 +13,7 @@ typedef struct qstream qstream_t;
 struct qstream {
 	rbnode rxnode;
 	rbnode txnode;
-	int64_t id;
+	uint64_t id;
 
 	qbuffer_t rx;
 	qbuffer_t tx;

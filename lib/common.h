@@ -11,6 +11,7 @@
 #endif
 
 #include <cutils/endian.h>
+#include <cutils/apc.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <assert.h>
@@ -23,8 +24,8 @@ typedef ptrdiff_t ssize_t;
 #endif
 
 typedef struct logger log_t;
-typedef uint32_t qmicrosecs_t;
 typedef struct qconnection qconnection_t;
+typedef struct qconnect_params qconnect_params_t;
 typedef struct qconnect_request qconnect_request_t;
 
 static inline size_t digest_size(const br_hash_class *digest_class) {
@@ -35,16 +36,6 @@ static inline size_t digest_size(const br_hash_class *digest_class) {
 static inline void *append(void *to, const void *from, size_t sz) {
 	memcpy(to, from, sz);
 	return (uint8_t*)to + sz;
-}
-
-static qmicrosecs_t timer_min(qmicrosecs_t a, qmicrosecs_t b) {
-	int32_t diff = (int32_t)(a - b);
-	return (diff > 0) ? a : b;
-}
-
-static bool timer_expired(qmicrosecs_t a, qmicrosecs_t now) {
-	int32_t diff = (int32_t)(now - a);
-	return diff >= 0;
 }
 
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
@@ -58,15 +49,18 @@ static bool timer_expired(qmicrosecs_t a, qmicrosecs_t now) {
 #define QUIC_MAX_SIG_SIZE 512 // allow for up to 4096 bit rsa keys
 #define QUIC_RANDOM_SIZE 32
 #define QUIC_DEFAULT_RTT (100 * 1000) // 100ms
-#define QUIC_DEFAULT_IDLE_TIMEOUT (120 * 1000 * 1000) // 30s
-#define QUIC_MIN_RTT 1000 //1ms
+#define QUIC_DEFAULT_IDLE_TIMEOUT (300 * 1000 * 1000) // 30s
+#define QUIC_MIN_RTT ((tickdiff_t)1000) // 1 ms
+#define QUIC_SHORT_ACK_TIMEOUT (1000) // 1 ms
+#define QUIC_LONG_ACK_TIMEOUT (25000) // 25 ms
+#define QUIC_MIN_TLP_TIMEOUT (10 * 1000)
+#define QUIC_MIN_RTO_TIMEOUT (200 * 1000)
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
 #define QUIC_MAX_CERTIFICATES 8
 #define QUIC_MAX_ALGORITHMS 32
 #define QUIC_CRYPTO_BUF_SIZE 4096
-#define QUIC_CRYPTO_PACKETS 8
 
 #define QUIC_ADDRESS_SIZE 19 // + 1 for size
 
