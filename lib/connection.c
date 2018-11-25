@@ -740,7 +740,7 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 }
 
 static void enable_ack_timer(qconnection_t *c, tick_t timeout) {
-	if (!is_apc_active(&c->ack_timer) || (timeout - c->ack_timer.wakeup) < 0) {
+	if (!is_apc_active(&c->ack_timer) || (tickdiff_t)(timeout - c->ack_timer.wakeup) < 0) {
 		add_timed_apc(c->dispatcher, &c->ack_timer, timeout, &on_ack_timeout);
 	}
 }
@@ -881,7 +881,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 	bool have_hello = false;
 
 	while (s.p < s.e) {
-		switch (*(s.p++)) { 
+		switch (*(s.p++)) {
 		default:
 			return QC_PARSE_ERROR;
 		case PADDING:
