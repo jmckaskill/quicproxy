@@ -49,7 +49,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_MAX_SIG_SIZE 512 // allow for up to 4096 bit rsa keys
 #define QUIC_RANDOM_SIZE 32
 #define QUIC_DEFAULT_RTT (100 * 1000) // 100ms
-#define QUIC_DEFAULT_IDLE_TIMEOUT (300 * 1000 * 1000) // 30s
+#define QUIC_DEFAULT_IDLE_TIMEOUT (30 * 1000 * 1000) // 30s
 #define QUIC_MIN_RTT ((tickdiff_t)1000) // 1 ms
 #define QUIC_SHORT_ACK_TIMEOUT (1000) // 1 ms
 #define QUIC_LONG_ACK_TIMEOUT (25000) // 25 ms

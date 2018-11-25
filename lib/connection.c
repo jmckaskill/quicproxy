@@ -18,7 +18,7 @@ static const char prng_nonce[] = "quicproxy prng nonce";
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t pktnum);
+static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t pktnum, tick_t rxtime);
 static void send_data(qconnection_t *c, bool force_send);
 
 static tickdiff_t crypto_timeout(qconnection_t *c, bool reset);
@@ -34,6 +34,7 @@ static void on_idle_timeout(apc_t *a, tick_t now);
 static void on_ping_timeout(apc_t *a, tick_t now);
 
 static void on_ack_timeout(apc_t *a, tick_t now);
+static void enable_ack_timer(qconnection_t *c, tick_t timeout);
 
 static int decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *p);
 
@@ -155,7 +156,7 @@ int qc_accept(qconnection_t *c, dispatcher_t *d, const qinterface_t **vt, const 
 
 	// send server hello
 	tick_t sent;
-	receive_packet(c, QC_INITIAL, 0);
+	receive_packet(c, QC_INITIAL, 0, h->rxtime);
 	if (send_server_hello(c, &h->key, &sent)) {
 		return -1;
 	}
@@ -189,7 +190,7 @@ void qc_close(qconnection_t *c) {
 //////////////////////////
 // Ack Generation
 
-static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t pktnum) {
+static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t pktnum, tick_t rxtime) {
 	qpacket_buffer_t *s = &c->pkts[level];
 	if (level == QC_PROTECTED && !c->handshake_complete) {
 		// Until this point, the client will send the finished message in every
@@ -201,6 +202,10 @@ static void receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t 
 	if (s->rx_next > 64 && pktnum < s->rx_next - 64) {
 		// old packet - ignore
 		return;
+	}
+	if (level == QC_PROTECTED && pktnum != s->rx_next) {
+		// out of order or dropped packet
+		enable_ack_timer(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
 	}
 
 	// check to see if we should move the receive window forward
@@ -402,6 +407,7 @@ static tickdiff_t crypto_timeout(qconnection_t *c, bool reset) {
 
 static void call_disconnect(qconnection_t *c, int error) {
 	// disconnect may delete our memory, so need to make sure we are decoupled before calling it
+	LOG(c->params->debug, "disconnect 0x%X", error);
 	qc_close(c);
 	(*c->iface)->disconnect(c->iface, error);
 }
@@ -983,7 +989,7 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 				call_disconnect(c, err);
 				return;
 			}
-			receive_packet(c, level, pktnum);
+			receive_packet(c, level, pktnum, rxtime);
 			send_data(c, false);
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
@@ -999,7 +1005,7 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			add_timed_apc(c->dispatcher, &c->idle_timer, rxtime + idle_timeout(c), &on_idle_timeout);
 			int err = process_packet(c, s, QC_PROTECTED, rxtime);
 			if (!err) {
-				receive_packet(c, QC_PROTECTED, pktnum);
+				receive_packet(c, QC_PROTECTED, pktnum, rxtime);
 				send_data(c, false);
 			} else if (err != QC_ERR_DROP) {
 				call_disconnect(c, err);
