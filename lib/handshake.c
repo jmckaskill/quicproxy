@@ -53,11 +53,19 @@
 #define QUIC_TRANSPORT_PARAMETERS 0xFFA5
 
 #define TP_stream_data_bidi_local 0x00
-#define TP_stream_data_bidi_remote 0x0A
-#define TP_stream_data_uni 0x0B
 #define TP_max_data 0x01
 #define TP_bidi_streams 0x02
+#define TP_idle_timeout 0x03
+#define TP_preferred_address 0x04
+#define TP_max_packet_size 0x05
+#define TP_stateless_reset_token 0x06
+#define TP_ack_delay_exponent 0x07
 #define TP_uni_streams 0x08
+#define TP_disable_migration 0x09
+#define TP_stream_data_bidi_remote 0x0A
+#define TP_stream_data_uni 0x0B
+#define TP_max_ack_delay 0x0C
+#define TP_original_connection_id 0x0D
 
 // server name
 #define HOST_NAME_TYPE 0
@@ -183,12 +191,17 @@ static int encode_transport(qslice_t *s, uint16_t parameter, uint32_t value, siz
 	case 2:
 		s->p = write_big_16(s->p, (uint16_t)value);
 		break;
+	case 1:
+		*(s->p++) = (uint8_t)value;
+		break;
+	case 0:
+		break;
 	}
 	return 0;
 }
 
 
-static int encode_transport_params(qslice_t *s, const qconnect_params_t *p) {
+static int encode_transport_params(qslice_t *s, const qtransport_params_t *p) {
 	if (s->p + 2 > s->e) {
 		return -1;
 	}
@@ -203,13 +216,28 @@ static int encode_transport_params(qslice_t *s, const qconnect_params_t *p) {
 	if (p->stream_data_uni && encode_transport(s, TP_stream_data_uni, p->stream_data_uni, 4)) {
 		return -1;
 	}
-	if (p->bidi_streams && encode_transport(s, TP_bidi_streams, p->bidi_streams - 1, 2)) {
+	if (p->bidi_streams && encode_transport(s, TP_bidi_streams, p->bidi_streams, 2)) {
 		return -1;
 	}
-	if (p->uni_streams && encode_transport(s, TP_uni_streams, p->uni_streams - 1, 2)) {
+	if (p->uni_streams && encode_transport(s, TP_uni_streams, p->uni_streams, 2)) {
 		return -1;
 	}
 	if (p->max_data && encode_transport(s, TP_max_data, p->max_data, 4)) {
+		return -1;
+	}
+	if (p->idle_timeout && encode_transport(s, TP_idle_timeout, p->idle_timeout / 1000000, 2)) {
+		return -1;
+	}
+	if (p->max_packet_size && encode_transport(s, TP_max_packet_size, p->max_packet_size, 2)) {
+		return -1;
+	}
+	if (p->disable_migration && encode_transport(s, TP_disable_migration, 0, 0)) {
+		return -1;
+	}
+	if (p->ack_delay_exponent && encode_transport(s, TP_ack_delay_exponent, p->ack_delay_exponent, 1)) {
+		return -1;
+	}
+	if (p->max_ack_delay && encode_transport(s, TP_max_ack_delay, p->max_ack_delay / 1000, 1)) {
 		return -1;
 	}
 	write_big_16(params_start - 2, (uint16_t)(s->p - params_start));
@@ -308,7 +336,7 @@ int encode_encrypted_extensions(const qconnection_t *c, qslice_t *ps) {
 	// supported versions
 	*(s.p++) = 4;
 	s.p = write_big_32(s.p, QUIC_VERSION);
-	if (encode_transport_params(&s, p)) {
+	if (encode_transport_params(&s, &p->transport)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -453,7 +481,7 @@ int encode_client_hello(const qconnection_t *c, qslice_t *ps) {
 	s.p += 2;
 	uint8_t *transport_start = s.p;
 	s.p = write_big_32(s.p, QUIC_VERSION);
-	if (encode_transport_params(&s, p)) {
+	if (encode_transport_params(&s, &p->transport)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -754,34 +782,67 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *h, const qconnect_para
 				}
 				switch (key) {
 				case TP_stream_data_bidi_local:
-					if (value.e - value.p >= 4) {
-						h->client_params.stream_data_bidi_local = big_32(value.p);
+					if (value.e - value.p < 4) {
+						return -1;
 					}
+					h->client_transport.stream_data_bidi_local = big_32(value.p);
 					break;
 				case TP_stream_data_bidi_remote:
-					if (value.e - value.p >= 4) {
-						h->client_params.stream_data_bidi_remote = big_32(value.p);
+					if (value.e - value.p < 4) {
+						return -1;
 					}
+					h->client_transport.stream_data_bidi_remote = big_32(value.p);
 					break;
 				case TP_stream_data_uni:
-					if (value.e - value.p >= 4) {
-						h->client_params.stream_data_uni = big_32(value.p);
+					if (value.e - value.p < 4) {
+						return -1;
 					}
+					h->client_transport.stream_data_uni = big_32(value.p);
 					break;
 				case TP_max_data:
-					if (value.e - value.p >= 4) {
-						h->client_params.max_data = big_32(value.p);
+					if (value.e - value.p < 4) {
+						return -1;
 					}
+					h->client_transport.max_data = big_32(value.p);
 					break;
 				case TP_bidi_streams:
-					if (value.e - value.p >= 2) {
-						h->client_params.bidi_streams = (uint64_t)big_16(value.p) + 1;
+					if (value.e - value.p < 2) {
+						return -1;
 					}
+					h->client_transport.bidi_streams = big_16(value.p);
 					break;
 				case TP_uni_streams:
-					if (value.e - value.p >= 2) {
-						h->client_params.uni_streams = (uint64_t)big_16(value.p) + 1;
+					if (value.e - value.p < 2) {
+						return -1;
 					}
+					h->client_transport.uni_streams = big_16(value.p);
+					break;
+				case TP_idle_timeout:
+					if (value.e - value.p < 2) {
+						return -1;
+					}
+					h->client_transport.idle_timeout = 1000 * 1000 * (tickdiff_t)value.p[0];
+					break;
+				case TP_max_packet_size:
+					if (value.e - value.p < 2) {
+						return -1;
+					}
+					h->client_transport.max_packet_size = big_16(value.p);
+					break;
+				case TP_ack_delay_exponent:
+					if (value.e - value.p == 0) {
+						return -1;
+					}
+					h->client_transport.ack_delay_exponent = value.p[0];
+					break;
+				case TP_disable_migration:
+					h->client_transport.disable_migration = true;
+					break;
+				case TP_max_ack_delay:
+					if (value.e - value.p == 0) {
+						return -1;
+					}
+					h->client_transport.max_ack_delay = 1000 * value.p[0];
 					break;
 				}
 			}
@@ -971,6 +1032,10 @@ enum decoder_state {
 	EXTENSIONS_TP_bidi_streams,
 	EXTENSIONS_TP_uni_streams,
 	EXTENSIONS_TP_max_data,
+	EXTENSIONS_TP_idle_timeout,
+	EXTENSIONS_TP_max_packet_size,
+	EXTENSIONS_TP_ack_delay_exponent,
+	EXTENSIONS_TP_max_ack_delay,
 
 	CERTIFICATES_HEADER,
 	CERTIFICATES_CONTEXT,
@@ -1146,10 +1211,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		// ENCRYPTED_EXTENSIONS
 
 	start_encrypted_extensions:
-		c->pending[0].max = 0;
-		c->pending[1].max = 0;
-		memset(&c->max_stream_data, 0, sizeof(c->max_stream_data));
-		c->max_data = 0;
+		memset(&c->peer_transport, 0, sizeof(c->peer_transport));
 		assert(!d->depth);
 		d->end = UINT32_MAX;
 		GOTO_LEVEL(QC_HANDSHAKE, EXTENSIONS_LEVEL);
@@ -1211,6 +1273,13 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 			goto bidi_streams;
 		case TP_uni_streams:
 			goto uni_streams;
+		case TP_idle_timeout:
+		case TP_max_ack_delay:
+		case TP_ack_delay_exponent:
+		case TP_max_packet_size:
+		case TP_disable_migration:
+			c->peer_transport.disable_migration = true;
+			goto finish_tp;
 		default:
 			goto finish_tp;
 		}
@@ -1220,27 +1289,43 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 		goto next_tp;
 	stream_data_bidi_local:
 		GET_4(EXTENSIONS_TP_stream_data_bidi_local);
-		c->max_stream_data[STREAM_SERVER | STREAM_BIDI] = big_32(r.p);
+		c->peer_transport.stream_data_bidi_local = big_32(r.p);
 		goto finish_tp;
 	stream_data_bidi_remote:
 		GET_4(EXTENSIONS_TP_stream_data_bidi_remote);
-		c->max_stream_data[STREAM_CLIENT | STREAM_BIDI] = big_32(r.p);
+		c->peer_transport.stream_data_bidi_remote = big_32(r.p);
 		goto finish_tp;
 	stream_data_uni:
 		GET_4(EXTENSIONS_TP_stream_data_uni);
-		c->max_stream_data[STREAM_CLIENT | STREAM_UNI] = big_32(r.p);
+		c->peer_transport.stream_data_uni = big_32(r.p);
 		goto finish_tp;
 	bidi_streams:
 		GET_2(EXTENSIONS_TP_bidi_streams);
-		c->pending[PENDING_BIDI].max = (uint64_t)big_16(r.p) + 1;
+		c->peer_transport.bidi_streams = big_16(r.p);
 		goto finish_tp;
 	uni_streams:
 		GET_2(EXTENSIONS_TP_uni_streams);
-		c->pending[PENDING_UNI].max = (uint64_t)big_16(r.p) + 1;
+		c->peer_transport.uni_streams = big_16(r.p);
 		goto finish_tp;
 	max_data:
 		GET_4(EXTENSIONS_TP_max_data);
-		c->max_data = big_32(r.p);
+		c->peer_transport.max_data = big_32(r.p);
+		goto finish_tp;
+	idle_timeout:
+		GET_1(EXTENSIONS_TP_idle_timeout);
+		c->peer_transport.idle_timeout = 1000 * 1000 * (tickdiff_t)r.p[0];
+		goto finish_tp;
+	max_packet_size:
+		GET_2(EXTENSIONS_TP_max_packet_size);
+		c->peer_transport.max_packet_size = big_16(r.p);
+		goto finish_tp;
+	ack_delay_exponent:
+		GET_1(EXTENSIONS_TP_ack_delay_exponent);
+		c->peer_transport.ack_delay_exponent = r.p[0];
+		goto finish_tp;
+	max_ack_delay:
+		GET_1(EXTENSIONS_TP_max_ack_delay);
+		c->peer_transport.max_ack_delay = 1000 * (tickdiff_t)big_16(r.p);
 		goto finish_tp;
 
 
@@ -1366,7 +1451,7 @@ int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd) {
 			c->handshake_complete = true;
 			LOG(c->params->debug, "server handshake complete");
 		}
-		cancel_apc(c->dispatcher, &c->retransmit_timer);
+		cancel_apc(c->dispatcher, &c->rx_timer);
 		c->retransmit_count = 0;
 		c->peer_verified = true;
 		GOTO_LEVEL(QC_PROTECTED, FINISHED_LEVEL);

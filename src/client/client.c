@@ -96,12 +96,14 @@ int main(int argc, const char *argv[]) {
 		.groups = TLS_DEFAULT_GROUPS,
 		.ciphers = TLS_DEFAULT_CIPHERS,
 		.signatures = TLS_DEFAULT_SIGNATURES,
-		.max_data = 4096,
-		.stream_data_bidi_local = 4096,
+		.transport = {
+			.max_data = 4096,
+			.stream_data_bidi_local = 4096,
+			.ping_timeout = 20 * 1000 * 1000,
+		},
 		.server_name = "localhost",
 		.debug = &stderr_log,
 		.keylog = keylog_path.len ? open_file_log(&keylog_file, keylog_path.c_str) : NULL,
-		.ping_timeout = 20 * 1000 * 1000,
 	};
 
 	LOG(c.debug, "client start");
@@ -118,8 +120,8 @@ int main(int argc, const char *argv[]) {
 
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
 	qtx_write(&c.stream, "hello world", 11);
-	qtx_set_finish(&c.stream);
-	qc_add_stream(&c.conn, &c.stream);
+	qtx_finish(&c.stream);
+	qc_flush(&c.conn, &c.stream);
 
 	for (;;) {
 		int timeoutms = dispatch_apcs(&d, get_tick(), 1000);

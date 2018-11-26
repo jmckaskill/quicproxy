@@ -2,6 +2,8 @@
 
 #define MIN(A,B) ((A) < (B) ? (A) : (B))
 
+// ctz = count trailing zeros
+// These versions do not protect against a zero value.
 #if defined __GNUC__
 static size_t ctz(uint32_t v) {
 	return __builtin_ctz(v);
@@ -16,15 +18,12 @@ static size_t ctz(uint32_t v) {
 }
 #else
 static size_t ctz(uint32_t v) {
-	unsigned int c = 32;
-	v &= -(int32_t)v;
-	if (v) c--;
-	if (v & 0x0000FFFF) c -= 16;
-	if (v & 0x00FF00FF) c -= 8;
-	if (v & 0x0F0F0F0F) c -= 4;
-	if (v & 0x33333333) c -= 2;
-	if (v & 0x55555555) c -= 1;
-	return c;
+	unsigned n = 0;
+	while (!(v & 1)) {
+		n++;
+		v >>= 1;
+	}
+	return n;
 }
 #endif
 
@@ -95,6 +94,8 @@ static size_t iterate_bits(qbuffer_t *b, uint32_t value, size_t start, size_t en
 
 	if (sbits) {
 		// align the head, we want the top (32-n) bits on the right for the ctz
+		// sbits != 0 and sbits != 32, thus some of ~value will end up in head_valid
+		// Thus ctz is not called with a 0 value.
 		uint32_t head_valid = (b->valid[c] >> sbits) | (~value << (32 - sbits));
 		size_t count = ctz(head_valid ^ value);
 		if (c == cend && start <= end) {
@@ -134,9 +135,10 @@ from_start:
 
 lead_out:
 	// look through the bits leading out
-	ret += ctz(b->valid[c] ^ value);
-	assert(ret <= b->size);
-	return ret;
+	// the calling code guarantees b->valid[c] != value
+	// hence ctz doesn't get called with a 0 value
+	assert(b->valid[c] != value);
+	return ret + ctz(b->valid[c] ^ value);
 
 tail:
 	// we've hit our iteration limit
@@ -147,6 +149,10 @@ tail:
 	// we want the bottom n bits on the right
 	uint32_t mask = ((uint32_t)1 << ebits) - 1;
 	uint32_t tail_valid = (b->valid[c] & mask) | (~value << ebits);
+	// ebits != 0 && ebits != 32, thus mask is not all zeros or ones
+	// some of ~value will be in tail_valid, thus ctz will not be called
+	// with a 0 value
+	assert(tail_valid != value);
 	return ret + ctz(tail_valid ^ value);
 }
 
@@ -286,3 +292,12 @@ bool qbuf_next_valid(qbuffer_t *b, uint64_t *off) {
 	return *off < b->tail;
 }
 
+bool qbuf_any_valid_after(qbuffer_t *b, uint64_t off) {
+	if (off < b->tail) {
+		return true;
+	}
+	size_t start = (size_t)(off % b->size);
+	size_t end = (size_t)(qbuf_max(b) % b->size);
+	size_t len = iterate_bits(b, 0, start, end);
+	return start + len < end;
+}

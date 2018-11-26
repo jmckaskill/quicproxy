@@ -55,6 +55,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_LONG_ACK_TIMEOUT (25000) // 25 ms
 #define QUIC_MIN_TLP_TIMEOUT (10 * 1000)
 #define QUIC_MIN_RTO_TIMEOUT (200 * 1000)
+#define QUIC_ACK_DELAY_SHIFT 3 // = 8 us resolution
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3
@@ -114,6 +115,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 
 #define STREAM_CLIENT 0
 #define STREAM_SERVER 1
+#define STREAM_SERVER_MASK 1
 #define STREAM_BIDI 0
 #define STREAM_UNI 2
 #define STREAM_UNI_MASK 2

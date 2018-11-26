@@ -15,10 +15,11 @@ struct qinterface {
 	void(*close)(const qinterface_t **iface);
 	void(*shutdown)(const qinterface_t **iface, int error);
 	int(*send)(const qinterface_t **iface, const void *addr, const void *buf, size_t len, tick_t *sent);
-	qstream_t*(*open_stream)(const qinterface_t **iface, bool unidirectional);
-	void(*close_stream)(const qinterface_t **iface, qstream_t *s);
-	void(*read)(const qinterface_t **iface, qstream_t *s);
 	void(*change_peer_address)(const qinterface_t **iface, const void *addr);
+	qstream_t*(*new_stream)(const qinterface_t **iface, bool unidirectional);
+	void(*free_stream)(const qinterface_t **iface, qstream_t *s);
+	void(*data_received)(const qinterface_t **iface, qstream_t *s);
+	void(*data_sent)(const qinterface_t **iface, qstream_t *s);
 };
 
 #define QTX_PKT_PATH_CHALLENGE	0x0001
@@ -48,14 +49,39 @@ struct qtx_packet {
 	uint16_t flags;
 };
 
+typedef struct qrx_bitset qrx_bitset_t;
+struct qrx_bitset {
+	uint64_t next;
+	uint64_t mask;
+};
+
 typedef struct qpacket_buffer qpacket_buffer_t;
 struct qpacket_buffer {
 	qtx_packet_t *sent;	// packets sent for retries
 	size_t sent_len;	// number of packets in the send buffer
-	uint64_t received;	// receive bitset - one bit per packet
-	uint64_t rx_next;   // next packet to receive (highest received + 1)
 	uint64_t tx_next;   // next packet to send (highest sent + 1)
 	uint64_t tx_oldest; // oldest packet still outstanding
+	qrx_bitset_t rx;
+	tick_t rx_largest;
+};
+
+typedef struct qtransport_params qtransport_params_t;
+struct qtransport_params {
+	// these refer to the initial maximum data the remote is allowed to send us
+	uint32_t stream_data_bidi_local; // for bidi streams initiated by us
+	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
+	uint32_t stream_data_uni; // for uni streams initiated by the remote
+	// these refer to the initial maximum streams the remote is allowed to initiate
+	uint16_t bidi_streams;
+	uint16_t uni_streams;
+	// the initial maximum of the total data sent to us
+	uint32_t max_data;
+	tickdiff_t idle_timeout;
+	tickdiff_t ping_timeout;
+	tickdiff_t max_ack_delay;
+	uint8_t ack_delay_exponent;
+	uint16_t max_packet_size;
+	bool disable_migration;
 };
 
 struct qconnection {
@@ -71,6 +97,7 @@ struct qconnection {
 	bool handshake_complete;
 	bool closing;
 	bool draining;
+	bool hashed_hello;
 	int close_errnum;
 
 	// crypto management
@@ -86,6 +113,7 @@ struct qconnection {
 	br_hmac_drbg_context rand;
 	struct crypto_decoder rx_crypto;
 	const qconnect_params_t *params;
+	qtransport_params_t peer_transport;
 
 	// cipher
 	const qcipher_class *cipher;
@@ -107,24 +135,22 @@ struct qconnection {
 	// streams
 	qpacket_buffer_t pkts[3];
 	size_t retransmit_packets;
-	struct {
-		uint64_t max;
-		uint64_t next;
-		rbtree streams;
-	} pending[2];
-	rbtree tx_streams;
 	rbtree rx_streams[4];
-	uint32_t max_stream_data[4];
-	uint64_t max_data;
+	uint64_t next_stream_id[4];
+	uint64_t max_stream_id[4];
+	rbtree pending_streams[2];
+	rbtree tx_streams;
 
 	// timeout
 	int retransmit_count;
-	apc_t retransmit_timer;
-	apc_t idle_timer;
-	apc_t ack_timer;
+	apc_t rx_timer; // used for timeouts for when expect replies (crypto, TLP & RTO)
+	apc_t tx_timer; // used for delaying transmits for coalescing (ping, acks & send new streams)
+	apc_t idle_timer; // used for detecting an idle link
 	dispatcher_t *dispatcher;
-	tickdiff_t rtt;
 	uint64_t retransmit_pktnum;
+	tickdiff_t min_rtt;
+	tickdiff_t srtt;
+	tickdiff_t rttvar;
 };
 
 void qc_close(qconnection_t *c);
@@ -132,9 +158,7 @@ void qc_shutdown(qconnection_t *c, int error);
 void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime);
 void qc_move(qconnection_t *c, dispatcher_t *d);
 
-void qc_add_stream(qconnection_t *c, qstream_t *s);
-void qc_rm_stream(qconnection_t *c, qstream_t *s);
-void qc_flush_stream(qconnection_t *c, qstream_t *s);
+void qc_flush(qconnection_t *c, qstream_t *s);
 
 // Client code
 typedef struct qconnect_params qconnect_params_t;
@@ -144,17 +168,7 @@ struct qconnect_params {
 	const char *groups;
 	const qcipher_class *const *ciphers;
 	const qsignature_class *const *signatures;
-	// these refer to the initial maximum data the remote is allowed to send us
-	uint32_t stream_data_bidi_local; // for bidi streams initiated by us
-	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
-	uint32_t stream_data_uni; // for uni streams initiated by the remote
-	// these refer to the initial maximum streams the remote is allowed to initiate
-	uint32_t bidi_streams;
-	uint32_t uni_streams;
-	// the initial maximum of the total data sent to us
-	uint32_t max_data;
-	tickdiff_t idle_timeout;
-	tickdiff_t ping_timeout;
+	qtransport_params_t transport;
 	log_t *debug;
 	log_t *keylog;
 };
@@ -176,8 +190,8 @@ struct qconnect_request {
 	const qcipher_class *cipher;
 	uint64_t signatures;
 
-	qconnect_params_t client_params;
-	const qconnect_params_t *server_params;
+	qtransport_params_t client_transport;
+	const qconnect_params_t *params;
 
 	const void *chello;
 	size_t chello_size;
