@@ -40,24 +40,30 @@ void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, 
 	s->rx_mask |= UINT64_C(1) << (num & 63);
 }
 
-// clz = count leading zeros
+// clzl = count leading zeros (long)
 // These versions do not protect against a zero value
 #if defined __GNUC__
-static unsigned clz(uint64_t v) {
-	return __builtin_clz(v);
+static unsigned clzl(uint64_t v) {
+#if defined __amd64__ 
+	return __builtin_clzl(v);
+#else
+	uint32_t lo = (uint32_t)v;
+	uint32_t hi = (uint32_t)(v >> 32);
+	return hi ? __builtin_clz(hi) : (32 + __builtin_clz(lo));
 }
-#elif defined _MSC_VER && defined _M_X64
+#endif
+#elif defined _MSC_VER
 #include <intrin.h>
+#if defined _M_X64
 #pragma intrinsic(_BitScanReverse64)
-static unsigned clz(uint64_t v) {
+static unsigned clzl(uint64_t v) {
 	unsigned long ret;
 	_BitScanReverse64(&ret, v);
 	return 63 - ret;
 }
-#elif defined _MSC_VER
-#include <intrin.h>
+#else
 #pragma intrinsic(_BitScanReverse)
-static unsigned clz(uint64_t v) {
+static unsigned clzl(uint64_t v) {
 	unsigned long ret;
 	if (_BitScanReverse(&ret, (uint32_t)(v >> 32))) {
 		return 31 - ret;
@@ -66,9 +72,9 @@ static unsigned clz(uint64_t v) {
 		return 63 - ret;
 	}
 }
-
+#endif
 #else
-static unsigned clz(uint64_t v) {
+static unsigned clzl(uint64_t v) {
 	unsigned n = 0;
 	int64_t x = (int64_t)v;
 	while (!(x < 0)) {
@@ -110,7 +116,7 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 
 	// find the first block
 	// rx is not all ones due to the shift above. Thus clz(~rx) is not called with a 0 value.
-	unsigned first_block = clz(~rx);
+	unsigned first_block = clzl(~rx);
 	*(s->p++) = (uint8_t)first_block;
 	rx <<= first_block;
 
@@ -120,12 +126,12 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 		// clz(~(rx << gap)) will return the length of 1s section (ie the block)
 
 		// find the gap
-		unsigned gap = clz(rx);
+		unsigned gap = clzl(rx);
 		*(s->p++) = (uint8_t)gap;
 		rx <<= gap;
 
 		// find the block
-		unsigned block = clz(~rx);
+		unsigned block = clzl(~rx);
 		*(s->p++) = (uint8_t)block;
 		rx <<= block;
 
