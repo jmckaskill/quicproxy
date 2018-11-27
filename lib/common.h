@@ -40,11 +40,6 @@ static inline void *append(void *to, const void *from, size_t sz) {
 	return (uint8_t*)to + sz;
 }
 
-#define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
-#define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-
 #define QUIC_MAX_SECRET_SIZE 32
 #define QUIC_MAX_HASH_SIZE 32
 #define QUIC_MAX_KEY_SIZE 32

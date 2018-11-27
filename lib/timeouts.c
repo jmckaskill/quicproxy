@@ -83,11 +83,14 @@ static void start_handshake_timer(qconnection_t *c, tick_t now) {
 	add_timed_apc(c->dispatcher, &c->rx_timer, now + handshake_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
 }
 
-static void start_close_timer(qconnection_t *c) {
+static void start_close_timer(qconnection_t *c, tick_t now) {
 	assert(c->closing);
-	if (!c->draining) {
+	if (c->draining) {
+		cancel_apc(c->dispatcher, &c->rx_timer);
+	} else {
 		c->rx_timer_count = 0;
-		add_apc(c->dispatcher, &c->rx_timer, &on_send_close);
+		q_send_close(c, now);
+		add_timed_apc(c->dispatcher, &c->rx_timer, now + handshake_timeout(c, c->rx_timer_count++), &on_send_close);
 	}
 }
 
@@ -129,11 +132,33 @@ static void on_ack_timeout(apc_t *a, tick_t now) {
 	LOG(c->local_cfg->debug, "");
 }
 
-void q_async_send_ack(qconnection_t *c, tick_t now, bool quick) {
-	tick_t wakeup = now + (quick ? QUIC_SHORT_ACK_TIMEOUT : QUIC_LONG_ACK_TIMEOUT);
+static void async_draining_ack(apc_t *a, tick_t now) {
+	qconnection_t *c = container_of(a, qconnection_t, tx_timer);
+	struct short_packet sp = {
+		.ignore_cwnd = true,
+		.ignore_closing = true,
+		.ignore_draining = true,
+		.send_ack = true,
+	};
+	q_send_short_packet(c, &sp, &now);
+}
+
+static void async_ack(qconnection_t *c, tick_t wakeup) {
 	if (!is_apc_active(&c->tx_timer) || (tickdiff_t)(wakeup - c->tx_timer.wakeup) < 0) {
 		add_timed_apc(c->dispatcher, &c->tx_timer, wakeup, &on_ack_timeout);
 	}
+}
+
+void q_async_ack(qconnection_t *c, tick_t now) {
+	async_ack(c, now + QUIC_LONG_ACK_TIMEOUT);
+}
+
+void q_fast_async_ack(qconnection_t *c, tick_t now) {
+	async_ack(c, now + QUIC_SHORT_ACK_TIMEOUT);
+}
+
+void q_draining_ack(qconnection_t *c, tick_t now) {
+	add_apc(c->dispatcher, &c->tx_timer, &async_draining_ack);
 }
 
 static void on_async_send_data(apc_t *a, tick_t now) {
@@ -153,7 +178,7 @@ void q_async_send_data(qconnection_t *c) {
 static void on_idle_timeout(apc_t *w, tick_t now) {
 	qconnection_t *c = container_of(w, qconnection_t, idle_timer);
 	LOG(c->local_cfg->debug, "idle timeout");
-	q_internal_shutdown(c, QC_ERR_IDLE_TIMEOUT);
+	q_internal_shutdown(c, QC_ERR_IDLE_TIMEOUT, now);
 }
 
 void q_start_idle_timer(qconnection_t *c, tick_t now) {
@@ -170,33 +195,31 @@ static void on_destroy_timeout(apc_t *a, tick_t now) {
 
 static void async_shutdown(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, idle_timer);
-	add_timed_apc(c->dispatcher, &c->idle_timer, now + destroy_timeout(c), &on_destroy_timeout);
-	cancel_apc(c->dispatcher, &c->rx_timer);
-	if (!c->draining) {
-		q_send_close(c, now);
-		
-	}
-	cancel_apc(c->dispatcher, &c->tx_timer);
+	q_start_shutdown(c, now);
 }
 
 // Setup the two phases of a connection
 
-void q_start_handshake_timers(qconnection_t *c, tick_t now) {
+void q_start_handshake(qconnection_t *c, tick_t now) {
 	start_handshake_timer(c, now);
 	q_start_idle_timer(c, now);
 	cancel_apc(c->dispatcher, &c->tx_timer);
 }
 
-void q_start_runtime_timers(qconnection_t *c, tick_t now) {
+void q_start_runtime(qconnection_t *c, tick_t now) {
 	q_start_idle_timer(c, now);
 	cancel_apc(c->dispatcher, &c->tx_timer);
 	cancel_apc(c->dispatcher, &c->rx_timer);
 }
 
-void q_start_shutdown_timers(qconnection_t *c) {
-	start_close_timer(c);
+void q_start_shutdown(qconnection_t *c, tick_t now) {
+	add_timed_apc(c->dispatcher, &c->idle_timer, now + destroy_timeout(c), &on_destroy_timeout);
+	start_close_timer(c, now); // rx_timer
+	// leave tx_timer as is, as it may be running the draining ack
+}
+
+void q_async_shutdown(qconnection_t *c) {
 	add_apc(c->dispatcher, &c->idle_timer, &async_shutdown);
-	cancel_apc(c->dispatcher, &c->tx_timer);
 }
 
 

@@ -103,6 +103,12 @@
 #define PENDING_UNI 1
 
 
+
+#define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
+#define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 // Packet sending
 
 void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, tick_t rxtime);
@@ -125,6 +131,7 @@ struct short_packet {
 	bool force_ack;
 	bool ignore_cwnd;
 	bool ignore_closing;
+	bool ignore_draining;
 	bool send_close;
 	bool send_ack;
 	bool send_stop;
@@ -140,11 +147,12 @@ int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off);
 int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum);
 int q_recv_reset(qconnection_t *c, qstream_t *s, int errnum, uint64_t off);
 int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
-void q_ack_stream(qconnection_t *c, const qtx_packet_t *pkt);
-void q_lost_stream(qconnection_t *c, const qtx_packet_t *pkt);
+void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt);
+void q_lost_stream(qconnection_t *c, qtx_packet_t *pkt);
 
 // Scheduler
 
+void q_update_scheduler_from_cfg(qconnection_t *c);
 int q_send_data(qconnection_t *c, int ignore_cwnd_pkts, tick_t now);
 
 int q_decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *s);
@@ -166,22 +174,33 @@ void q_remove_stream(qconnection_t *c, qstream_t *s);
 
 // Shutdown
 
-void q_internal_shutdown(qconnection_t *c, int errnum);
+void q_internal_shutdown(qconnection_t *c, int errnum, tick_t now);
 void q_send_close(qconnection_t *c, tick_t now);
-int q_decode_close(qconnection_t *c, uint8_t hdr, qslice_t *s);
-int q_encode_close(qconnection_t *c, qslice_t *p);
+int q_decode_close(qconnection_t *c, uint8_t hdr, qslice_t *s, tick_t now);
+int q_encode_close(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt);
 void q_ack_close(qconnection_t *c);
 void q_lost_close(qconnection_t *c, tick_t now);
 
 // Timers
 
+void q_fast_async_ack(qconnection_t *c, tick_t now);
+void q_async_ack(qconnection_t *c, tick_t now);
+void q_draining_ack(qconnection_t *c, tick_t now);
+
 void q_start_probe_timer(qconnection_t *c, tick_t now);
 void q_start_ping_timeout(qconnection_t *c, tick_t now);
-void q_async_send_ack(qconnection_t *c, tick_t now, bool quick);
 void q_async_send_data(qconnection_t *c);
 void q_start_idle_timer(qconnection_t *c, tick_t now);
 
-void q_start_handshake_timers(qconnection_t *c, tick_t now);
-void q_start_runtime_timers(qconnection_t *c, tick_t now);
-void q_start_shutdown_timers(qconnection_t *c);
+void q_start_handshake(qconnection_t *c, tick_t now);
+void q_start_runtime(qconnection_t *c, tick_t now);
+void q_start_shutdown(qconnection_t *c, tick_t now);
+void q_async_shutdown(qconnection_t *c);
 
+static inline uint64_t q_encode_ack_delay(tickdiff_t delay, unsigned exp) {
+	return delay >> (exp ? exp : QUIC_ACK_DELAY_SHIFT);
+}
+
+static inline tickdiff_t q_decode_ack_delay(uint64_t raw, unsigned exp) {
+	return (tickdiff_t)(raw << (exp ? exp : QUIC_ACK_DELAY_SHIFT));
+}

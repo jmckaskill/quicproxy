@@ -1,6 +1,5 @@
 #include "buffer.h"
-
-#define MIN(A,B) ((A) < (B) ? (A) : (B))
+#include "internal.h"
 
 // ctz = count trailing zeros
 // These versions do not protect against a zero value.

@@ -12,9 +12,9 @@ void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, 
 		LOG(c->local_cfg->debug, "client handshake complete");
 		c->handshake_complete = true;
 	}
-	if (level == QC_PROTECTED && num != s->rx_next) {
+	if (level == QC_PROTECTED && num > s->rx_next) {
 		// out of order or dropped packet
-		q_async_send_ack(c, rxtime, true);
+		q_fast_async_ack(c, rxtime);
 	}
 	if (num >= s->rx_next) {
 		s->rx_largest = rxtime;
@@ -48,22 +48,22 @@ static unsigned clz(uint64_t v) {
 }
 #elif defined _MSC_VER && defined _M_X64
 #include <intrin.h>
-#pragma intrinsic(_BitScanForward64)
+#pragma intrinsic(_BitScanReverse64)
 static unsigned clz(uint64_t v) {
 	unsigned long ret;
-	_BitScanForward64(&ret, v);
-	return ret;
+	_BitScanReverse64(&ret, v);
+	return 63 - ret;
 }
 #elif defined _MSC_VER
 #include <intrin.h>
-#pragma intrinsic(_BitScanForward)
+#pragma intrinsic(_BitScanReverse)
 static unsigned clz(uint64_t v) {
 	unsigned long ret;
-	if (_BitScanForward(&ret, (uint32_t)(v >> 32))) {
-		return ret;
+	if (_BitScanReverse(&ret, (uint32_t)(v >> 32))) {
+		return 31 - ret;
 	} else {
-		_BitScanForward(&ret, (uint32_t)(v));
-		return ret + 32;
+		_BitScanReverse(&ret, (uint32_t)(v));
+		return 63 - ret;
 	}
 }
 
@@ -79,7 +79,8 @@ static unsigned clz(uint64_t v) {
 }
 #endif
 
-static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t delay, uint8_t delay_exponent) {
+
+static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t delay, unsigned exp) {
 	static const unsigned max_blocks = 16;
 	size_t ack_size = 1 + 8 + 8 + 1 + 1 + 2 * max_blocks;
 	if (s->p + ack_size > s->e) {
@@ -94,14 +95,14 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 	s->p = encode_varint(s->p, pkts->rx_next - 1);
 
 	// ack delay
-	s->p = encode_varint(s->p, delay >> delay_exponent);
+	s->p = encode_varint(s->p, q_encode_ack_delay(delay, exp));
 
 	// block count - fill out later
 	uint8_t *pblock_count = s->p++;
 	unsigned num_blocks = 0;
 
 	// rotate left such that the latest (b.next-1) packet is in the top bit
-	unsigned shift = (size_t)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
+	unsigned shift = (unsigned)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
 	uint64_t rx = (pkts->rx_mask << shift) | (pkts->rx_mask >> (64 - shift));
 
 	// and shift the latest packet out
@@ -175,7 +176,7 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 	uint8_t *enc_begin = s->p;
 
 	// ack frame
-	if (encode_ack_frame(s, pkts, (tickdiff_t)(now - pkts->rx_largest), QUIC_ACK_DELAY_SHIFT)) {
+	if (encode_ack_frame(s, pkts, (tickdiff_t)(now - pkts->rx_largest), 0)) {
 		return NULL;
 	}
 	pkt->flags |= QTX_PKT_ACK;
@@ -186,7 +187,6 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 		if (s->p + chdr + QUIC_TAG_SIZE > s->e) {
 			return NULL;
 		}
-		p->crypto_off;
 		size_t sz = MIN(p->crypto_size, (size_t)(s->e - s->p) - chdr);
 		*(s->p++) = CRYPTO;
 		s->p = encode_varint(s->p, p->crypto_off);
@@ -221,7 +221,7 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 
 int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) {
 	qpacket_buffer_t *pkts = &c->pkts[QC_PROTECTED];
-	if (!c->peer_verified || (!s->ignore_closing && c->closing) || c->draining) {
+	if (!c->peer_verified || (!s->ignore_closing && c->closing) || (!s->ignore_draining && c->draining)) {
 		return -1;
 	} else if (pkts->tx_next == pkts->tx_oldest + pkts->sent_len) {
 		return -1;
@@ -270,8 +270,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 
 	// ack
 	if (pnow && s->send_ack) {
-		uint8_t exp = c->local_cfg->ack_delay_exponent;
-		int err = encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), exp ? exp : QUIC_ACK_DELAY_SHIFT);
+		int err = encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), c->local_cfg->ack_delay_exponent);
 		if (err) {
 			return err;
 		}
@@ -295,7 +294,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	}
 
 	if (s->send_close) {
-		if (q_encode_close(c, &p)) {
+		if (q_encode_close(c, &p, pkt)) {
 			return -1;
 		}
 	} else if (s->stream) {

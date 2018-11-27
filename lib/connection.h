@@ -81,6 +81,7 @@ struct qconnection {
 	bool closing;
 	bool draining;
 	bool hashed_hello;
+	bool have_srtt;
 	int close_errnum;
 
 	// crypto management

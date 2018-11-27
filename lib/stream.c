@@ -199,21 +199,21 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff,
 
 	if ((qbuf_next_valid(&s->tx, poff) && *poff < s->tx_max) || ((s->flags & QTX_FIN) && !(s->flags & QTX_FIN_SENT))) {
 		uint8_t *stream_header = p->p;
-		*(p->p++) = STREAM;
+		*(p->p++) = STREAM | STREAM_LEN_FLAG;
 		p->p = encode_varint(p->p, s->id);
 		if (*poff > 0) {
 			*stream_header |= STREAM_OFF_FLAG;
 			p->p = encode_varint(p->p, *poff);
 		}
 		p->p += 2;
-		uint8_t *stream_len = p->p;
 		uint64_t pktend = *poff + (uint64_t)(p->e - p->p);
 		uint64_t sflow = s->tx_max;
 		uint64_t cflow = s->tx_sent + c->tx_max_data - c->data_sent;
 		uint64_t end = MIN(pktend, MIN(cflow, sflow));
 		uint16_t sz = (uint16_t)qbuf_copy(&s->tx, *poff, p->p, (size_t)(end - *poff));
+		write_big_16(p->p - 2, VARINT_16 | sz);
+		p->p += sz;
 		qbuf_mark_invalid(&s->tx, *poff, sz);
-		write_big_16(stream_len, sz);
 
 		bool have_fin = at_tx_eof(s, *poff + sz);
 
@@ -235,7 +235,7 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff,
 				c->data_sent += new_data;
 				s->tx_sent = *poff + sz;
 			}
-			LOG(c->local_cfg->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d, cfin %d", s->id, pkt->off, pkt->len);
+			LOG(c->local_cfg->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d", s->id, pkt->off, pkt->len);
 		} else {
 			// no point to having a stream frame
 			p->p = stream_header;
@@ -245,8 +245,11 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff,
 	return 0;
 }
 
-void q_ack_stream(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt) {
 	qstream_t *s = pkt->stream;
+	rb_remove(&s->tx_packets, &pkt->rb);
+	pkt->stream = NULL;
+
 	if (pkt->flags & QTX_PKT_STOP) {
 		s->flags |= QRX_STOP_ACK;
 	}
@@ -269,10 +272,14 @@ void q_ack_stream(qconnection_t *c, const qtx_packet_t *pkt) {
 	if (((s->flags & QRX_FIN_ACK) && (s->flags & QRX_DATA_ACK)) || (s->flags & QRX_RST_ACK)) {
 		s->flags |= QTX_COMPLETE;
 	}
+	remove_stream_if_complete(c, s);
 }
 
-void q_lost_stream(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_lost_stream(qconnection_t *c, qtx_packet_t *pkt) {
 	qstream_t *s = pkt->stream;
+	rb_remove(&s->tx_packets, &pkt->rb);
+	pkt->stream = NULL;
+
 	if (pkt->flags & QTX_PKT_STOP && !(s->flags & QRX_STOP_ACK)) {
 		s->flags &= ~QTX_STOP_SENT;
 	}

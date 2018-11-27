@@ -2,16 +2,22 @@
 #include "connection.h"
 
 static void add_local_stream(qconnection_t *c, qstream_t *s) {
-	int uni = s->rx.size ? 1 : 0;
-	uint64_t id = ((c->next_stream_id[uni]++) << 2) | uni | (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
+	int uni = s->rx.size ? STREAM_BIDI : STREAM_UNI;
+	int pending = s->rx.size ? PENDING_BIDI : PENDING_UNI;
+	int local = c->is_client ? STREAM_CLIENT : STREAM_SERVER;
+	uint64_t id = ((c->next_stream_id[pending]++) << 2) | uni | local;
 	q_setup_local_stream(s, id, c->peer_cfg.stream_data_bidi_remote, c->peer_cfg.stream_data_uni);
-	rbtree *rx = &c->rx_streams[id & 3];
+	rbtree *rx = &c->rx_streams[uni | local];
 	rb_insert(rx, rb_begin(rx, RB_RIGHT), &s->rxnode, RB_RIGHT);
 }
 
 static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
+	*ps = NULL;
+
 	if ((id >> 2) >= c->max_stream_id[id & 3]) {
 		return QC_ERR_STREAM_ID;
+	} else if (c->closing) {
+		return 0;
 	}
 
 	{
@@ -30,7 +36,6 @@ static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
 		|| (id & STREAM_SERVER) == (c->is_client ? 0 : STREAM_SERVER)) {
 		// this must be an out of order frame from an old stream
 		// we already closed
-		*ps = NULL;
 		return 0;
 	}
 
@@ -68,13 +73,13 @@ static int send_stream(qconnection_t *c, qstream_t *s, int ignore_cwnd_pkts, tic
 	int sent = 0;
 	for (;;) {
 		sp.ignore_cwnd = (sent < ignore_cwnd_pkts);
-		if (!q_send_short_packet(c, &sp, pnow)) {
+		if (q_send_short_packet(c, &sp, pnow)) {
 			rb_insert(&c->tx_streams, rb_begin(&c->tx_streams, RB_RIGHT), &s->txnode, RB_RIGHT);
 			s->flags |= QTX_QUEUED;
 			return sent;
 		}
 		sent++;
-		if (qbuf_next_valid(&s->tx, &sp.stream_off)) {
+		if (!qbuf_next_valid(&s->tx, &sp.stream_off)) {
 			return sent;
 		}
 	}
@@ -97,18 +102,15 @@ int q_send_data(qconnection_t *c, int ignore_cwnd_pkts, tick_t now) {
 		sent += ret;
 	}
 
-	for (int uni = 0; uni <= 1; uni++) {
-		rbtree *p = &c->pending_streams[uni];
-		for (rbnode *n = rb_begin(p, RB_LEFT); n != NULL && c->next_stream_id[uni] < c->max_stream_id[uni];) {
+	for (int pend = 0; pend <= 1; pend++) {
+		rbtree *p = &c->pending_streams[pend];
+		for (rbnode *n = rb_begin(p, RB_LEFT); n != NULL && c->next_stream_id[pend] < c->max_stream_id[pend];) {
 			qstream_t *s = container_of(n, qstream_t, txnode);
 			n = rb_next(n, RB_RIGHT);
 			rb_remove(p, &s->txnode);
 			s->flags &= ~QTX_PENDING;
 
 			add_local_stream(c, s);
-
-			rbtree *rx = &c->rx_streams[s->id & 3];
-			rb_insert(rx, rb_begin(rx, RB_RIGHT), &s->rxnode, RB_RIGHT);
 
 			int ret = send_stream(c, s, ignore_cwnd_pkts, &now);
 			ignore_cwnd_pkts -= ret;
@@ -157,6 +159,7 @@ void q_remove_stream(qconnection_t *c, qstream_t *s) {
 	rb_remove(&c->rx_streams[s->id & 3], &s->rxnode);
 	for (rbnode *n = rb_begin(&s->tx_packets, RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
 		qtx_packet_t *pkt = container_of(n, qtx_packet_t, rb);
+		assert(pkt->off != UINT64_MAX);
 		pkt->stream = NULL;
 		pkt->off = 0;
 		pkt->len = 0;
@@ -195,6 +198,8 @@ int q_decode_stream(qconnection_t *c, uint8_t hdr, qslice_t *p) {
 
 	if (off + len >= QRX_STREAM_MAX) {
 		return QC_ERR_FINAL_OFFSET;
+	} else if (is_send_only(c, id)) {
+		return QC_ERR_PROTOCOL_VIOLATION;
 	} else if (c->closing) {
 		return 0;
 	}
@@ -268,6 +273,17 @@ int q_decode_stream_data(qconnection_t *c, qslice_t *p) {
 
 	s->tx_max = MAX(s->tx_max, max);
 	return 0;
+}
+
+void q_update_scheduler_from_cfg(qconnection_t *c) {
+	int local = (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
+	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
+	c->max_stream_id[STREAM_BIDI | local] = c->peer_cfg.bidi_streams;
+	c->max_stream_id[STREAM_BIDI | remote] = c->local_cfg->bidi_streams;
+	c->max_stream_id[STREAM_UNI | local] = c->peer_cfg.uni_streams;
+	c->max_stream_id[STREAM_UNI | remote] = c->local_cfg->uni_streams;
+	c->tx_max_data = c->peer_cfg.max_data;
+	c->rx_max_data = c->local_cfg->max_data;
 }
 
 int q_decode_max_id(qconnection_t *c, qslice_t *p) {

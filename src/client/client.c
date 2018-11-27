@@ -6,8 +6,6 @@
 #include <cutils/file.h>
 #include <cutils/log.h>
 
-#define MAX(x, y)   ((x) > (y) ? (x) : (y))
-
 static tick_t get_tick() {
 	uint64_t ns = monotonic_ns();
 	return (tick_t)(ns / 1000);
