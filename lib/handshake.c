@@ -1230,9 +1230,13 @@ int q_decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd, ti
 		case TP_uni_streams:
 			goto uni_streams;
 		case TP_idle_timeout:
+			goto idle_timeout;
 		case TP_max_ack_delay:
+			goto max_ack_delay;
 		case TP_ack_delay_exponent:
+			goto ack_delay_exponent;
 		case TP_max_packet_size:
+			goto max_packet_size;
 		case TP_disable_migration:
 			c->peer_cfg.disable_migration = true;
 			goto finish_tp;
@@ -1447,7 +1451,7 @@ end:
 ///////////////////////////////
 // Handshake
 
-static int send_client_hello(qconnection_t *c, tick_t *pnow) {
+int q_send_client_hello(qconnection_t *c, tick_t *pnow) {
 	// encode the TLS record
 	uint8_t tlsbuf[1024];
 	qslice_t tls = { tlsbuf, tlsbuf + sizeof(tlsbuf) };
@@ -1491,7 +1495,7 @@ static int send_client_hello(qconnection_t *c, tick_t *pnow) {
 	return 0;
 }
 
-static int send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_t now) {
+int q_send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_t now) {
 	bool first_time = pk != NULL;
 	if (first_time) {
 		c->rand.vtable->generate(&c->rand.vtable, c->server_random, sizeof(c->server_random));
@@ -1620,5 +1624,11 @@ static int send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_
 	return 0;
 }
 
+void q_ack_crypto(qconnection_t *c, qtx_packet_t *pkt) {
 
+}
+
+void q_lost_crypto(qconnection_t *c, qtx_packet_t *pkt) {
+
+}
 

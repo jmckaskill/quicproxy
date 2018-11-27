@@ -13,18 +13,26 @@ build $obj/quic/cipher.o: cc lib/cipher.c
 build $obj/quic/connection.o: cc lib/connection.c
 build $obj/quic/handshake.o: cc lib/handshake.c
 build $obj/quic/kdf.o: cc lib/kdf.c
+build $obj/quic/packet.o: cc lib/packet.c
 build $obj/quic/pem.o: cc lib/pem.c
+build $obj/quic/scheduler.o: cc lib/scheduler.c
+build $obj/quic/shutdown.o: cc lib/shutdown.c
 build $obj/quic/signature.o: cc lib/signature.c
 build $obj/quic/stream.o: cc lib/stream.c
+build $obj/quic/timeouts.o: cc lib/timeouts.c
 build $obj/quic.lib: lib $
  $obj/quic/buffer.o $
  $obj/quic/cipher.o $
  $obj/quic/connection.o $
  $obj/quic/handshake.o $
  $obj/quic/kdf.o $
+ $obj/quic/packet.o $
  $obj/quic/pem.o $
+ $obj/quic/scheduler.o $
+ $obj/quic/shutdown.o $
  $obj/quic/signature.o $
  $obj/quic/stream.o $
+ $obj/quic/timeouts.o $
 
 build $obj/quic/test_buffer.o: cc lib/buffer_test.c
 build $bin/test_buffer.log: run-test $bin/test_buffer.exe
@@ -47,10 +55,17 @@ build $bin/qproxy-client.exe: clink $
  $obj/bearssl.lib $
  $obj/quic.lib $
 
+build $obj/quic/test.o: cc lib/test.c
+build $bin/quic-test.exe: clink $
+ $obj/quic/test.o $
+ $obj/cutils.lib $
+ $obj/bearssl.lib $
+ $obj/quic.lib $
 
 build $TGT: phony $
  $bin/qproxy-server.exe $
  $bin/qproxy-client.exe $
+ $bin/quic-test.exe $
  $bin/test_flag.exe $
  $bin/test_hash.exe $
  $bin/test_heap.exe $
@@ -58,6 +73,7 @@ build $TGT: phony $
  $bin/test_str.exe $
  $bin/test_test.exe $
  $bin/test_buffer.exe $
+ $bin/brssl.exe $
 
 build check-$TGT: phony $
  $bin/test_flag.log $

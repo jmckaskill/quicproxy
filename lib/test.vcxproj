@@ -29,9 +29,9 @@
   <ItemGroup>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{83A18429-4CFE-54F6-8504-5914CB87F397}</ProjectGuid>
+    <ProjectGuid>{12BBB42C-E9A5-5C4A-A9E1-94E645635230}</ProjectGuid>
     <Keyword>MakeFileProj</Keyword>
-    <ProjectName>test - buffer</ProjectName>
+    <ProjectName>test - quic</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -81,55 +81,55 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <NMakeOutput>$(SolutionDir)\bin\win32-debug\test_buffer.exe</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win32-debug\quic-test.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/test_buffer.exe</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/test_buffer.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/test_buffer.exe</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/test_buffer.exe</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/quic-test.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/quic-test.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/quic-test.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/quic-test.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <NMakeOutput>$(SolutionDir)\bin\win32-release\test_buffer.exe</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win32-release\quic-test.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/test_buffer.exe</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/test_buffer.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/test_buffer.exe</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/test_buffer.exe</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/quic-test.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/quic-test.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/quic-test.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/quic-test.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\win64-debug\test_buffer.exe</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win64-debug\quic-test.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/test_buffer.exe</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/test_buffer.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/test_buffer.exe</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/test_buffer.exe</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/quic-test.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/quic-test.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/quic-test.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/quic-test.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\win64-release\test_buffer.exe</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win64-release\quic-test.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/test_buffer.exe</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/test_buffer.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/test_buffer.exe</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/test_buffer.exe</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/quic-test.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/quic-test.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/quic-test.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/quic-test.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\armv7-release\test_buffer.exe</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\armv7-release\quic-test.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>__linux__;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_buffer.exe</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_buffer.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_buffer.exe</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_buffer.exe</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/quic-test.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/quic-test.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/quic-test.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/quic-test.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src;$(SolutionDir)\bin\libarm\armv7\include;$(SolutionDir)\bin\clang\lib\clang\5.0.1\include</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />

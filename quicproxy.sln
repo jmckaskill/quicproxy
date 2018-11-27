@@ -11,6 +11,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - cutils", "ext\cutils.
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "lib - quic", "lib\quic.vcxproj", "{E5E2965E-2023-5CA9-A020-142BD4B32C0A}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test - quic", "lib\test.vcxproj", "{12BBB42C-E9A5-5C4A-A9E1-94E645635230}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-server", "src\server\server.vcxproj", "{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-client", "src\client\client.vcxproj", "{92623FB8-4F1B-5BBD-93C2-DDA902688894}"
@@ -68,6 +70,17 @@ Global
 		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Release|Win32.Build.0 = Release|Win32
 		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Release|x64.ActiveCfg = Release|x64
 		{E5E2965E-2023-5CA9-A020-142BD4B32C0A}.Release|x64.Build.0 = Release|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Arm-Release|Win32.ActiveCfg = Arm-Release|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Arm-Release|x64.ActiveCfg = Arm-Release|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Arm-Release|x64.Build.0 = Arm-Release|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Debug|Win32.ActiveCfg = Debug|Win32
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Debug|Win32.Build.0 = Debug|Win32
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Debug|x64.ActiveCfg = Debug|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Debug|x64.Build.0 = Debug|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Release|Win32.ActiveCfg = Release|Win32
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Release|Win32.Build.0 = Release|Win32
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Release|x64.ActiveCfg = Release|x64
+		{12BBB42C-E9A5-5C4A-A9E1-94E645635230}.Release|x64.Build.0 = Release|x64
 		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Arm-Release|Win32.ActiveCfg = Arm-Release|x64
 		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Arm-Release|x64.ActiveCfg = Arm-Release|x64
 		{DE6608C9-FD3A-5476-8DF6-9D0BA929083A}.Arm-Release|x64.Build.0 = Arm-Release|x64

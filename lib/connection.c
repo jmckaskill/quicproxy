@@ -1,4 +1,5 @@
 #include "internal.h"
+#include <math.h>
 
 static const char prng_nonce[] = "quicproxy prng nonce";
 
@@ -24,7 +25,7 @@ static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64
 		if (pkt->stream) {
 			q_ack_stream(c, pkt);
 		}
-		uint8_t flags = pkt->flags;
+		unsigned flags = pkt->flags;
 		if (flags & QTX_PKT_MAX_DATA) {
 			q_ack_max_data(c, pkt);
 		}
@@ -67,24 +68,18 @@ static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64
 		if (pkt->stream) {
 			q_lost_stream(c, pkt);
 		}
-		uint8_t flags = pkt->flags;
+		unsigned flags = pkt->flags;
 		if (flags & QTX_PKT_MAX_DATA) {
 			q_lost_max_data(c, pkt);
 		}
 		if (flags & QTX_PKT_MAX_ID_UNI) {
-			q_lost_max_id(c, 1);
+			q_lost_max_id(c, pkt);
 		}
 		if (flags & QTX_PKT_MAX_ID_BIDI) {
-			q_lost_max_id(c, 0);
+			q_lost_max_id(c, pkt);
 		}
 		if (flags & QTX_PKT_CLOSE) {
 			q_lost_close(c, now);
-		}
-		if (flags & QTX_PKT_NEW_ID) {
-			q_lost_new_id(c, pkt);
-		}
-		if (flags & QTX_PKT_RETIRE_ID) {
-			q_lost_retire_id(c, pkt);
 		}
 		if (flags & QTX_PKT_CRYPTO) {
 			q_lost_crypto(c, pkt);
@@ -132,7 +127,7 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 		tickdiff_t latest_rtt = (tickdiff_t)(rxtime - pkt->sent);
 		c->min_rtt = MIN(c->min_rtt, latest_rtt);
 
-		tickdiff_t delay = raw_delay << c->peer_cfg.ack_delay_exponent;
+		tickdiff_t delay = (tickdiff_t)(raw_delay << c->peer_cfg.ack_delay_exponent);
 		if (delay < latest_rtt) {
 			latest_rtt -= delay;
 		}
@@ -188,7 +183,7 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	if ((hdr & STREAM_MASK) == STREAM) {
-		return q_decode_stream(c, hdr, s, rxtime);
+		return q_decode_stream(c, hdr, s);
 	} else {
 		switch (hdr) {
 		default:
@@ -197,7 +192,7 @@ static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime)
 			s->p = find_non_padding(s->p, s->e);
 			return 0;
 		case RST_STREAM:
-			return q_decode_reset(c, &s);
+			return q_decode_reset(c, s);
 		case CONNECTION_CLOSE:
 		case APPLICATION_CLOSE:
 			return q_decode_close(c, hdr, s);
@@ -209,7 +204,7 @@ static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime)
 			return q_decode_max_id(c, s);
 		case PING:
 			LOG(c->local_cfg->debug, "RX PING");
-			q_async_send_ack(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
+			q_async_send_ack(c, rxtime, true);
 			return 0;
 		case BLOCKED: {
 			uint64_t off;
@@ -261,7 +256,7 @@ static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime)
 		case ACK | ACK_ECN_FLAG:
 		case ACK:
 			LOG(c->local_cfg->debug, "RX ACK");
-			return decode_ack(c, QC_PROTECTED, hdr, &s, rxtime);
+			return decode_ack(c, QC_PROTECTED, hdr, s, rxtime);
 		case PATH_RESPONSE:
 		case PATH_CHALLENGE: {
 			if (s->p + 8 > s->e) {
@@ -282,7 +277,7 @@ static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime)
 		case CRYPTO:
 			LOG(c->local_cfg->debug, "RX CRYPTO");
 			q_async_send_ack(c, rxtime, true);
-			return q_decode_crypto(c, QC_PROTECTED, &s);
+			return q_decode_crypto(c, QC_PROTECTED, s, rxtime);
 		}
 	}
 }
@@ -301,11 +296,11 @@ static int process_handshake_frame(qconnection_t *c, qslice_t *s, enum qcrypto_l
 	case ACK | ACK_ECN_FLAG:
 	case ACK:
 		LOG(c->local_cfg->debug, "RX ACK");
-		return decode_ack(c, level, hdr, &s, rxtime);
+		return decode_ack(c, level, hdr, s, rxtime);
 	case CRYPTO:
 		LOG(c->local_cfg->debug, "RX CRYPTO");
 		q_async_send_ack(c, rxtime, true);
-		return q_decode_crypto(c, level, &s);
+		return q_decode_crypto(c, level, s, rxtime);
 	}
 }
 
@@ -514,11 +509,11 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			if (err == QC_ERR_DROP) {
 				continue;
 			} else if (err) {
-				set_closing(c, err);
+				q_internal_shutdown(c, err);
 				return;
 			}
-			receive_packet(c, level, pktnum, rxtime);
-			send_data(c, 0, rxtime);
+			q_receive_packet(c, level, pktnum, rxtime);
+			q_send_data(c, 0, rxtime);
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
@@ -533,10 +528,10 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			q_start_idle_timer(c, rxtime);
 			int err = process_packet(c, s, QC_PROTECTED, rxtime);
 			if (!err) {
-				receive_packet(c, QC_PROTECTED, pktnum, rxtime);
-				send_data(c, 0, rxtime);
+				q_receive_packet(c, QC_PROTECTED, pktnum, rxtime);
+				q_send_data(c, 0, rxtime);
 			} else if (err != QC_ERR_DROP) {
-				set_closing(c, err);
+				q_internal_shutdown(c, err);
 			}
 			return;
 		}
@@ -622,11 +617,11 @@ int qc_connect(qconnection_t *c, dispatcher_t *d, const qinterface_t **vt, const
 	c->rand.vtable->generate(&c->rand.vtable, c->client_random, sizeof(c->client_random));
 
 	tick_t now = 0;
-	if (send_client_hello(c, &now)) {
+	if (q_send_client_hello(c, &now)) {
 		return -1;
 	}
 
-
+	q_start_handshake_timers(c, now);
 	return 0;
 }
 
@@ -663,15 +658,12 @@ int qc_accept(qconnection_t *c, dispatcher_t *d, const qinterface_t **vt, const 
 	(*msgs)->update(msgs, h->chello, h->chello_size);
 
 	// send server hello
-	tick_t sent;
-	receive_packet(c, QC_INITIAL, 0, h->rxtime);
-	if (send_server_hello(c, &h->key, h->rxtime)) {
+	q_receive_packet(c, QC_INITIAL, 0, h->rxtime);
+	if (q_send_server_hello(c, &h->key, h->rxtime)) {
 		return -1;
 	}
 
-	c->rx_timer_count = 0;
-	q_start_handshake_timer(c, h->rxtime);
-	q_start_idle_timer(c, h->rxtime);
+	q_start_handshake_timers(c, h->rxtime);
 	return 0;
 }
 

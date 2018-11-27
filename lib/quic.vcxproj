@@ -29,12 +29,13 @@
     <ClCompile Include="connection.c" />
     <ClCompile Include="handshake.c" />
     <ClCompile Include="kdf.c" />
+    <ClCompile Include="packet.c" />
     <ClCompile Include="pem.c" />
     <ClCompile Include="scheduler.c" />
     <ClCompile Include="shutdown.c" />
     <ClCompile Include="signature.c" />
     <ClCompile Include="stream.c" />
-    <ClCompile Include="packet.c" />
+    <ClCompile Include="test.c" />
     <ClCompile Include="timeouts.c" />
   </ItemGroup>
   <ItemGroup>

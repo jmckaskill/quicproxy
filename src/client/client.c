@@ -106,8 +106,7 @@ int main(int argc, const char *argv[]) {
 	LOG(c.debug, "client start");
 
 	stack_string str;
-	dispatcher_t d;
-	init_dispatcher(&d);
+	dispatcher_t d = { 0 };
 
 	c.fd = fd;
 	if (qc_connect(&c.conn, &d, &c.vtable, "localhost", &params, c.pktbuf, sizeof(c.pktbuf) / sizeof(c.pktbuf[0]))) {

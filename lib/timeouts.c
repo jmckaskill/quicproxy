@@ -32,7 +32,7 @@ static void on_retransmission_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, rx_timer);
 	LOG(c->local_cfg->debug, "RTO %d", c->rx_timer_count);
 	c->retransmit_pktnum = c->pkts[QC_PROTECTED].tx_next;
-	send_data(c, 2, now);
+	q_send_data(c, 2, now);
 	add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, c->rx_timer_count++), &on_retransmission_timeout);
 	LOG(c->local_cfg->debug, "");
 }
@@ -40,7 +40,7 @@ static void on_retransmission_timeout(apc_t *a, tick_t now) {
 static void on_probe_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, rx_timer);
 	LOG(c->local_cfg->debug, "TLP %d", c->rx_timer_count);
-	send_data(c, 1, now);
+	q_send_data(c, 1, now);
 	if (c->rx_timer_count == 2) {
 		c->rx_timer_count = 0;
 		add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, 0), &on_retransmission_timeout);
@@ -55,9 +55,9 @@ static void on_handshake_timeout(apc_t *a, tick_t now) {
 	// ignore the error if the send fails, we'll try again next timeout
 	LOG(c->local_cfg->debug, "HS timeout %d", c->rx_timer_count);
 	if (c->is_client) {
-		send_client_hello(c, &now);
+		q_send_client_hello(c, &now);
 	} else {
-		send_server_hello(c, NULL, now);
+		q_send_server_hello(c, NULL, now);
 	}
 	add_timed_apc(c->dispatcher, a, now + handshake_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
 	LOG(c->local_cfg->debug, "");
@@ -67,7 +67,7 @@ static void on_send_close(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, rx_timer);
 	q_send_close(c, now);
 	if (!c->draining) {
-		add_timed_apc(c->dispatcher, &c->rx_timer, now + handshake_timeout(c, c->rx_timer_count++), &on_resend_close);
+		add_timed_apc(c->dispatcher, &c->rx_timer, now + handshake_timeout(c, c->rx_timer_count++), &on_send_close);
 	}
 }
 
@@ -77,7 +77,7 @@ void q_start_probe_timer(qconnection_t *c, tick_t now) {
 	add_timed_apc(c->dispatcher, &c->rx_timer, now + probe_timeout(c, c->rx_timer_count++), &on_probe_timeout);
 }
 
-void q_start_handshake_timer(qconnection_t *c, tick_t now) {
+static void start_handshake_timer(qconnection_t *c, tick_t now) {
 	assert(!c->peer_verified && !c->closing);
 	c->rx_timer_count = 0;
 	add_timed_apc(c->dispatcher, &c->rx_timer, now + handshake_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
@@ -115,7 +115,7 @@ static void on_ack_timeout(apc_t *a, tick_t now) {
 	qconnection_t *c = container_of(a, qconnection_t, tx_timer);
 	LOG(c->local_cfg->debug, "ACK timeout");
 	// try and send a packet with data
-	if (send_data(c, 0, now) == 0) {
+	if (q_send_data(c, 0, now) == 0) {
 		// otherwise fall back to just an ack
 		struct short_packet sp = {
 			.ignore_cwnd = true,
@@ -153,7 +153,7 @@ void q_async_send_data(qconnection_t *c) {
 static void on_idle_timeout(apc_t *w, tick_t now) {
 	qconnection_t *c = container_of(w, qconnection_t, idle_timer);
 	LOG(c->local_cfg->debug, "idle timeout");
-	set_closing(c, QC_ERR_IDLE_TIMEOUT);
+	q_internal_shutdown(c, QC_ERR_IDLE_TIMEOUT);
 }
 
 void q_start_idle_timer(qconnection_t *c, tick_t now) {
@@ -182,7 +182,7 @@ static void async_shutdown(apc_t *a, tick_t now) {
 // Setup the two phases of a connection
 
 void q_start_handshake_timers(qconnection_t *c, tick_t now) {
-	q_start_handshake_timer(c, now);
+	start_handshake_timer(c, now);
 	q_start_idle_timer(c, now);
 	cancel_apc(c->dispatcher, &c->tx_timer);
 }

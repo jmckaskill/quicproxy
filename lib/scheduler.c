@@ -14,14 +14,16 @@ static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
 		return QC_ERR_STREAM_ID;
 	}
 
-	rbnode *n = c->rx_streams[id & 3].root;
-	while (n) {
-		qstream_t *s = container_of(n, qstream_t, rxnode);
-		if (s->id == id) {
-			*ps = s;
-			return 0;
+	{
+		rbnode *n = c->rx_streams[id & 3].root;
+		while (n) {
+			qstream_t *s = container_of(n, qstream_t, rxnode);
+			if (s->id == id) {
+				*ps = s;
+				return 0;
+			}
+			n = (id < s->id) ? n->child[RB_LEFT] : n->child[RB_RIGHT];
 		}
-		n = (id < s->id) ? n->child[RB_LEFT] : n->child[RB_RIGHT];
 	}
 
 	if ((id >> 2) < c->next_stream_id[id & 3]
@@ -67,7 +69,8 @@ static int send_stream(qconnection_t *c, qstream_t *s, int ignore_cwnd_pkts, tic
 	for (;;) {
 		sp.ignore_cwnd = (sent < ignore_cwnd_pkts);
 		if (!q_send_short_packet(c, &sp, pnow)) {
-			rb_insert(&c->tx_streams, rb_begin(&c->tx_streams, RB_RIGHT), RB_RIGHT);
+			rb_insert(&c->tx_streams, rb_begin(&c->tx_streams, RB_RIGHT), &s->txnode, RB_RIGHT);
+			s->flags |= QTX_QUEUED;
 			return sent;
 		}
 		sent++;
@@ -87,6 +90,7 @@ int q_send_data(qconnection_t *c, int ignore_cwnd_pkts, tick_t now) {
 		qstream_t *s = container_of(n, qstream_t, txnode);
 		n = rb_next(n, RB_RIGHT);
 		rb_remove(&c->tx_streams, &s->txnode);
+		s->flags &= ~QTX_QUEUED;
 
 		int ret = send_stream(c, s, ignore_cwnd_pkts, &now);
 		ignore_cwnd_pkts -= ret;
@@ -122,7 +126,7 @@ int q_send_data(qconnection_t *c, int ignore_cwnd_pkts, tick_t now) {
 			.ignore_cwnd = true,
 			.send_ack = true,
 		};
-		return send_short_packet(c, &sp, &now) ? 0 : 1;
+		return q_send_short_packet(c, &sp, &now) ? 0 : 1;
 	}
 }
 
@@ -244,7 +248,7 @@ int q_decode_reset(qconnection_t *c, qslice_t *p) {
 		return err;
 	}
 
-	return q_recv_reset(c, s, apperr + QC_ERR_APP_OFFSET);
+	return q_recv_reset(c, s, apperr + QC_ERR_APP_OFFSET, off);
 }
 
 int q_decode_stream_data(qconnection_t *c, qslice_t *p) {
@@ -257,7 +261,7 @@ int q_decode_stream_data(qconnection_t *c, qslice_t *p) {
 	}
 
 	qstream_t *s;
-	int err = create_stream(c, id, &s);
+	int err = create_remote_stream(c, id, &s);
 	if (err || !s) {
 		return err;
 	}

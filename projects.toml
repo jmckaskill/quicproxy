@@ -81,6 +81,11 @@ dirs = [
 ]
 
 [[project]]
+name =  "test - quic"
+file = "lib/test.vcxproj"
+target = "bin/{TGT}/quic-test.exe"
+
+[[project]]
 name =  "bin - qproxy-server"
 file = "src/server/server.vcxproj"
 target = "bin/{TGT}/qproxy-server.exe"

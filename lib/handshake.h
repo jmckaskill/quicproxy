@@ -130,6 +130,13 @@ void init_server_decoder(qconnection_t *c);
 void init_protected_keys(qconnection_t *c, const uint8_t *msg_hash);
 int q_decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *frame_data, tick_t rxtime);
 
+void q_ack_crypto(qconnection_t *c, qtx_packet_t *pkt);
+void q_lost_crypto(qconnection_t *c, qtx_packet_t *pkt);
+
+int q_send_client_hello(qconnection_t *c, tick_t *pnow);
+int q_send_server_hello(qconnection_t *c, const br_ec_public_key *pk, tick_t now);
+
+
 
 
 

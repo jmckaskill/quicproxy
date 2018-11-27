@@ -137,7 +137,7 @@ void q_setup_local_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data, uin
 void q_setup_remote_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data);
 int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const void *p, size_t sz);
 int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off);
-int q_recv_stop(qconnection_t *c, qstream_t *s);
+int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum);
 int q_recv_reset(qconnection_t *c, qstream_t *s, int errnum, uint64_t off);
 int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
 void q_ack_stream(qconnection_t *c, const qtx_packet_t *pkt);
@@ -176,7 +176,6 @@ void q_lost_close(qconnection_t *c, tick_t now);
 // Timers
 
 void q_start_probe_timer(qconnection_t *c, tick_t now);
-void q_start_handshake_timer(qconnection_t *c, tick_t now);
 void q_start_ping_timeout(qconnection_t *c, tick_t now);
 void q_async_send_ack(qconnection_t *c, tick_t now, bool quick);
 void q_async_send_data(qconnection_t *c);

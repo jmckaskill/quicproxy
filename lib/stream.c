@@ -120,7 +120,8 @@ int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off) {
 	return 0;
 }
 
-int q_recv_stop(qconnection_t *c, qstream_t *s) {
+int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum) {
+	s->rx_errnum = errnum;
 	s->flags |= QRX_STOP;
 	qtx_cancel(s, QRST_STOPPING);
 	return 0;
@@ -158,6 +159,10 @@ static void insert_stream_packet(qstream_t *s, qtx_packet_t *pkt, uint64_t off) 
 		p = rb_child(p, dir);
 	}
 	rb_insert(&s->tx_packets, p, &pkt->rb, dir);
+}
+
+static bool at_tx_eof(qstream_t *s, uint64_t off) {
+	return (s->flags & QTX_FIN) && (off == s->tx.tail);
 }
 
 int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt) {
@@ -210,7 +215,7 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff,
 		qbuf_mark_invalid(&s->tx, *poff, sz);
 		write_big_16(stream_len, sz);
 
-		bool have_fin = (s->flags & QTX_FIN) && (*poff + sz == s->tx.tail);
+		bool have_fin = at_tx_eof(s, *poff + sz);
 
 		if (have_fin || sz) {
 			if (have_fin) {
@@ -254,7 +259,7 @@ void q_ack_stream(qconnection_t *c, const qtx_packet_t *pkt) {
 	if (!(s->flags & QTX_RST) && pkt->off == s->tx.head && pkt->len) {
 		rbnode *n = rb_next(&pkt->rb, RB_RIGHT);
 		size_t len = qbuf_consume(&s->tx, n ? container_of(n, qtx_packet_t, rb)->off : s->tx.tail);
-		if (qtx_eof(s, s->tx.head)) {
+		if (at_tx_eof(s, s->tx.head)) {
 			s->flags |= QRX_DATA_ACK;
 		}
 		if (len && (*c->iface)->data_sent) {

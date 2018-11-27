@@ -288,6 +288,23 @@ build $obj/ext/BearSSL/src/x509/x509_decoder.c.o: extcc ext/BearSSL/src/x509/x50
 build $obj/ext/BearSSL/src/x509/x509_knownkey.c.o: extcc ext/BearSSL/src/x509/x509_knownkey.c
 build $obj/ext/BearSSL/src/x509/x509_minimal.c.o: extcc ext/BearSSL/src/x509/x509_minimal.c
 build $obj/ext/BearSSL/src/x509/x509_minimal_full.c.o: extcc ext/BearSSL/src/x509/x509_minimal_full.c
+build $obj/ext/BearSSL/tools/brssl.c.o: extcc ext/BearSSL/tools/brssl.c
+build $obj/ext/BearSSL/tools/certs.c.o: extcc ext/BearSSL/tools/certs.c
+build $obj/ext/BearSSL/tools/chain.c.o: extcc ext/BearSSL/tools/chain.c
+build $obj/ext/BearSSL/tools/client.c.o: extcc ext/BearSSL/tools/client.c
+build $obj/ext/BearSSL/tools/errors.c.o: extcc ext/BearSSL/tools/errors.c
+build $obj/ext/BearSSL/tools/files.c.o: extcc ext/BearSSL/tools/files.c
+build $obj/ext/BearSSL/tools/impl.c.o: extcc ext/BearSSL/tools/impl.c
+build $obj/ext/BearSSL/tools/keys.c.o: extcc ext/BearSSL/tools/keys.c
+build $obj/ext/BearSSL/tools/names.c.o: extcc ext/BearSSL/tools/names.c
+build $obj/ext/BearSSL/tools/server.c.o: extcc ext/BearSSL/tools/server.c
+build $obj/ext/BearSSL/tools/skey.c.o: extcc ext/BearSSL/tools/skey.c
+build $obj/ext/BearSSL/tools/sslio.c.o: extcc ext/BearSSL/tools/sslio.c
+build $obj/ext/BearSSL/tools/ta.c.o: extcc ext/BearSSL/tools/ta.c
+build $obj/ext/BearSSL/tools/twrch.c.o: extcc ext/BearSSL/tools/twrch.c
+build $obj/ext/BearSSL/tools/vector.c.o: extcc ext/BearSSL/tools/vector.c
+build $obj/ext/BearSSL/tools/verify.c.o: extcc ext/BearSSL/tools/verify.c
+build $obj/ext/BearSSL/tools/xmem.c.o: extcc ext/BearSSL/tools/xmem.c
 build $obj/bearssl.lib: lib $
  $obj/ext/BearSSL/src/aead/ccm.c.o $
  $obj/ext/BearSSL/src/aead/eax.c.o $
@@ -579,5 +596,26 @@ build $obj/bearssl.lib: lib $
  $obj/ext/BearSSL/src/x509/x509_knownkey.c.o $
  $obj/ext/BearSSL/src/x509/x509_minimal.c.o $
  $obj/ext/BearSSL/src/x509/x509_minimal_full.c.o $
+
+
+build $bin/brssl.exe: clink $
+ $obj/ext/BearSSL/tools/brssl.c.o $
+ $obj/ext/BearSSL/tools/certs.c.o $
+ $obj/ext/BearSSL/tools/chain.c.o $
+ $obj/ext/BearSSL/tools/client.c.o $
+ $obj/ext/BearSSL/tools/errors.c.o $
+ $obj/ext/BearSSL/tools/files.c.o $
+ $obj/ext/BearSSL/tools/impl.c.o $
+ $obj/ext/BearSSL/tools/keys.c.o $
+ $obj/ext/BearSSL/tools/names.c.o $
+ $obj/ext/BearSSL/tools/server.c.o $
+ $obj/ext/BearSSL/tools/skey.c.o $
+ $obj/ext/BearSSL/tools/sslio.c.o $
+ $obj/ext/BearSSL/tools/ta.c.o $
+ $obj/ext/BearSSL/tools/twrch.c.o $
+ $obj/ext/BearSSL/tools/vector.c.o $
+ $obj/ext/BearSSL/tools/verify.c.o $
+ $obj/ext/BearSSL/tools/xmem.c.o $
+ $obj/bearssl.lib $
 
 

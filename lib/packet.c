@@ -14,7 +14,7 @@ void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, 
 	}
 	if (level == QC_PROTECTED && num != s->rx_next) {
 		// out of order or dropped packet
-		q_async_send_ack(c, rxtime + QUIC_SHORT_ACK_TIMEOUT);
+		q_async_send_ack(c, rxtime, true);
 	}
 	if (num >= s->rx_next) {
 		s->rx_largest = rxtime;
@@ -84,7 +84,7 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 	size_t ack_size = 1 + 8 + 8 + 1 + 1 + 2 * max_blocks;
 	if (s->p + ack_size > s->e) {
 		return -1;
-	} else if (!b.next) {
+	} else if (!pkts->rx_next) {
 		return 0;
 	}
 
@@ -101,8 +101,8 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 	unsigned num_blocks = 0;
 
 	// rotate left such that the latest (b.next-1) packet is in the top bit
-	unsigned shift = (size_t)(ALIGN_UP(uint64_t, b.next, 64) - b.next);
-	uint64_t rx = (b.mask << shift) | (b.mask >> (64 - shift));
+	unsigned shift = (size_t)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
+	uint64_t rx = (pkts->rx_mask << shift) | (pkts->rx_mask >> (64 - shift));
 
 	// and shift the latest packet out
 	rx <<= 1;
@@ -244,8 +244,8 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		struct long_packet hp = { .level = QC_HANDSHAKE,.key = &hk.vtable };
 		init_initial_cipher(&ik, true, c->peer_id);
 		c->cipher->init(&hk.vtable, c->hs_tx);
-		init = encode_long_packet(c, &p, &ip, *pnow);
-		hs = encode_long_packet(c, &p, &hp, *pnow);
+		init = q_encode_long_packet(c, &p, &ip, *pnow);
+		hs = q_encode_long_packet(c, &p, &hp, *pnow);
 		if (!init || !hs) {
 			return -1;
 		}
@@ -266,10 +266,11 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	uint8_t *packet_number = p.p;
 	p.p = encode_packet_number(p.p, pkts->tx_next);
 	uint8_t *enc_begin = p.p;
+	p.e -= QUIC_TAG_SIZE;
 
 	// ack
 	if (pnow && s->send_ack) {
-		uint8_t exp = c->params->transport.ack_delay_exponent;
+		uint8_t exp = c->local_cfg->ack_delay_exponent;
 		int err = encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), exp ? exp : QUIC_ACK_DELAY_SHIFT);
 		if (err) {
 			return err;
@@ -294,55 +295,13 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	}
 
 	if (s->send_close) {
-		if (encode_close(&p, s->close_errnum)) {
+		if (q_encode_close(c, &p)) {
 			return -1;
 		}
-		pkt->flags |= QTX_PKT_CLOSE;
-		LOG(c->local_cfg->debug, "TX CLOSE 0x%X", s->close_errnum);
-
 	} else if (s->stream) {
-		if (p.p + 1 + 8 + 8 + 2 > p.e) {
+		if (q_encode_stream(c, &p, s->stream, &s->stream_off, pkt)) {
 			return -1;
 		}
-		if (s->stream->flags & QTX_PENDING) {
-			add_pending_stream(c, s->stream);
-		}
-		uint8_t *stream_header = p.p;
-		*(p.p++) = STREAM;
-		p.p = encode_varint(p.p, s->stream->id);
-		if (s->stream_off > 0) {
-			*stream_header |= STREAM_OFF_FLAG;
-			p.p = encode_varint(p.p, s->stream_off);
-		}
-
-		uint8_t *stream_len = NULL;
-		if (include_client_finished) {
-			// specify a length so we can pad the frame out
-			p.p += 2;
-			stream_len = p.p;
-			*stream_header |= STREAM_LEN_FLAG;
-		}
-
-		size_t sz = qbuf_copy(&s->stream->tx, s->stream_off, p.p, (size_t)(p.e - p.p) - QUIC_TAG_SIZE);
-		pkt->stream = s->stream;
-		pkt->off = s->stream_off;
-		pkt->len = (uint16_t)sz;
-		pkt->flags |= QTX_PKT_RETRANSMIT;
-		p.p += sz;
-		s->stream_off += sz;
-
-		if (stream_len) {
-			write_big_16(stream_len - 2, VARINT_16 | (uint16_t)(sz));
-		}
-
-		// set stream fin flag
-		if (qtx_eof(s->stream, s->stream_off)) {
-			*stream_header |= STREAM_FIN_FLAG;
-			pkt->flags |= QTX_PKT_FIN;
-		}
-
-		LOG(c->local_cfg->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d, cfin %d", s->stream->id, pkt->off, pkt->len, (int)include_client_finished);
-
 	} else if (s->force_ack) {
 		// this is a forced packet
 		// add a ping to force the other side to respond
@@ -356,13 +315,13 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		LOG(c->local_cfg->debug, "TX ACK");
 	}
 
-	if (p.p + QUIC_TAG_SIZE > p.e) {
+	if (p.p > p.e) {
 		return -1;
 	}
 
 	// As the server has not yet verified our address, we need to pad out the packet
 	if (include_client_finished) {
-		size_t pad = (size_t)(p.e - p.p) - QUIC_TAG_SIZE;
+		size_t pad = (size_t)(p.e - p.p);
 		memset(p.p, PADDING, pad);
 		p.p += pad;
 	}
@@ -370,6 +329,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	// tag
 	uint8_t *tag = p.p;
 	p.p += QUIC_TAG_SIZE;
+	p.e += QUIC_TAG_SIZE;
 
 	const qcipher_class **k = &c->prot_tx.vtable;
 	(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
@@ -389,13 +349,10 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	}
 	if (pkt->flags & QTX_PKT_RETRANSMIT) {
 		c->retransmit_packets++;
-		add_timed_apc(c->dispatcher, &c->rx_timer, pkt->sent + retransmission_timeout(c, true), &on_retransmission_timeout);
+		q_start_probe_timer(c, pkt->sent);
 	}
 	if (pkt->flags & QTX_PKT_ACK) {
 		cancel_apc(c->dispatcher, &c->tx_timer);
-	}
-	if (pkt->stream) {
-		insert_stream_packet(pkt->stream, pkt);
 	}
 	pkts->tx_next++;
 	if (pnow) {
