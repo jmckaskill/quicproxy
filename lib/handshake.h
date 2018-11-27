@@ -27,13 +27,11 @@ int decode_packet_number(qslice_t *s, uint64_t *pval);
 int encode_client_hello(const qconnection_t *c, qslice_t *ps);
 int encode_server_hello(const qconnection_t *c, qslice_t *ps);
 int encode_encrypted_extensions(const qconnection_t *c, qslice_t *ps);
-int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qconnect_params_t *params);
+int decode_client_hello(qslice_t *s, qconnect_request_t *h, const qconnection_cfg_t *cfg);
 
 int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const void *sig, size_t len);
 int encode_finished(qslice_t *s, const br_hash_class *digest, const void *verify);
-int encode_close(qslice_t *s, int errnum);
-int decode_close(qslice_t *s, uint8_t type, int *perror);
 
 #define QC_PARSE_ERROR -6
 #define QC_WRONG_VERSION -5
@@ -116,6 +114,7 @@ struct crypto_decoder {
 			uint16_t algorithm;
 			size_t len;
 			uint8_t sig[QUIC_MAX_SIG_SIZE];
+			const br_x509_class **x;
 		} v;
 
 		struct {
@@ -129,7 +128,7 @@ const br_hash_class **init_cipher(qconnection_t *c, const qcipher_class *cipher)
 void init_client_decoder(qconnection_t *c);
 void init_server_decoder(qconnection_t *c);
 void init_protected_keys(qconnection_t *c, const uint8_t *msg_hash);
-int decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *frame_data);
+int q_decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *frame_data, tick_t rxtime);
 
 
 

@@ -1,5 +1,6 @@
 #include "kdf.h"
 #include <cutils/log.h>
+#include <cutils/endian.h>
 
 
 static void hkdf_extract(void *out, const br_hash_class *digest, const void *salt, size_t saltsz, const void *ikm, size_t ikmsz) {

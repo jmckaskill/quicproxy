@@ -1,5 +1,6 @@
 #include "cipher.h"
 #include "kdf.h"
+#include <cutils/endian.h>
 
 static void expand_data_key(const br_hash_class *digest, const void *traffic, void *key, size_t key_size) {
 	hkdf_expand_label(key, key_size, digest, traffic, "quic key", NULL);

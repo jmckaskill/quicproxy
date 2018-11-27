@@ -30,8 +30,12 @@
     <ClCompile Include="handshake.c" />
     <ClCompile Include="kdf.c" />
     <ClCompile Include="pem.c" />
+    <ClCompile Include="scheduler.c" />
+    <ClCompile Include="shutdown.c" />
     <ClCompile Include="signature.c" />
     <ClCompile Include="stream.c" />
+    <ClCompile Include="packet.c" />
+    <ClCompile Include="timeouts.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="buffer.h" />
@@ -39,6 +43,7 @@
     <ClInclude Include="common.h" />
     <ClInclude Include="connection.h" />
     <ClInclude Include="handshake.h" />
+    <ClInclude Include="internal.h" />
     <ClInclude Include="kdf.h" />
     <ClInclude Include="pem.h" />
     <ClInclude Include="signature.h" />

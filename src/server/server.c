@@ -146,7 +146,7 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
-	qconnect_params_t params = {
+	qconnection_cfg_t params = {
 		.groups = TLS_DEFAULT_GROUPS,
 		.ciphers = TLS_DEFAULT_CIPHERS,
 		.signatures = TLS_DEFAULT_SIGNATURES,

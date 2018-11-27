@@ -213,11 +213,13 @@ size_t qbuf_insert(qbuffer_t *b, uint64_t off, const void *data, size_t len) {
 	}
 }
 
-void qbuf_consume(qbuffer_t *b, uint64_t max) {
+size_t qbuf_consume(qbuffer_t *b, uint64_t max) {
 	assert(max <= b->tail);
 	size_t start = (size_t)(b->head % b->size);
 	size_t end = (size_t)(max % b->size);
-	b->head += iterate_bits(b, 0, start, end);
+	size_t len = iterate_bits(b, 0, start, end);
+	b->head += len;
+	return len;
 }
 
 void qbuf_mark_invalid(qbuffer_t *b, uint64_t off, size_t len) {

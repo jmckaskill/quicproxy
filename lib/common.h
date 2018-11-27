@@ -10,7 +10,6 @@
 #pragma warning(pop)
 #endif
 
-#include <cutils/endian.h>
 #include <cutils/apc.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -25,8 +24,11 @@ typedef ptrdiff_t ssize_t;
 
 typedef struct logger log_t;
 typedef struct qconnection qconnection_t;
-typedef struct qconnect_params qconnect_params_t;
+typedef struct qconnection_cfg qconnection_cfg_t;
 typedef struct qconnect_request qconnect_request_t;
+typedef struct qslice qslice_t;
+typedef struct qstream qstream_t;
+typedef struct qtx_packet qtx_packet_t;
 
 static inline size_t digest_size(const br_hash_class *digest_class) {
 	return (size_t)(digest_class->desc >> BR_HASHDESC_OUT_OFF)
@@ -40,6 +42,8 @@ static inline void *append(void *to, const void *from, size_t sz) {
 
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 #define QUIC_MAX_SECRET_SIZE 32
 #define QUIC_MAX_HASH_SIZE 32
@@ -71,55 +75,3 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define HELLO_MIN_PACKET_SIZE 1200
 #define DEFAULT_PACKET_SIZE 1280
 #define TLS_VERSION 0x304
-
-#define VARINT_16 UINT16_C(0x4000)
-#define VARINT_32 UINT32_C(0x80000000)
-#define VARINT_64 UINT64_C(0xC000000000000000)
-
-// packet types
-#define LONG_HEADER_FLAG 0x80
-#define INITIAL_PACKET 0xFF
-#define RETRY_PACKET 0xFE
-#define HANDSHAKE_PACKET 0xFD
-#define PROTECTED_PACKET 0xFC
-#define SHORT_PACKET 0x30
-#define SHORT_PACKET_MASK 0xB8
-
-// frame types
-#define PADDING 0
-#define RST_STREAM 1
-#define CONNECTION_CLOSE 2
-#define APPLICATION_CLOSE 3
-#define MAX_DATA 4
-#define MAX_STREAM_DATA 5
-#define MAX_STREAM_ID 6
-#define PING 7
-#define BLOCKED 8
-#define STREAM_BLOCKED 9
-#define STREAM_ID_BLOCKED 0x0A
-#define NEW_CONNECTION_ID 0x0B
-#define STOP_SENDING 0x0C
-#define RETIRE_CONNECTION_ID 0x0D
-#define PATH_CHALLENGE 0x0E
-#define PATH_RESPONSE 0x0F
-#define STREAM 0x10
-#define STREAM_OFF_FLAG 4
-#define STREAM_LEN_FLAG 2
-#define STREAM_FIN_FLAG 1
-#define STREAM_MASK 0xF8
-#define CRYPTO 0x18
-#define NEW_TOKEN 0x19
-#define ACK 0x1A
-#define ACK_MASK 0xFE
-#define ACK_ECN_FLAG 1
-
-#define STREAM_CLIENT 0
-#define STREAM_SERVER 1
-#define STREAM_SERVER_MASK 1
-#define STREAM_BIDI 0
-#define STREAM_UNI 2
-#define STREAM_UNI_MASK 2
-
-#define PENDING_BIDI 0
-#define PENDING_UNI 1
-
