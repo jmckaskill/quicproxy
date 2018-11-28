@@ -120,8 +120,8 @@ struct qconnection {
 	qpacket_buffer_t pkts[3];
 	size_t retransmit_packets;
 	rbtree rx_streams[4];
-	uint64_t next_stream_id[4];
-	uint64_t max_stream_id[4];
+	uint64_t next_id[4];
+	uint64_t max_id[4];
 	rbtree pending_streams[2];
 	rbtree tx_streams;
 	uint64_t tx_max_data;

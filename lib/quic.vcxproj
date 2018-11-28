@@ -27,6 +27,7 @@
     <ClCompile Include="buffer_test.c" />
     <ClCompile Include="cipher.c" />
     <ClCompile Include="connection.c" />
+    <ClCompile Include="cwnd.c" />
     <ClCompile Include="handshake.c" />
     <ClCompile Include="kdf.c" />
     <ClCompile Include="packet.c" />

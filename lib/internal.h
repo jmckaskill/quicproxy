@@ -140,8 +140,8 @@ struct short_packet {
 int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow);
 
 // Streams
-void q_setup_local_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data, uint64_t max_uni_data);
-void q_setup_remote_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data);
+void q_setup_local_stream(qconnection_t *c, qstream_t *s, uint64_t id);
+void q_setup_remote_stream(qconnection_t *c, qstream_t *s, uint64_t id);
 int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const void *p, size_t sz);
 int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off);
 int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum);

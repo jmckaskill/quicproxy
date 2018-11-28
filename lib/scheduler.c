@@ -5,8 +5,8 @@ static void add_local_stream(qconnection_t *c, qstream_t *s) {
 	int uni = s->rx.size ? STREAM_BIDI : STREAM_UNI;
 	int pending = s->rx.size ? PENDING_BIDI : PENDING_UNI;
 	int local = c->is_client ? STREAM_CLIENT : STREAM_SERVER;
-	uint64_t id = ((c->next_stream_id[pending]++) << 2) | uni | local;
-	q_setup_local_stream(s, id, c->peer_cfg.stream_data_bidi_remote, c->peer_cfg.stream_data_uni);
+	uint64_t id = ((c->next_id[pending]++) << 2) | uni | local;
+	q_setup_local_stream(c, s, id);
 	rbtree *rx = &c->rx_streams[uni | local];
 	rb_insert(rx, rb_begin(rx, RB_RIGHT), &s->rxnode, RB_RIGHT);
 }
@@ -14,7 +14,7 @@ static void add_local_stream(qconnection_t *c, qstream_t *s) {
 static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
 	*ps = NULL;
 
-	if ((id >> 2) >= c->max_stream_id[id & 3]) {
+	if ((id >> 2) >= c->max_id[id & 3]) {
 		return QC_ERR_STREAM_ID;
 	} else if (c->closing) {
 		return 0;
@@ -32,7 +32,7 @@ static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
 		}
 	}
 
-	if ((id >> 2) < c->next_stream_id[id & 3]
+	if ((id >> 2) < c->next_id[id & 3]
 		|| (id & STREAM_SERVER) == (c->is_client ? 0 : STREAM_SERVER)) {
 		// this must be an out of order frame from an old stream
 		// we already closed
@@ -46,13 +46,13 @@ static int create_remote_stream(qconnection_t *c, uint64_t id, qstream_t **ps) {
 	// now we need to create the stream (and all the intermediate streams)
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
 	rbnode *n = rb_begin(&c->rx_streams[id & 3], RB_RIGHT);
-	while (c->next_stream_id[id & 3] <= (id >> 2)) {
+	while (c->next_id[id & 3] <= (id >> 2)) {
 		qstream_t *s = (*c->iface)->new_stream(c->iface, uni);
 		if (!s) {
 			return QC_ERR_INTERNAL;
 		}
 		*ps = s;
-		q_setup_remote_stream(s, (c->next_stream_id[id & 3]++ << 2) | (id & 3), c->peer_cfg.stream_data_bidi_local);
+		q_setup_remote_stream(c, s, (c->next_id[id & 3]++ << 2) | (id & 3));
 		rb_insert(&c->rx_streams[id & 3], n, &s->rxnode, RB_RIGHT);
 		n = &s->rxnode;
 		if (s->flags & QTX_DIRTY) {
@@ -104,7 +104,7 @@ int q_send_data(qconnection_t *c, int ignore_cwnd_pkts, tick_t now) {
 
 	for (int pend = 0; pend <= 1; pend++) {
 		rbtree *p = &c->pending_streams[pend];
-		for (rbnode *n = rb_begin(p, RB_LEFT); n != NULL && c->next_stream_id[pend] < c->max_stream_id[pend];) {
+		for (rbnode *n = rb_begin(p, RB_LEFT); n != NULL && c->next_id[pend] < c->max_id[pend];) {
 			qstream_t *s = container_of(n, qstream_t, txnode);
 			n = rb_next(n, RB_RIGHT);
 			rb_remove(p, &s->txnode);
@@ -278,10 +278,10 @@ int q_decode_stream_data(qconnection_t *c, qslice_t *p) {
 void q_update_scheduler_from_cfg(qconnection_t *c) {
 	int local = (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
-	c->max_stream_id[STREAM_BIDI | local] = c->peer_cfg.bidi_streams;
-	c->max_stream_id[STREAM_BIDI | remote] = c->local_cfg->bidi_streams;
-	c->max_stream_id[STREAM_UNI | local] = c->peer_cfg.uni_streams;
-	c->max_stream_id[STREAM_UNI | remote] = c->local_cfg->uni_streams;
+	c->max_id[STREAM_BIDI | local] = c->peer_cfg.bidi_streams;
+	c->max_id[STREAM_BIDI | remote] = c->local_cfg->bidi_streams;
+	c->max_id[STREAM_UNI | local] = c->peer_cfg.uni_streams;
+	c->max_id[STREAM_UNI | remote] = c->local_cfg->uni_streams;
 	c->tx_max_data = c->peer_cfg.max_data;
 	c->rx_max_data = c->local_cfg->max_data;
 }
@@ -292,7 +292,7 @@ int q_decode_max_id(qconnection_t *c, qslice_t *p) {
 		return QC_ERR_FRAME_ENCODING;
 	}
 	int uni = (id & 1);
-	uint64_t *pmax = &c->max_stream_id[(uni << 1) | (c->is_client ? STREAM_SERVER : STREAM_CLIENT)];
+	uint64_t *pmax = &c->max_id[(uni << 1) | (c->is_client ? STREAM_SERVER : STREAM_CLIENT)];
 	*pmax = MAX(*pmax, id >> 1);
 	return 0;
 }
@@ -308,9 +308,13 @@ int q_decode_max_data(qconnection_t *c, qslice_t *p) {
 
 int q_encode_max_data(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
 	// send in every packet for now
-	*(p->p++) = MAX_DATA;
-	p->p = encode_varint(p->p, c->rx_max_data);
-	pkt->flags |= QTX_PKT_MAX_DATA;
+	uint64_t new_max = c->data_received + c->local_cfg->max_data;
+	if (new_max > c->rx_max_data) {
+		c->rx_max_data = new_max;
+		*(p->p++) = MAX_DATA;
+		p->p = encode_varint(p->p, new_max);
+		pkt->flags |= QTX_PKT_MAX_DATA;
+	}
 	return 0;
 }
 
@@ -321,12 +325,23 @@ void q_lost_max_data(qconnection_t *c, const qtx_packet_t *pkt) {
 }
 
 int q_encode_max_id(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
-	// send in every packet for now
-	*(p->p++) = MAX_STREAM_ID;
-	p->p = encode_varint(p->p, c->max_stream_id[STREAM_UNI | (c->is_client ? STREAM_SERVER : STREAM_CLIENT)] >> 1);
-	*(p->p++) = MAX_STREAM_ID;
-	p->p = encode_varint(p->p, c->max_stream_id[STREAM_UNI | (c->is_client ? STREAM_SERVER : STREAM_CLIENT)] >> 1);
-	pkt->flags |= QTX_PKT_MAX_ID_BIDI | QTX_PKT_MAX_ID_UNI;
+	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
+	int uni = STREAM_UNI | remote;
+	int bidi = STREAM_BIDI | remote;
+	uint64_t new_uni = c->next_id[uni] + c->local_cfg->uni_streams;
+	uint64_t new_bidi = c->next_id[bidi] + c->local_cfg->bidi_streams;
+	if (new_uni > c->max_id[uni]) {
+		c->max_id[uni] = new_uni;
+		*(p->p++) = MAX_STREAM_ID;
+		p->p = encode_varint(p->p, ((new_uni << 2) | uni) >> 1);
+		pkt->flags |= QTX_PKT_MAX_ID_UNI;
+	}
+	if (new_bidi > c->max_id[bidi]) {
+		c->max_id[bidi] = new_bidi;
+		*(p->p++) = MAX_STREAM_ID;
+		p->p = encode_varint(p->p, ((new_bidi << 2) | bidi) >> 1);
+		pkt->flags |= QTX_PKT_MAX_ID_BIDI;
+	}
 	return 0;
 }
 

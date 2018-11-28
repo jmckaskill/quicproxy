@@ -276,11 +276,19 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 
 	// ack
 	if (pnow && s->send_ack) {
-		int err = encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), c->local_cfg->ack_delay_exponent);
-		if (err) {
-			return err;
+		if (encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), c->local_cfg->ack_delay_exponent)) {
+			return -1;
 		}
 		pkt->flags |= QTX_PKT_ACK;
+	}
+
+	// max data & id
+	// These decide for themselves whether to include data.
+	if (q_encode_max_data(c, &p, pkt)) {
+		return -1;
+	}
+	if (q_encode_max_id(c, &p, pkt)) {
+		return -1;
 	}
 
 	// client finished

@@ -70,3 +70,4 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define HELLO_MIN_PACKET_SIZE 1200
 #define DEFAULT_PACKET_SIZE 1280
 #define TLS_VERSION 0x304
+

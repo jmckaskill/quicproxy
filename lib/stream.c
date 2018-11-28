@@ -6,30 +6,36 @@ void qinit_stream(qstream_t *s, void *txbuf, size_t txlen, void *rxbuf, size_t r
 	qbuf_init(&s->rx, rxbuf, rxlen); 
 	qbuf_init(&s->tx, txbuf, txlen);
 	s->id = UINT64_MAX;
-	s->rx_end = UINT64_MAX;
 }
 
-void q_setup_remote_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data) {
+void q_setup_remote_stream(qconnection_t *c, qstream_t *s, uint64_t id) {
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
 	if (uni) {
 		qbuf_init(&s->tx, NULL, 0);
 		s->flags |= QTX_COMPLETE | QTX_RST | QTX_RST_SENT | QRX_RST_ACK;
 		s->tx_max = 0;
+		s->rx_max = c->local_cfg->stream_data_uni;
+		s->rx_end = UINT64_MAX;
 	} else {
-		s->tx_max = max_bidi_data;
+		s->tx_max = c->peer_cfg.stream_data_bidi_local;
+		s->rx_max = c->local_cfg->stream_data_bidi_remote;
+		s->rx_end = UINT64_MAX;
 	}
 	s->id = id;
 }
 
-void q_setup_local_stream(qstream_t *s, uint64_t id, uint64_t max_bidi_data, uint64_t max_uni_data) {
+void q_setup_local_stream(qconnection_t *c, qstream_t *s, uint64_t id) {
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
 	if (uni) {
 		qbuf_init(&s->rx, NULL, 0);
 		s->flags |= QRX_COMPLETE | QTX_STOP | QTX_STOP_SENT | QRX_STOP_ACK;
+		s->tx_max = c->peer_cfg.stream_data_uni;
+		s->rx_max = 0;
 		s->rx_end = 0;
-		s->tx_max = max_uni_data;
 	} else {
-		s->tx_max = max_bidi_data;
+		s->tx_max = c->peer_cfg.stream_data_bidi_remote;
+		s->rx_max = c->local_cfg->stream_data_bidi_local;
+		s->rx_end = UINT64_MAX;
 	}
 	s->id = id;
 }
@@ -106,10 +112,16 @@ int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const 
 	size_t ret = qbuf_insert(&s->rx, off, p, sz);
 	if (ret && s->rx.tail == s->rx_end) {
 		s->flags |= QRX_COMPLETE;
+	} else if (ret) {
+		// schedule the stream to transmit to update flow control
+		s->flags |= QTX_DIRTY;
+		qc_flush(c, s);
 	}
+
 	if (ret && (*c->iface)->data_received) {
 		(*c->iface)->data_received(c->iface, s);
 	}
+
 	qbuf_fold(&s->rx);
 	remove_stream_if_complete(c, s);
 	return 0;
@@ -172,11 +184,15 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff,
 	assert(s->id != UINT64_MAX);
 
 	// send in every packet for now
-	*(p->p++) = MAX_STREAM_DATA;
-	p->p = encode_varint(p->p, s->id);
-	p->p = encode_varint(p->p, qbuf_max(&s->rx));
-	pkt->flags |= QTX_PKT_RETRANSMIT | QTX_PKT_STREAM_DATA;
-	pkt->stream = s;
+	uint64_t new_max = qbuf_max(&s->rx);
+	if (new_max > s->rx_max) {
+		s->rx_max = new_max;
+		*(p->p++) = MAX_STREAM_DATA;
+		p->p = encode_varint(p->p, s->id);
+		p->p = encode_varint(p->p, s->rx_max);
+		pkt->flags |= QTX_PKT_STREAM_DATA;
+		pkt->stream = s;
+	}
 
 	if ((s->flags & QTX_STOP) && !(s->flags & QTX_STOP_SENT)) {
 		*(p->p++) = STOP_SENDING;

@@ -14,6 +14,7 @@ struct qstream {
 
 	uint64_t rx_end;
 	uint64_t rx_data;
+	uint64_t rx_max;
 	uint64_t tx_sent;
 	uint64_t tx_max;
 
