@@ -1410,8 +1410,6 @@ int q_decode_crypto(qconnection_t *c, enum qcrypto_level level, qslice_t *fd, ti
 			c->handshake_complete = true;
 			LOG(c->local_cfg->debug, "server handshake complete");
 		}
-		c->peer_verified = true;
-		q_update_scheduler_from_cfg(c);
 		q_start_runtime(c, rxtime);
 		GOTO_LEVEL(QC_PROTECTED, FINISHED_LEVEL);
 		goto start_ticket;

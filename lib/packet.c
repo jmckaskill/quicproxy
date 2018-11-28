@@ -282,12 +282,16 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		pkt->flags |= QTX_PKT_ACK;
 	}
 
+	if (!s->ignore_cwnd) {
+		size_t winsz = q_cwnd_allowed_bytes(c);
+		if (p.p + winsz < p.e) {
+			p.e = p.p + winsz;
+		}
+	}
+
 	// max data & id
 	// These decide for themselves whether to include data.
-	if (q_encode_max_data(c, &p, pkt)) {
-		return -1;
-	}
-	if (q_encode_max_id(c, &p, pkt)) {
+	if (q_encode_scheduler(c, &p, pkt)) {
 		return -1;
 	}
 
@@ -367,6 +371,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	if (pkt->flags & QTX_PKT_ACK) {
 		cancel_apc(c->dispatcher, &c->tx_timer);
 	}
+	q_cwnd_sent(c, pkt);
 	pkts->tx_next++;
 	if (pnow) {
 		*pnow = pkt->sent;

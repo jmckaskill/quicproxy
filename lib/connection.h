@@ -129,6 +129,13 @@ struct qconnection {
 	uint64_t rx_max_data;
 	uint64_t data_received;
 
+	// congestion window
+	uint64_t congestion_window;
+	uint64_t bytes_in_flight;
+	uint64_t end_of_recovery;
+	uint64_t slow_start_threshold;
+	uint64_t ecn_ce_counter;
+
 	// timeout
 	int rx_timer_count;
 	apc_t rx_timer;

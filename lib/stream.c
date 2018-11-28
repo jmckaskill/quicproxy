@@ -177,6 +177,23 @@ static bool at_tx_eof(qstream_t *s, uint64_t off) {
 	return (s->flags & QTX_FIN) && (off == s->tx.tail);
 }
 
+size_t q_stream_cwnd_size(const qtx_packet_t *pkt) {
+	size_t ret = 0;
+	if (pkt->flags & QTX_PKT_STREAM_DATA) {
+		ret += 1 + 4 + 4;
+	}
+	if (pkt->flags & QTX_PKT_STOP) {
+		ret += 1 + 2;
+	}
+	if (pkt->flags & QTX_RST) {
+		ret += 1 + 2 + 4;
+	}
+	if (pkt->len || (pkt->flags & QTX_FIN)) {
+		ret += 1 + 4 + 4 + 2 + pkt->len;
+	}
+	return ret;
+}
+
 int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt) {
 	if (p->p + 1 + 8 + 8 + 2 > p->e) {
 		return -1;

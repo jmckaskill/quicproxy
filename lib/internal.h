@@ -149,6 +149,7 @@ int q_recv_reset(qconnection_t *c, qstream_t *s, int errnum, uint64_t off);
 int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
 void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt);
 void q_lost_stream(qconnection_t *c, qtx_packet_t *pkt);
+size_t q_stream_cwnd_size(const qtx_packet_t *pkt);
 
 // Scheduler
 
@@ -162,13 +163,10 @@ int q_decode_stream_data(qconnection_t *c, qslice_t *s);
 int q_decode_max_data(qconnection_t *c, qslice_t *s);
 int q_decode_max_id(qconnection_t *c, qslice_t *p);
 
-int q_encode_max_data(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt);
-void q_ack_max_data(qconnection_t *c, const qtx_packet_t *pkt);
-void q_lost_max_data(qconnection_t *c, const qtx_packet_t *pkt);
-
-int q_encode_max_id(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt);
-void q_ack_max_id(qconnection_t *c, const qtx_packet_t *pkt);
-void q_lost_max_id(qconnection_t *c, const qtx_packet_t *pkt);
+size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt);
+int q_encode_scheduler(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt);
+void q_ack_scheduler(qconnection_t *c, const qtx_packet_t *pkt);
+void q_lost_scheduler(qconnection_t *c, const qtx_packet_t *pkt);
 
 void q_remove_stream(qconnection_t *c, qstream_t *s);
 
@@ -196,6 +194,17 @@ void q_start_handshake(qconnection_t *c, tick_t now);
 void q_start_runtime(qconnection_t *c, tick_t now);
 void q_start_shutdown(qconnection_t *c, tick_t now);
 void q_async_shutdown(qconnection_t *c);
+
+// Congestion
+void q_cwnd_init(qconnection_t *c);
+void q_cwnd_sent(qconnection_t *c, const qtx_packet_t *pkt);
+void q_cwnd_ack(qconnection_t *c, uint64_t pktnum, const qtx_packet_t *pkt);
+void q_cwnd_ecn(qconnection_t *c, uint64_t pktnum, uint64_t ecn_ce);
+void q_cwnd_lost(qconnection_t *c, const qtx_packet_t *pkt);
+void q_cwnd_largest_lost(qconnection_t *c, uint64_t pktnum);
+void q_cwnd_rto_verified(qconnection_t *c, uint64_t pktnum);
+size_t q_cwnd_allowed_bytes(qconnection_t *c);
+
 
 static inline uint64_t q_encode_ack_delay(tickdiff_t delay, unsigned exp) {
 	return delay >> (exp ? exp : QUIC_ACK_DELAY_SHIFT);

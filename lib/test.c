@@ -321,10 +321,10 @@ int main(int argc, const char *argv[]) {
 
 	// the ack will be coalesced
 	EXPECT_EQ(0, c.msgn);
-	NOW += 24 * MS;
+	NOW += 10 * MS;
 	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(0, c.msgn);
-	NOW += 1 * MS;
+	NOW += 15 * MS;
 	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, c.msgn);
 

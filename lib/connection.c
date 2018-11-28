@@ -22,18 +22,13 @@ static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64
 		}
 
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
+		q_cwnd_ack(c, num, pkt);
 		if (pkt->stream) {
 			q_ack_stream(c, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & QTX_PKT_MAX_DATA) {
-			q_ack_max_data(c, pkt);
-		}
-		if (flags & QTX_PKT_MAX_ID_UNI) {
-			q_ack_max_id(c, pkt);
-		}
-		if (flags & QTX_PKT_MAX_ID_BIDI) {
-			q_ack_max_id(c, pkt);
+		if (flags & (QTX_PKT_MAX_DATA | QTX_PKT_MAX_ID_BIDI | QTX_PKT_MAX_ID_UNI)) {
+			q_ack_scheduler(c, pkt);
 		}
 		if (flags & QTX_PKT_CLOSE) {
 			q_ack_close(c);
@@ -65,18 +60,13 @@ static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64
 			continue;
 		}
 		// packet is lost
+		q_cwnd_lost(c, pkt);
 		if (pkt->stream) {
 			q_lost_stream(c, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & QTX_PKT_MAX_DATA) {
-			q_lost_max_data(c, pkt);
-		}
-		if (flags & QTX_PKT_MAX_ID_UNI) {
-			q_lost_max_id(c, pkt);
-		}
-		if (flags & QTX_PKT_MAX_ID_BIDI) {
-			q_lost_max_id(c, pkt);
+		if (flags & (QTX_PKT_MAX_DATA | QTX_PKT_MAX_ID_BIDI | QTX_PKT_MAX_ID_UNI)) {
+			q_lost_scheduler(c, pkt);
 		}
 		if (flags & QTX_PKT_CLOSE) {
 			q_lost_close(c, now);
@@ -112,6 +102,7 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 			|| decode_varint(s, &ce)) {
 			return QC_ERR_FRAME_ENCODING;
 		}
+		q_cwnd_ecn(c, largest, ce);
 	}
 
 	qpacket_buffer_t *b = &c->pkts[level];
@@ -121,6 +112,7 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 		return QC_ERR_FRAME_ENCODING;
 	}
 
+	uint64_t largest_lost = UINT64_MAX;
 	qtx_packet_t *pkt = &b->sent[largest % b->sent_len];
 
 	if (pkt->off != UINT64_MAX) {
@@ -154,12 +146,18 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 		uint64_t from = to - block;
 		process_gap_range(c, level, to, next - 1, largest, rxtime);
 		process_ack_range(c, level, from, to);
+		largest_lost = from;
 		next = from;
 		count--;
 	}
 
 	if (b->tx_oldest < next) {
 		process_gap_range(c, level, b->tx_oldest, next - 1, largest, rxtime);
+		largest_lost = b->tx_oldest;
+	}
+
+	if (largest_lost != UINT64_MAX) {
+		q_cwnd_largest_lost(c, largest_lost);
 	}
 
 	if (!c->retransmit_packets && c->peer_verified) {

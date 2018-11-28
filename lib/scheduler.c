@@ -306,25 +306,31 @@ int q_decode_max_data(qconnection_t *c, qslice_t *p) {
 	return 0;
 }
 
-int q_encode_max_data(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
-	// send in every packet for now
-	uint64_t new_max = c->data_received + c->local_cfg->max_data;
-	if (new_max > c->rx_max_data) {
-		c->rx_max_data = new_max;
+size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt) {
+	size_t ret = 0;
+	if (pkt->flags & QTX_PKT_MAX_DATA) {
+		ret += 1 + 4;
+	}
+	if (pkt->flags & QTX_PKT_MAX_ID_UNI) {
+		ret += 1 + 4;
+	}
+	if (pkt->flags & QTX_PKT_MAX_ID_BIDI) {
+		ret += 1 + 4;
+	}
+	return ret;
+}
+
+int q_encode_scheduler(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
+	// MAX_DATA
+	uint64_t new_data = c->data_received + c->local_cfg->max_data;
+	if (new_data > c->rx_max_data) {
+		c->rx_max_data = new_data;
 		*(p->p++) = MAX_DATA;
-		p->p = encode_varint(p->p, new_max);
+		p->p = encode_varint(p->p, new_data);
 		pkt->flags |= QTX_PKT_MAX_DATA;
 	}
-	return 0;
-}
 
-void q_ack_max_data(qconnection_t *c, const qtx_packet_t *pkt) {
-}
-
-void q_lost_max_data(qconnection_t *c, const qtx_packet_t *pkt) {
-}
-
-int q_encode_max_id(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
+	// Max Stream IDs
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
 	int uni = STREAM_UNI | remote;
 	int bidi = STREAM_BIDI | remote;
@@ -345,10 +351,10 @@ int q_encode_max_id(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt) {
 	return 0;
 }
 
-void q_ack_max_id(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_ack_scheduler(qconnection_t *c, const qtx_packet_t *pkt) {
 }
 
-void q_lost_max_id(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_lost_scheduler(qconnection_t *c, const qtx_packet_t *pkt) {
 }
 
 

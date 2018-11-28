@@ -11,6 +11,7 @@ rule run-test
 build $obj/quic/buffer.o: cc lib/buffer.c
 build $obj/quic/cipher.o: cc lib/cipher.c
 build $obj/quic/connection.o: cc lib/connection.c
+build $obj/quic/cwnd.o: cc lib/cwnd.c
 build $obj/quic/handshake.o: cc lib/handshake.c
 build $obj/quic/kdf.o: cc lib/kdf.c
 build $obj/quic/packet.o: cc lib/packet.c
@@ -24,6 +25,7 @@ build $obj/quic.lib: lib $
  $obj/quic/buffer.o $
  $obj/quic/cipher.o $
  $obj/quic/connection.o $
+ $obj/quic/cwnd.o $
  $obj/quic/handshake.o $
  $obj/quic/kdf.o $
  $obj/quic/packet.o $
