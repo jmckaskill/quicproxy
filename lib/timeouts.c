@@ -183,7 +183,7 @@ static void on_idle_timeout(apc_t *w, tick_t now) {
 
 void q_start_idle_timer(qconnection_t *c, tick_t now) {
 	if (!c->closing) {
-		add_timed_apc(c->dispatcher, &c->rx_timer, now + idle_timeout(c), &on_idle_timeout);
+		add_timed_apc(c->dispatcher, &c->idle_timer, now + idle_timeout(c), &on_idle_timeout);
 	}
 }
 

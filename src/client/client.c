@@ -18,8 +18,9 @@ struct client {
 	qstream_t stream;
 	uint8_t txbuf[4096];
 	uint8_t rxbuf[4096];
-	qtx_packet_t pktbuf[266];
+	uint8_t pktbuf[4096];
 	log_t *debug;
+	br_x509_minimal_context x509;
 };
 
 static void client_close(const qinterface_t **vt) {
@@ -45,13 +46,22 @@ static void client_read(const qinterface_t **vt, qstream_t *stream) {
 	LOG(c->debug, "received '%s'", buf);
 }
 
+static const br_x509_class **client_start_chain(const qinterface_t **vt, const char *server_name) {
+	struct client *c = (struct client*) vt;
+	c->x509.vtable->start_chain(&c->x509.vtable, server_name);
+	return &c->x509.vtable;
+}
+
 static const qinterface_t client_interface = {
 	&client_close,
 	NULL,
 	&client_send,
 	NULL,
 	NULL,
+	NULL,
 	&client_read,
+	NULL,
+	&client_start_chain,
 };
 
 int main(int argc, const char *argv[]) {
@@ -64,7 +74,6 @@ int main(int argc, const char *argv[]) {
 	str_t ca_file = str_init("ca.crt");
 	int port = 8443;
 	const char *host = "localhost";
-	br_x509_minimal_context x509;
 
 	flag_int(&port, 0, "port", "NUM", "Port to connect to");
 	flag_string(&host, 0, "host", "NAME", "Hostname to connect to");
@@ -86,7 +95,7 @@ int main(int argc, const char *argv[]) {
 		if (!num) {
 			FATAL(c.debug, "failed to read CAs from '%s'", ca_file.c_str);
 		}
-		br_x509_minimal_init_full(&x509, ta, num);
+		br_x509_minimal_init_full(&c.x509, ta, num);
 		unmap_file(&caf);
 	}
 
@@ -107,7 +116,7 @@ int main(int argc, const char *argv[]) {
 	dispatcher_t d = { 0 };
 
 	c.fd = fd;
-	if (qc_connect(&c.conn, &d, &c.vtable, "localhost", &params, c.pktbuf, sizeof(c.pktbuf) / sizeof(c.pktbuf[0]))) {
+	if (qc_connect(&c.conn, &d, &c.vtable, "localhost", &params, c.pktbuf, sizeof(c.pktbuf))) {
 		FATAL(c.debug, "failed to connect to [%s]:%d", host, port);
 	}
 	LOG(c.debug, "");

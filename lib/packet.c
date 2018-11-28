@@ -44,14 +44,14 @@ void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, 
 // These versions do not protect against a zero value
 #if defined __GNUC__
 static unsigned clzl(uint64_t v) {
-#if defined __amd64__ 
+#if defined __amd64__
 	return __builtin_clzl(v);
 #else
 	uint32_t lo = (uint32_t)v;
 	uint32_t hi = (uint32_t)(v >> 32);
 	return hi ? __builtin_clz(hi) : (32 + __builtin_clz(lo));
-}
 #endif
+}
 #elif defined _MSC_VER
 #include <intrin.h>
 #if defined _M_X64

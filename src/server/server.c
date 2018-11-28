@@ -23,7 +23,7 @@ struct server {
 	qconnection_t conn;
 	qstream_t stream;
 	bool stream_opened;
-	qtx_packet_t pktbuf[256];
+	uint8_t pktbuf[4096];
 	uint8_t txbuf[4096];
 	uint8_t rxbuf[4096];
 };
@@ -211,7 +211,7 @@ int main(int argc, const char *argv[]) {
 				}
 				s.salen = salen;
 				memcpy(&s.ss, &ss, salen);
-				if (qc_accept(&s.conn, &d, &s.vtable, &req, &signer.vtable, s.pktbuf, sizeof(s.pktbuf)/sizeof(s.pktbuf[0]))) {
+				if (qc_accept(&s.conn, &d, &s.vtable, &req, &signer.vtable, s.pktbuf, sizeof(s.pktbuf))) {
 					LOG(debug, "failed to accept request");
 					continue;
 				}
