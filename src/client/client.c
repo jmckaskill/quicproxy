@@ -5,6 +5,7 @@
 #include <cutils/timer.h>
 #include <cutils/file.h>
 #include <cutils/log.h>
+#include <cutils/endian.h>
 
 static tick_t get_tick() {
 	uint64_t ns = monotonic_ns();
@@ -21,6 +22,7 @@ struct client {
 	uint8_t pktbuf[4096];
 	log_t *debug;
 	br_x509_minimal_context x509;
+	uint32_t counter;
 };
 
 static void client_close(const qinterface_t **vt) {
@@ -38,12 +40,26 @@ static int client_send(const qinterface_t **vt, const void *addr, const void *bu
 	return 0;
 }
 
-static void client_read(const qinterface_t **vt, qstream_t *stream) {
+static void client_received(const qinterface_t **vt, qstream_t *stream) {
 	struct client *c = (struct client*) vt;
 	char buf[1024];
 	size_t sz = qrx_read(stream, buf, sizeof(buf) - 1);
 	buf[sz] = 0;
 	LOG(c->debug, "received '%s'", buf);
+}
+
+static void client_sent(const qinterface_t **vt, qstream_t *stream) {
+	struct client *c = (struct client*) vt;
+	while (qtx_size(stream) >= 8) {
+		if (c->counter == 1000) {
+			qtx_finish(stream);
+			break;
+		}
+		char buf[9];
+		sprintf(buf, "%08x", c->counter++);
+		qtx_write(stream, buf, 8);
+	}
+	qc_flush(&c->conn, stream);
 }
 
 static const br_x509_class **client_start_chain(const qinterface_t **vt, const char *server_name) {
@@ -59,8 +75,8 @@ static const qinterface_t client_interface = {
 	NULL,
 	NULL,
 	NULL,
-	&client_read,
-	NULL,
+	&client_received,
+	&client_sent,
 	&client_start_chain,
 };
 
@@ -113,7 +129,8 @@ int main(int argc, const char *argv[]) {
 	LOG(c.debug, "client start");
 
 	stack_string str;
-	dispatcher_t d = { 0 };
+	dispatcher_t d;
+	init_dispatcher(&d, get_tick());
 
 	c.fd = fd;
 	if (qc_connect(&c.conn, &d, &c.vtable, "localhost", &params, c.pktbuf, sizeof(c.pktbuf))) {
@@ -123,7 +140,6 @@ int main(int argc, const char *argv[]) {
 
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
 	qtx_write(&c.stream, "hello world", 11);
-	qtx_finish(&c.stream);
 	qc_flush(&c.conn, &c.stream);
 
 	for (;;) {

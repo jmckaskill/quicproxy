@@ -27,16 +27,16 @@ static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64
 			q_ack_stream(c, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & (QTX_PKT_MAX_DATA | QTX_PKT_MAX_ID_BIDI | QTX_PKT_MAX_ID_UNI)) {
+		if (flags & (QPKT_MAX_DATA | QPKT_MAX_ID_BIDI | QPKT_MAX_ID_UNI)) {
 			q_ack_scheduler(c, pkt);
 		}
-		if (flags & QTX_PKT_CLOSE) {
+		if (flags & QPKT_CLOSE) {
 			q_ack_close(c);
 		}
-		if (flags & QTX_PKT_CRYPTO) {
+		if (flags & QPKT_CRYPTO) {
 			q_ack_crypto(c, pkt);
 		}
-		if (flags & QTX_PKT_RETRANSMIT) {
+		if (flags & QPKT_RETRANSMIT) {
 			c->retransmit_packets--;
 		}
 		pkt->off = UINT64_MAX;
@@ -65,16 +65,16 @@ static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64
 			q_lost_stream(c, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & (QTX_PKT_MAX_DATA | QTX_PKT_MAX_ID_BIDI | QTX_PKT_MAX_ID_UNI)) {
+		if (flags & (QPKT_MAX_DATA | QPKT_MAX_ID_BIDI | QPKT_MAX_ID_UNI)) {
 			q_lost_scheduler(c, pkt);
 		}
-		if (flags & QTX_PKT_CLOSE) {
+		if (flags & QPKT_CLOSE) {
 			q_lost_close(c, now);
 		}
-		if (flags & QTX_PKT_CRYPTO) {
+		if (flags & QPKT_CRYPTO) {
 			q_lost_crypto(c, pkt);
 		}
-		if (flags & QTX_PKT_RETRANSMIT) {
+		if (flags & QPKT_RETRANSMIT) {
 			c->retransmit_packets--;
 		}
 		pkt->off = UINT64_MAX;
@@ -182,6 +182,7 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	if ((hdr & STREAM_MASK) == STREAM) {
+		q_async_ack(c, rxtime);
 		return q_decode_stream(c, hdr, s);
 	} else {
 		switch (hdr) {
@@ -526,7 +527,6 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 				return;
 			}
 			q_receive_packet(c, level, pktnum, rxtime);
-			q_send_data(c, 0, rxtime);
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
@@ -542,7 +542,6 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			int err = process_packet(c, s, QC_PROTECTED, rxtime);
 			if (!err) {
 				q_receive_packet(c, QC_PROTECTED, pktnum, rxtime);
-				q_send_data(c, 0, rxtime);
 			} else if (err != QC_ERR_DROP) {
 				q_internal_shutdown(c, err, rxtime);
 			}

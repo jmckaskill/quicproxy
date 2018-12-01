@@ -129,8 +129,8 @@ struct tester {
 	bool conn_closed;
 	int shutdown_reason;
 	qstream_t s;
-	char txbuf[4096];
-	char rxbuf[4096];
+	char txbuf[32 * 1024];
+	char rxbuf[32 * 1024];
 	qconnection_t c;
 	char pktbuf[4096];
 	br_x509_knownkey_context x509;
@@ -150,7 +150,9 @@ static void shutdown_test(const qinterface_t **vt, int errnum) {
 static int send_test(const qinterface_t **vt, const void *addr, const void *buf, size_t sz, tick_t *sent) {
 	struct tester *t = (struct tester*)vt;
 	*sent = NOW;
-	assert(t->msgn < 10);
+	if (t->msgn == 10) {
+		return -1;
+	}
 	struct msg *m = &t->msgv[t->msgn++];
 	assert(sz < sizeof(m->buf));
 	memcpy(m->buf, buf, sz);
@@ -195,7 +197,7 @@ static const qinterface_t test_interface = {
 
 static qconnection_cfg_t cfg = {
 	.bidi_streams = 1,
-	.max_data = 1024,
+	.max_data = 4096,
 	.stream_data_bidi_local = 1024,
 	.stream_data_bidi_remote = 1024,
 	.groups = TLS_DEFAULT_GROUPS,
@@ -208,12 +210,14 @@ int main(int argc, const char *argv[]) {
 
 	struct tester c = { &test_interface };
 	struct tester s = { &test_interface };
-	dispatcher_t d = { 0 };
+	dispatcher_t d;
 	qsigner_ecdsa signer;
-	
-	// Send the client hello
+
 	tick_t MS = 1000;
 	NOW = 1000 * MS;
+	init_dispatcher(&d, NOW);
+
+	// Send the client hello
 	EXPECT_EQ(0, qc_connect(&c.c, &d, &c.vtable, "localhost", &cfg, c.pktbuf, sizeof(c.pktbuf)));
 	EXPECT_EQ(1, c.msgn); // Client Hello
 	EXPECT_EQ(1, c.c.pkts[0].tx_next);
@@ -237,6 +241,7 @@ int main(int argc, const char *argv[]) {
 	NOW += 10 * MS;
 	qc_recv(&c.c, NULL, s.msgv[0].buf, s.msgv[0].sz, NOW);
 	s.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_TRUE(c.c.peer_verified);
 	EXPECT_TRUE(!c.c.handshake_complete);
 	EXPECT_TRUE(!s.c.peer_verified);
@@ -249,6 +254,7 @@ int main(int argc, const char *argv[]) {
 	NOW += 10 * MS;
 	qc_recv(&s.c, NULL, c.msgv[0].buf, c.msgv[0].sz, NOW);
 	c.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_TRUE(s.c.peer_verified);
 	EXPECT_TRUE(s.c.handshake_complete);
 	EXPECT_EQ(20 * MS, s.c.srtt);
@@ -284,20 +290,18 @@ int main(int argc, const char *argv[]) {
 	EXPECT_EQ(0, qrx_read(&s.s, buf, sizeof(buf)));
 	EXPECT_TRUE(qrx_eof(&s.s));
 
-	// the ack will be coalesced
-	EXPECT_EQ(0, s.msgn);
-	NOW += 24 * MS;
-	dispatch_apcs(&d, NOW, 1000);
-	EXPECT_EQ(0, s.msgn);
-	NOW += 1 * MS;
-	dispatch_apcs(&d, NOW, 1000);
+	// the ack may be coalesced
+	if (!s.msgn) {
+		NOW += 25 * MS;
+		dispatch_apcs(&d, NOW, 1000);
+	}
 	EXPECT_EQ(1, s.msgn);
 
 	// receive the ack
 	NOW += 10 * MS;
 	qc_recv(&c.c, NULL, s.msgv[0].buf, s.msgv[0].sz, NOW);
 	s.msgn = 0;
-	EXPECT_TRUE((c.s.flags & QTX_COMPLETE) && !(c.s.flags & QRX_COMPLETE));
+	EXPECT_TRUE((c.s.flags & QS_TX_COMPLETE) && !(c.s.flags & QS_RX_COMPLETE));
 	EXPECT_EQ(20 * MS, c.c.srtt); // ack delay should be accommodated for
 
 	// send something back
@@ -311,7 +315,7 @@ int main(int argc, const char *argv[]) {
 	NOW += 10 * MS;
 	qc_recv(&c.c, NULL, s.msgv[0].buf, s.msgv[0].sz, NOW);
 	s.msgn = 0;
-	EXPECT_TRUE((c.s.flags & QTX_COMPLETE) && (c.s.flags & QRX_COMPLETE));
+	EXPECT_TRUE((c.s.flags & QS_TX_COMPLETE) && (c.s.flags & QS_RX_COMPLETE));
 	EXPECT_TRUE(!c.stream_open); // since we have both the receive and transmit, the library should release the stream
 	EXPECT_TRUE(s.stream_open); // the fin hasn't been acknowledged yet
 	sz = qrx_read(&c.s, buf, sizeof(buf));
@@ -319,21 +323,68 @@ int main(int argc, const char *argv[]) {
 	EXPECT_EQ(0, qrx_read(&c.s, buf, sizeof(buf)));
 	EXPECT_TRUE(qrx_eof(&c.s));
 
-	// the ack will be coalesced
-	EXPECT_EQ(0, c.msgn);
-	NOW += 10 * MS;
-	dispatch_apcs(&d, NOW, 1000);
-	EXPECT_EQ(0, c.msgn);
-	NOW += 15 * MS;
-	dispatch_apcs(&d, NOW, 1000);
+	// the ack may be coalesced
+	if (!c.msgn) {
+		NOW += 25 * MS;
+		dispatch_apcs(&d, NOW, 1000);
+	}
 	EXPECT_EQ(1, c.msgn);
 
 	// and receive the ack back at the server
+	// and send back an updated max id
 	NOW += 10 * MS;
 	qc_recv(&s.c, NULL, c.msgv[0].buf, c.msgv[0].sz, NOW);
 	c.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_TRUE(!s.stream_open);
-	EXPECT_EQ(0, s.msgn);
+	EXPECT_EQ(1, s.msgn);
+
+	NOW += 10 * MS;
+	qc_recv(&c.c, NULL, s.msgv[0].buf, s.msgv[0].sz, NOW);
+	s.msgn = 0;
+	EXPECT_EQ(0, c.msgn);
+
+	// send a big chunk
+	c.stream_open = true;
+	qinit_stream(&c.s, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
+	for (int i = 0; i < 17400 / 4; i++) {
+		uint8_t le[4];
+		write_little_32(le, i);
+		qtx_write(&c.s, le, 4);
+	}
+	qtx_finish(&c.s);
+	qc_flush(&c.c, &c.s);
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(1, c.msgn); // the new stream is at min flow
+
+	for (;;) {
+		// receive a chunk
+		NOW += 10 * MS;
+		for (int i = 0; i < c.msgn; i++) {
+			qc_recv(&s.c, NULL, c.msgv[i].buf, c.msgv[i].sz, NOW);
+		}
+		c.msgn = 0;
+
+		EXPECT_TRUE(s.stream_open);
+		if (qrx_size(&s.s) == c.s.tx.tail) {
+			break;
+		}
+
+		// generate the ack - this may have already been created
+		dispatch_apcs(&d, NOW, 1000);
+		if (!s.msgn) {
+			NOW += 25 * MS;
+			dispatch_apcs(&d, NOW, 1000);
+		}
+		EXPECT_EQ(1, s.msgn);
+
+		// receive the ack & generate the next window full
+		NOW += 10 * MS;
+		qc_recv(&c.c, NULL, s.msgv[0].buf, s.msgv[0].sz, NOW);
+		s.msgn = 0;
+		dispatch_apcs(&d, NOW, 1000);
+		EXPECT_EQ(4, c.msgn);
+	}
 
 	// now have the server shut down the connection
 	NOW += 10 * MS;

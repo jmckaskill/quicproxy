@@ -61,8 +61,8 @@ struct qbuffer {
 void qbuf_init(qbuffer_t *b, void *buf, size_t size);
 
 // returns the limits we can accept data within
-static inline uint64_t qbuf_min(qbuffer_t *b) {return b->head;}
-static inline uint64_t qbuf_max(qbuffer_t *b) {return b->head + b->size - 1;}
+static inline uint64_t qbuf_min(const qbuffer_t *b) {return b->head;}
+static inline uint64_t qbuf_max(const qbuffer_t *b) {return b->head + b->size - 1;}
 
 // returns how far the tail has moved
 size_t qbuf_insert(qbuffer_t *b, uint64_t off, const void *data, size_t len);
@@ -72,9 +72,8 @@ void qbuf_mark_invalid(qbuffer_t *b, uint64_t off, size_t len);
 void qbuf_mark_valid(qbuffer_t *b, uint64_t off, size_t len);
 size_t qbuf_consume(qbuffer_t *b, uint64_t max);
 
-size_t qbuf_data(qbuffer_t *b, uint64_t off, const void **pdata);
-size_t qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz);
-bool qbuf_next_valid(qbuffer_t *b, uint64_t *off);
-bool qbuf_any_valid_after(qbuffer_t *b, uint64_t off);
+size_t qbuf_data(const qbuffer_t *b, uint64_t off, const void **pdata);
+size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz);
+bool qbuf_next_valid(const qbuffer_t *b, uint64_t *off);
 
 

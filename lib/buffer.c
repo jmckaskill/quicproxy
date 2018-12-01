@@ -82,7 +82,7 @@ static void set_bits(qbuffer_t *b, uint32_t value, size_t start, size_t end) {
 	}
 }
 
-static size_t iterate_bits(qbuffer_t *b, uint32_t value, size_t start, size_t end) {
+static size_t iterate_bits(const qbuffer_t *b, uint32_t value, size_t start, size_t end) {
 	// look through the bits leading in
 	size_t ret = 0;
 	size_t sbits = start & 31;
@@ -235,7 +235,7 @@ void qbuf_mark_valid(qbuffer_t *b, uint64_t off, size_t len) {
 	set_bits(b, ~UINT32_C(0), start, end);
 }
 
-static size_t get_internal_data(qbuffer_t *b, size_t start, size_t len, const void **pdata) {
+static size_t get_internal_data(const qbuffer_t *b, size_t start, size_t len, const void **pdata) {
 	size_t end = (start + len) % b->size;
 	if (start <= end) {
 		*pdata = b->data + start;
@@ -247,7 +247,7 @@ static size_t get_internal_data(qbuffer_t *b, size_t start, size_t len, const vo
 	}
 }
 
-size_t qbuf_data(qbuffer_t *b, uint64_t off, const void **pdata) {
+size_t qbuf_data(const qbuffer_t *b, uint64_t off, const void **pdata) {
 	assert(qbuf_min(b) <= off && off <= qbuf_max(b));
 	size_t start = (size_t)(off % b->size);
 	size_t end = (size_t)(b->tail % b->size);
@@ -273,32 +273,23 @@ size_t qbuf_data(qbuffer_t *b, uint64_t off, const void **pdata) {
 	}
 }
 
-size_t qbuf_copy(qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
+size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
 	assert(b->head <= off && off <= b->tail);
 	size_t ret = 0;
 	size_t have;
 	const void *src;
 	while (ret < sz && (have = qbuf_data(b, off + ret, &src)) != 0) {
+		have = MIN(have, sz - ret);
 		memcpy((char*)buf + ret, src, have);
 		ret += have;
 	}
 	return ret;
 }
 
-bool qbuf_next_valid(qbuffer_t *b, uint64_t *off) {
+bool qbuf_next_valid(const qbuffer_t *b, uint64_t *off) {
 	assert(b->head <= *off && *off <= b->tail);
 	size_t start = (size_t)(*off % b->size);
 	size_t end = (size_t)(b->tail % b->size);
 	*off += iterate_bits(b, 0, start, end);
 	return *off < b->tail;
-}
-
-bool qbuf_any_valid_after(qbuffer_t *b, uint64_t off) {
-	if (off < b->tail) {
-		return true;
-	}
-	size_t start = (size_t)(off % b->size);
-	size_t end = (size_t)(qbuf_max(b) % b->size);
-	size_t len = iterate_bits(b, 0, start, end);
-	return start + len < end;
 }

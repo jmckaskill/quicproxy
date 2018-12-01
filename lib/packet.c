@@ -185,7 +185,7 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 	if (encode_ack_frame(s, pkts, (tickdiff_t)(now - pkts->rx_largest), 0)) {
 		return NULL;
 	}
-	pkt->flags |= QTX_PKT_ACK;
+	pkt->flags |= QPKT_ACK;
 
 	// crypto frame
 	if (p->crypto_size) {
@@ -198,7 +198,7 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 		s->p = encode_varint(s->p, p->crypto_off);
 		s->p = encode_varint(s->p, sz);
 		s->p = append(s->p, p->crypto_data, sz);
-		pkt->flags |= QTX_PKT_CRYPTO;
+		pkt->flags |= QPKT_CRYPTO;
 		pkt->off = p->crypto_off;
 		pkt->len = (uint16_t)sz;
 		p->crypto_off += sz;
@@ -279,7 +279,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		if (encode_ack_frame(&p, pkts, (tickdiff_t)(*pnow - pkts->rx_largest), c->local_cfg->ack_delay_exponent)) {
 			return -1;
 		}
-		pkt->flags |= QTX_PKT_ACK;
+		pkt->flags |= QPKT_ACK;
 	}
 
 	if (!s->ignore_cwnd) {
@@ -312,6 +312,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	}
 
 	if (s->send_close) {
+		assert(!s->stream);
 		if (q_encode_close(c, &p, pkt)) {
 			return -1;
 		}
@@ -364,13 +365,17 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		hs->sent = pkt->sent;
 		c->pkts[QC_HANDSHAKE].tx_next++;
 	}
-	if (pkt->flags & QTX_PKT_RETRANSMIT) {
+	if (pkt->flags & QPKT_RETRANSMIT) {
 		c->retransmit_packets++;
 		q_start_probe_timer(c, pkt->sent);
 	}
-	if (pkt->flags & QTX_PKT_ACK) {
+	if (pkt->flags & QPKT_ACK) {
 		cancel_apc(c->dispatcher, &c->tx_timer);
 	}
+	if (s->stream) {
+		q_commit_stream(c, s->stream, pkt);
+	}
+	q_commit_scheduler(c, pkt);
 	q_cwnd_sent(c, pkt);
 	pkts->tx_next++;
 	if (pnow) {

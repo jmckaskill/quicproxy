@@ -11,42 +11,42 @@
 #include <inttypes.h>
 
 // packet flags
-#define QTX_PKT_PATH_CHALLENGE	(1 << 0)
-#define QTX_PKT_PATH_RESPONSE	(1 << 1)
-#define QTX_PKT_ACK				(1 << 2)
-#define QTX_PKT_FIN				(1 << 3)
-#define QTX_PKT_RST				(1 << 4)
-#define QTX_PKT_STOP			(1 << 5)
-#define QTX_PKT_STREAM_DATA		(1 << 6)
-#define QTX_PKT_MAX_DATA		(1 << 7)
-#define QTX_PKT_MAX_ID_UNI		(1 << 8)
-#define QTX_PKT_MAX_ID_BIDI		(1 << 9)
-#define QTX_PKT_NEW_TOKEN		(1 << 10)
-#define QTX_PKT_RETRANSMIT		(1 << 11)
-#define QTX_PKT_CLOSE			(1 << 12)
-#define QTX_PKT_NEW_ID			(1 << 13)
-#define QTX_PKT_RETIRE_ID		(1 << 14)
-#define QTX_PKT_CRYPTO			(1 << 15)
+#define QPKT_PATH_CHALLENGE	(1 << 0)
+#define QPKT_PATH_RESPONSE	(1 << 1)
+#define QPKT_ACK				(1 << 2)
+#define QPKT_FIN				(1 << 3)
+#define QPKT_RST				(1 << 4)
+#define QPKT_STOP			(1 << 5)
+#define QPKT_STREAM_DATA		(1 << 6)
+#define QPKT_MAX_DATA		(1 << 7)
+#define QPKT_MAX_ID_UNI		(1 << 8)
+#define QPKT_MAX_ID_BIDI		(1 << 9)
+#define QPKT_NEW_TOKEN		(1 << 10)
+#define QPKT_RETRANSMIT		(1 << 11)
+#define QPKT_CLOSE			(1 << 12)
+#define QPKT_NEW_ID			(1 << 13)
+#define QPKT_RETIRE_ID		(1 << 14)
+#define QPKT_CRYPTO			(1 << 15)
 
 // stream flags
-#define QTX_COMPLETE (1 << 0)
-#define QRX_COMPLETE (1 << 1)
-#define QTX_QUEUED   (1 << 2)
-#define QTX_PENDING  (1 << 3)
-#define QTX_FIN      (1 << 4)
-#define QTX_FIN_SENT (1 << 5)
-#define QRX_FIN_ACK  (1 << 6)
-#define QRX_FIN      (1 << 7)
-#define QTX_RST      (1 << 8)
-#define QTX_RST_SENT (1 << 9)
-#define QRX_RST_ACK  (1 << 10)
-#define QRX_RST      (1 << 11)
-#define QTX_STOP     (1 << 12)
-#define QTX_STOP_SENT (1 << 13)
-#define QRX_STOP_ACK (1 << 14)
-#define QRX_STOP     (1 << 15)
-#define QRX_DATA_ACK (1 << 16)
-#define QTX_DIRTY    (1 << 17)
+#define QS_TX_COMPLETE (1 << 0)
+#define QS_RX_COMPLETE (1 << 1)
+#define QS_TX_QUEUED   (1 << 2)
+#define QS_TX_PENDING  (1 << 3)
+#define QS_TX_FIN      (1 << 4)
+#define QS_TX_FIN_SENT (1 << 5)
+#define QS_RX_FIN_ACK  (1 << 6)
+#define QS_RX_FIN      (1 << 7)
+#define QS_TX_RST      (1 << 8)
+#define QS_TX_RST_SENT (1 << 9)
+#define QS_RX_RST_ACK  (1 << 10)
+#define QS_RX_RST      (1 << 11)
+#define QS_TX_STOP     (1 << 12)
+#define QS_TX_STOP_SENT (1 << 13)
+#define QS_RX_STOP_ACK (1 << 14)
+#define QS_RX_STOP     (1 << 15)
+#define QS_RX_DATA_ACK (1 << 16)
+#define QS_TX_DIRTY    (1 << 17)
 
 #define QRST_STOPPING 0
 #define QRX_STREAM_MAX UINT64_C(0x4000000000000000)
@@ -146,7 +146,8 @@ int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const 
 int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off);
 int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum);
 int q_recv_reset(qconnection_t *c, qstream_t *s, int errnum, uint64_t off);
-int q_encode_stream(qconnection_t *c, qslice_t *p, qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
+int q_encode_stream(qconnection_t *c, qslice_t *p, const qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
+void q_commit_stream(qconnection_t *c, qstream_t *s, qtx_packet_t *pkt);
 void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt);
 void q_lost_stream(qconnection_t *c, qtx_packet_t *pkt);
 size_t q_stream_cwnd_size(const qtx_packet_t *pkt);
@@ -164,7 +165,9 @@ int q_decode_max_data(qconnection_t *c, qslice_t *s);
 int q_decode_max_id(qconnection_t *c, qslice_t *p);
 
 size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt);
+bool q_pending_scheduler(qconnection_t *c);
 int q_encode_scheduler(qconnection_t *c, qslice_t *p, qtx_packet_t *pkt);
+void q_commit_scheduler(qconnection_t *c, const qtx_packet_t *pkt);
 void q_ack_scheduler(qconnection_t *c, const qtx_packet_t *pkt);
 void q_lost_scheduler(qconnection_t *c, const qtx_packet_t *pkt);
 

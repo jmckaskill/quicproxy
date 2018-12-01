@@ -70,7 +70,6 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	LOG(debug, "received '%s'", buf);
 	qtx_write(stream, "reply ", strlen("reply "));
 	qtx_write(stream, buf, sz);
-	qtx_finish(stream);
 	qc_flush(&s->conn, stream);
 }
 
@@ -158,7 +157,8 @@ int main(int argc, const char *argv[]) {
 		.keylog = keylog_path.len ? open_file_log(&keylogger, keylog_path.c_str) : NULL,
 	};
 
-	dispatcher_t d = { 0 };
+	dispatcher_t d;
+	init_dispatcher(&d, get_tick());
 
 	struct server s;
 	s.vtable = &server_interface;

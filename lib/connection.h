@@ -48,7 +48,7 @@ struct qconnection_cfg {
 	uint32_t stream_data_bidi_local; // for bidi streams initiated by us
 	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
 	uint32_t stream_data_uni; // for uni streams initiated by the remote
-	// these refer to the initial maximum streams the remote is allowed to initiate
+	// these indicate the maximum number of concurrent streams allowed
 	uint16_t bidi_streams;
 	uint16_t uni_streams;
 	// the initial maximum of the total data sent to us
@@ -128,6 +128,7 @@ struct qconnection {
 	uint64_t data_sent;
 	uint64_t rx_max_data;
 	uint64_t data_received;
+	uint8_t tx_flags;
 
 	// congestion window
 	uint64_t congestion_window;

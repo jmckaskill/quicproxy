@@ -208,11 +208,11 @@ void q_start_handshake(qconnection_t *c, tick_t now) {
 
 void q_start_runtime(qconnection_t *c, tick_t now) {
 	c->peer_verified = true;
+	cancel_apc(c->dispatcher, &c->rx_timer);
 	q_update_scheduler_from_cfg(c);
 	q_cwnd_init(c);
 	q_start_idle_timer(c, now);
-	cancel_apc(c->dispatcher, &c->tx_timer);
-	cancel_apc(c->dispatcher, &c->rx_timer);
+	q_async_send_data(c);
 }
 
 void q_start_shutdown(qconnection_t *c, tick_t now) {

@@ -89,7 +89,7 @@ int q_encode_close(qconnection_t *c, qslice_t *s, qtx_packet_t *pkt) {
 		*(s->p++) = 0; // frame type
 		*(s->p++) = 0; // reason phrase
 	}
-	pkt->flags |= QTX_PKT_CLOSE;
+	pkt->flags |= QPKT_CLOSE;
 	return 0;
 }
 
