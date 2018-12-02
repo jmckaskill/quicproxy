@@ -165,7 +165,7 @@ qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long
 	static const uint8_t headers[] = { INITIAL_PACKET,HANDSHAKE_PACKET,PROTECTED_PACKET };
 	uint8_t *pkt_begin = s->p;
 	*(s->p++) = headers[p->level];
-	s->p = write_big_32(s->p, QUIC_VERSION);
+	s->p = write_big_32(s->p, c->version);
 
 	// connection IDs
 	*(s->p++) = (encode_id_len(c->peer_id[0]) << 4) | encode_id_len(c->local_id[0]);
@@ -340,7 +340,7 @@ int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pn
 	(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
 	(*k)->protect(k, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
 
-	int err = (*c->iface)->send(c->iface, buf, (size_t)(p.p - buf), NULL, 0, &pkt->sent);
+	int err = (*c->iface)->send(c->iface, buf, (size_t)(p.p - buf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent);
 	if (err) {
 		return err;
 	}

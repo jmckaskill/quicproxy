@@ -44,9 +44,12 @@ struct qconnection_cfg {
 	const char *groups;
 	const qcipher_class *const *ciphers;
 	const qsignature_class *const *signatures;
+	const uint32_t *versions;
 	log_t *debug;
 	log_t *keylog;
 };
+
+extern uint32_t QUIC_VERSIONS[];
 
 void qc_close(qconnection_t *c);
 void qc_shutdown(qconnection_t *c, int error);
@@ -77,11 +80,18 @@ struct qconnect_request {
 	qconnection_cfg_t client_cfg;
 	const qconnection_cfg_t *server_cfg;
 
+	uint32_t version;
+	uint64_t pktnum;
 	const void *chello;
 	size_t chello_size;
+	const struct sockaddr *sa;
+	socklen_t salen;
 };
 
 int qc_get_destination(void *buf, size_t len, uint8_t *out);
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t len, tick_t rxtime, const qconnection_cfg_t *params);
+int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *params, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
 int qc_accept(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *h, const qsigner_class *const *s);
+int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz);
+
+
 

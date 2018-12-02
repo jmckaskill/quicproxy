@@ -20,7 +20,9 @@ static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_
 		}
 
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		q_cwnd_ack(c, num, pkt);
+		if (b == &c->prot_pkts) {
+			q_cwnd_ack(c, num, pkt);
+		}
 		if (pkt->stream) {
 			q_ack_stream(c, pkt);
 		}
@@ -57,7 +59,9 @@ static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_
 			continue;
 		}
 		// packet is lost
-		q_cwnd_lost(c, pkt);
+		if (b == &c->prot_pkts) {
+			q_cwnd_lost(c, pkt);
+		}
 		if (pkt->stream) {
 			q_lost_stream(c, pkt);
 		}
@@ -364,8 +368,13 @@ static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t 
 	return s->p > s->e || !(*k)->decrypt(k, *pktnum, pkt_begin, s->p, s->e);
 }
 
-int qc_decode_request(qconnect_request_t *req, void *buf, size_t buflen, tick_t rxtime, const qconnection_cfg_t *cfg) {
+int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, void *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	memset(req, 0, sizeof(*req));
+	req->sa = sa;
+	req->salen = salen;
+	req->rxtime = rxtime;
+	req->server_cfg = cfg;
+
 	qslice_t s;
 	s.p = (uint8_t*)buf;
 	s.e = s.p + buflen;
@@ -374,23 +383,26 @@ int qc_decode_request(qconnect_request_t *req, void *buf, size_t buflen, tick_t 
 	}
 	uint32_t version = big_32(s.p);
 	s.p += 4;
-	if (version != QUIC_VERSION) {
-		return QC_WRONG_VERSION;
-	}
 	req->destination[0] = decode_id_len(*s.p >> 4);
 	req->source[0] = decode_id_len(*s.p & 0xF);
 	s.p++;
-	if (req->destination[0] != DEFAULT_SERVER_ID_LEN) {
-		return QC_STATELESS_RETRY;
+	if (s.p + req->destination[0] + req->source[0] > s.e) {
+		return QC_PARSE_ERROR;
 	}
 
 	// destination
-	memcpy(req->destination + 1, s.p, DEFAULT_SERVER_ID_LEN);
-	s.p += DEFAULT_SERVER_ID_LEN;
+	memcpy(req->destination + 1, s.p, req->destination[0]);
+	s.p += req->destination[0];
 
 	// source
 	memcpy(req->source + 1, s.p, req->source[0]);
 	s.p += req->source[0];
+
+	// check version
+	if (version != QUIC_VERSION) {
+		return QC_WRONG_VERSION;
+	}
+	req->version = version;
 
 	// token
 	uint64_t toksz;
@@ -407,13 +419,10 @@ int qc_decode_request(qconnect_request_t *req, void *buf, size_t buflen, tick_t 
 
 	// decrypt
 	qcipher_aes_gcm key;
-	uint64_t pktnum;
 	init_initial_cipher(&key, true, req->destination);
-	if (decrypt_packet(&key.vtable, (uint8_t*)buf, &s, &pktnum)) {
+	if (decrypt_packet(&key.vtable, (uint8_t*)buf, &s, &req->pktnum)) {
 		return QC_PARSE_ERROR;
 	}
-
-	bool have_hello = false;
 
 	while (s.p < s.e) {
 		switch (*(s.p++)) {
@@ -424,23 +433,78 @@ int qc_decode_request(qconnect_request_t *req, void *buf, size_t buflen, tick_t 
 			break;
 		case CRYPTO: {
 			uint64_t off, len;
-			if (decode_varint(&s, &off) || decode_varint(&s, &len)) {
+			if (decode_varint(&s, &off) || off != 0 || decode_varint(&s, &len) || len > (uint64_t)(s.e - s.p)) {
+				return QC_PARSE_ERROR;
+			}
+			if (decode_client_hello(s.p, (size_t)len, req, cfg)) {
 				return QC_PARSE_ERROR;
 			}
 			req->chello = s.p;
-			if (decode_client_hello(&s, req, cfg)) {
-				return QC_PARSE_ERROR;
-			}
 			req->chello_size = (size_t)len;
-			have_hello = true;
+			s.p += len;
 			break;
 		}
 		}
 	}
 
-	req->rxtime = rxtime;
-	req->server_cfg = cfg;
-	return have_hello ? QC_NO_ERROR : QC_PARSE_ERROR;
+	if (!req->chello) {
+		return QC_PARSE_ERROR;
+	}
+	return 0;
+}
+
+uint32_t QUIC_VERSIONS[] = {
+	QUIC_VERSION,
+	0x4A5A6A7A,
+	0,
+};
+
+static int encode_version_negotiation(qconnect_request_t *req, void *buf, size_t bufsz) {
+	const uint32_t *ver = req->server_cfg->versions ? req->server_cfg->versions : QUIC_VERSIONS;
+	size_t num = 0;
+	while (ver[num]) {
+		num++;
+	}
+	if (1 + 4 + 1 + req->destination[0] + req->source[0] + num * 4 > bufsz) {
+		return 0;
+	}
+	uint8_t *p = buf;
+	*(p++) = 0xE3;
+	p = write_big_32(p, 0);
+	*(p++) = (encode_id_len(req->source[0]) << 4) | encode_id_len(req->destination[0]);
+	p = append(p, req->source + 1, req->source[0]);
+	p = append(p, req->destination + 1, req->destination[0]);
+	for (size_t i = 0; i < num; i++) {
+		p = write_big_32(p, ver[i]);
+	}
+	return p - (uint8_t*)buf;
+}
+
+static void process_version_negotiation(struct client_handshake *ch, qslice_t s, tick_t now) {
+	size_t n = (s.e - s.p) / 4;
+	struct connection *c = &ch->h.c;
+	const uint32_t *our_ver = c->local_cfg->versions ? c->local_cfg->versions : QUIC_VERSIONS;
+	while (*our_ver) {
+		for (size_t i = 0; i < n; i++) {
+			if (*our_ver == big_32(s.p + 4 * i)) {
+				ch->initial_version = c->version;
+				c->version = *our_ver;
+				q_send_client_hello(ch, &now);
+				return;
+			}
+		}
+		our_ver++;
+	}
+	q_internal_shutdown(&ch->h.c, QC_ERR_VERSION_NEGOTIATION, now);
+}
+
+int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
+	switch (err) {
+	case QC_WRONG_VERSION:
+		return encode_version_negotiation(req, buf, bufsz);
+	default:
+		return 0;
+	}
 }
 
 void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
@@ -462,14 +526,23 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			}
 			uint32_t version = big_32(s.p);
 			s.p += 4;
-			if (version != QUIC_VERSION) {
-				return;
-			}
 			// skip over ids
 			uint8_t dcil = decode_id_len(*s.p >> 4);
 			uint8_t scil = decode_id_len(*s.p & 0xF);
 			s.p++;
 			s.p += dcil + scil;
+			if (s.p > s.e) {
+				return;
+			}
+
+			// check the version
+			struct client_handshake *ch = (struct client_handshake*)c;
+			if (c->is_client && !c->peer_verified && !ch->initial_version && !version) {
+				process_version_negotiation(ch, s, rxtime);
+				return;
+			} else if (version != QUIC_VERSION) {
+				return;
+			}
 
 			if (hdr == INITIAL_PACKET) {
 				uint64_t toksz;
@@ -582,6 +655,7 @@ int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface
 	if (init_connection(h, csz, d, cfg)) {
 		return -1;
 	}
+	c->version = cfg->versions ? cfg->versions[0] : QUIC_VERSION;
 	c->is_client = true;
 	c->iface = vt;
 	c->local_cfg = cfg;
@@ -629,6 +703,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	if (init_connection(h, csz, d, req->server_cfg)) {
 		return -1;
 	}
+	c->version = req->version;
 	c->is_client = false;
 	c->iface = vt;
 	c->local_cfg = req->server_cfg;
@@ -637,6 +712,8 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	memcpy(c->peer_id, req->source, QUIC_ADDRESS_SIZE);
 	memcpy(c->local_id, req->destination, QUIC_ADDRESS_SIZE);
 	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
+	memcpy(&c->addr, req->sa, req->salen);
+	c->addr_len = req->salen;
 	h->level = QC_PROTECTED;
 	h->state = FINISHED_START;
 	h->pkts[QC_INITIAL].sent = sh->init_pkts;
@@ -664,7 +741,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	(*msgs)->update(msgs, req->chello, req->chello_size);
 
 	// send server hello
-	q_receive_packet(c, QC_INITIAL, 0, req->rxtime);
+	q_receive_packet(c, QC_INITIAL, req->pktnum, req->rxtime);
 	if (q_send_server_hello(sh, &req->key, req->rxtime)) {
 		return -1;
 	}

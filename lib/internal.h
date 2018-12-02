@@ -198,6 +198,7 @@ struct connection {
 	// send/recv
 	uint8_t local_id[QUIC_ADDRESS_SIZE];
 	uint8_t peer_id[QUIC_ADDRESS_SIZE];
+	uint32_t version;
 	struct sockaddr_storage addr;
 	socklen_t addr_len;
 	bool is_client;
@@ -303,6 +304,7 @@ struct client_handshake {
 		} f;
 	} u;
 	const char *server_name;
+	uint32_t initial_version;
 	bool hashed_hello;
 
 	size_t key_num;

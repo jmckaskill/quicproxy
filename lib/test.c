@@ -194,10 +194,20 @@ static const qinterface_t test_interface = {
 	&start_test_chain,
 };
 
-static qconnection_cfg_t cfg = {
-	.bidi_streams = 1,
+static const uint32_t client_versions[] = { 0x1A2A3A4A, QUIC_VERSION, 0 };
+
+static qconnection_cfg_t client_cfg = {
 	.max_data = 4096,
 	.stream_data_bidi_local = 1024,
+	.groups = TLS_DEFAULT_GROUPS,
+	.ciphers = TLS_DEFAULT_CIPHERS,
+	.signatures = TLS_DEFAULT_SIGNATURES,
+	.versions = client_versions,
+};
+
+static qconnection_cfg_t server_cfg = {
+	.bidi_streams = 1,
+	.max_data = 4096,
 	.stream_data_bidi_remote = 1024,
 	.groups = TLS_DEFAULT_GROUPS,
 	.ciphers = TLS_DEFAULT_CIPHERS,
@@ -205,7 +215,7 @@ static qconnection_cfg_t cfg = {
 };
 
 int main(int argc, const char *argv[]) {
-	cfg.debug = start_test(argc, argv);
+	client_cfg.debug = server_cfg.debug = start_test(argc, argv);
 
 	struct tester c = { &test_interface };
 	struct tester s = { &test_interface };
@@ -218,22 +228,38 @@ int main(int argc, const char *argv[]) {
 
 	struct client_handshake *ch = (struct client_handshake*)c.c;
 	struct server_handshake *sh = (struct server_handshake*)s.c;
+	uint8_t addr[QUIC_ADDRESS_SIZE];
+	qconnect_request_t req;
 
 	// Send the client hello
-	EXPECT_EQ(0, qc_connect(c.c, sizeof(c.c), &d, &c.vtable, "localhost", &cfg));
+	EXPECT_EQ(0, qc_connect(c.c, sizeof(c.c), &d, &c.vtable, "localhost", &client_cfg));
 	EXPECT_EQ(1, c.msgn); // Client Hello
 	EXPECT_EQ(1, ch->h.pkts[0].tx_next);
 	EXPECT_EQ(0, ch->h.pkts[0].tx_oldest);
 	EXPECT_EQ(NOW, ch->h.pkts[0].sent[0].sent);
+	EXPECT_EQ(0x1A2A3A4A, ch->h.c.version);
+
+	// Verify that get destination works with a dummy version
+	NOW += 10 * MS;
+	EXPECT_EQ(0, qc_get_destination(c.msgv[0].buf, c.msgv[0].sz, addr));
+	EXPECT_BYTES_EQ(ch->h.c.peer_id, QUIC_ADDRESS_SIZE, addr, QUIC_ADDRESS_SIZE);
+	// Receive the client hello & return a version negotiation
+	EXPECT_EQ(QC_WRONG_VERSION, qc_decode_request(&req, &server_cfg, c.msgv[0].buf, c.msgv[0].sz, NULL, 0, NOW));
+	s.msgv[0].sz = qc_reject(&req, QC_WRONG_VERSION, s.msgv[0].buf, sizeof(s.msgv[0].buf));
+	EXPECT_EQ(1 + 4 + 1 + 8 + 8 + 4 + 4, s.msgv[0].sz);
+	c.msgn = 0;
+
+	// Receive the version negotiation & send another client hello
+	NOW += 10 * MS;
+	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, NULL, 0, NOW);
+	EXPECT_EQ(1, c.msgn);
+	EXPECT_EQ(2, ch->h.pkts[0].tx_next);
+	EXPECT_EQ(QUIC_VERSION, ch->h.c.version);
+	EXPECT_EQ(0x1A2A3A4A, ch->initial_version);
 
 	// Receive the client hello & send the server hello
 	NOW += 10 * MS;
-	uint8_t addr[QUIC_ADDRESS_SIZE];
-	EXPECT_EQ(0, qc_get_destination(c.msgv[0].buf, c.msgv[0].sz, addr));
-	EXPECT_BYTES_EQ(ch->h.c.peer_id, QUIC_ADDRESS_SIZE, addr, QUIC_ADDRESS_SIZE);
-
-	qconnect_request_t req;
-	EXPECT_EQ(0, qc_decode_request(&req, c.msgv[0].buf, c.msgv[0].sz, NOW, &cfg));
+	EXPECT_EQ(0, qc_decode_request(&req, &server_cfg, c.msgv[0].buf, c.msgv[0].sz, NULL, 0, NOW));
 	EXPECT_EQ(0, qsigner_ecdsa_init(&signer, TLS_ECDSA_SIGNATURES, &test_skey, CHAIN, CHAIN_LEN));
 	EXPECT_EQ(0, qc_accept(s.c, sizeof(s.c), &d, &s.vtable, &req, &signer.vtable));
 	EXPECT_EQ(1, s.msgn); // Server Hello
@@ -247,8 +273,8 @@ int main(int argc, const char *argv[]) {
 	EXPECT_TRUE(ch->h.c.peer_verified);
 	EXPECT_TRUE(!ch->h.c.handshake_complete);
 	EXPECT_TRUE(!sh->h.c.peer_verified);
-	EXPECT_EQ(cfg.max_data, sh->h.c.peer_cfg.max_data);
-	EXPECT_EQ(cfg.bidi_streams, sh->h.c.peer_cfg.bidi_streams);
+	EXPECT_EQ(client_cfg.max_data, sh->h.c.peer_cfg.max_data);
+	EXPECT_EQ(client_cfg.bidi_streams, sh->h.c.peer_cfg.bidi_streams);
 	EXPECT_EQ(1, c.msgn); // Client Finished
 	EXPECT_EQ(20 * MS, ch->h.c.srtt);
 

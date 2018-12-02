@@ -27,7 +27,7 @@ int decode_packet_number(qslice_t *s, uint64_t *pval);
 int encode_client_hello(const struct client_handshake *ch, qslice_t *ps);
 int encode_server_hello(const struct server_handshake *sh, qslice_t *ps);
 int encode_encrypted_extensions(const struct server_handshake *sh, qslice_t *ps);
-int decode_client_hello(qslice_t *s, qconnect_request_t *req, const qconnection_cfg_t *cfg);
+int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const qconnection_cfg_t *cfg);
 
 int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const void *sig, size_t len);

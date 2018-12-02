@@ -326,10 +326,18 @@ int encode_encrypted_extensions(const struct server_handshake *sh, qslice_t *ps)
 	s.p += 2;
 	uint8_t *transport_start = s.p;
 	// negotiated version
-	s.p = write_big_32(s.p, QUIC_VERSION);
+	s.p = write_big_32(s.p, sh->h.c.version);
 	// supported versions
-	*(s.p++) = 4;
-	s.p = write_big_32(s.p, QUIC_VERSION);
+	uint8_t *versions_start = ++s.p;
+	const uint32_t *ver = cfg->versions ? cfg->versions : QUIC_VERSIONS;
+	while (*ver) {
+		if (s.p + 4 > s.e) {
+			return -1;
+		}
+		s.p = write_big_32(s.p, *ver);
+		ver++;
+	}
+	versions_start[-1] = (uint8_t)(s.p - versions_start);
 	if (encode_transport_params(&s, cfg, (*sh->h.c.iface)->change_peer_address == NULL)) {
 		return -1;
 	}
@@ -475,7 +483,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	s.p = write_big_16(s.p, QUIC_TRANSPORT_PARAMETERS);
 	s.p += 2;
 	uint8_t *transport_start = s.p;
-	s.p = write_big_32(s.p, QUIC_VERSION);
+	s.p = write_big_32(s.p, ch->initial_version ? ch->initial_version : ch->h.c.version);
 	if (encode_transport_params(&s, cfg, (*ch->h.c.iface)->change_peer_address == NULL)) {
 		return -1;
 	}
@@ -563,9 +571,12 @@ int encode_finished(qslice_t *ps, const br_hash_class *digest, const void *verif
 	return 0;
 }
 
-int decode_client_hello(qslice_t *ps, qconnect_request_t *req, const qconnection_cfg_t *cfg) {
+int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const qconnection_cfg_t *cfg) {
+	qslice_t s;
+	s.p = data;
+	s.e = s.p + len;
+
 	// check fixed size headers - up to and including cipher list size
-	qslice_t s = *ps;
 	if (s.p + 1 + 3 + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
 		return -1;
 	}
@@ -574,13 +585,11 @@ int decode_client_hello(qslice_t *ps, qconnect_request_t *req, const qconnection
 	if (*(s.p++) != CLIENT_HELLO) {
 		return -1;
 	}
-	size_t len = big_24(s.p);
+	size_t rec_len = big_24(s.p);
 	s.p += 3;
-	if (s.p + len > s.e) {
+	if (s.p + rec_len != s.e) {
 		return -1;
 	}
-	ps->p = s.p + len;
-	s.e = ps->p;
 
 	// legacy version
 	if (big_16(s.p) != TLS_LEGACY_VERSION) {
@@ -1423,7 +1432,7 @@ int q_send_client_hello(struct client_handshake *ch, tick_t *pnow) {
 
 	// send it
 	LOG(c->local_cfg->debug, "TX CLIENT HELLO");
-	if ((*c->iface)->send(c->iface, udpbuf, (size_t)(udp.p - udpbuf), NULL, 0, &pkt->sent)) {
+	if ((*c->iface)->send(c->iface, udpbuf, (size_t)(udp.p - udpbuf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent)) {
 		return -1;
 	}
 
@@ -1549,7 +1558,7 @@ int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk,
 		if (!ipkt && !hpkt) {
 			return -1;
 		}
-		if ((*c->iface)->send(c->iface, udpbuf, (size_t)(udp.p - udpbuf), NULL, 0, &now)) {
+		if ((*c->iface)->send(c->iface, udpbuf, (size_t)(udp.p - udpbuf), (struct sockaddr*)&c->addr, c->addr_len, &now)) {
 			return -1;
 		}
 		if (ipkt) {

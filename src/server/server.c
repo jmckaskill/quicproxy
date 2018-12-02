@@ -18,8 +18,6 @@ struct server {
 	uint8_t id[QUIC_ADDRESS_SIZE];
 	bool connected;
 	int fd;
-	socklen_t salen;
-	struct sockaddr_storage ss;
 	qconnection_t conn[1024];
 	qstream_t stream;
 	bool stream_opened;
@@ -36,9 +34,9 @@ static void server_close(const qinterface_t **vt) {
 static int server_send(const qinterface_t **vt, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent) {
 	struct server *s = (struct server*) vt;
 	stack_string str;
-	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa ? sa : (struct sockaddr*)&s->ss, s->salen), (int)len);
+	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa, salen));
 
-	if (sendto(s->fd, buf, (int)len, 0, sa ? sa : (struct sockaddr*)&s->ss, s->salen) != (int)len) {
+	if (sendto(s->fd, buf, (int)len, 0, sa, salen) != (int)len) {
 		LOG(debug, "TX failed");
 		return -1;
 	}
@@ -205,12 +203,10 @@ int main(int argc, const char *argv[]) {
 				qc_recv(s.conn, buf, sz, sa, salen, rxtime);
 			} else if (!s.connected) {
 				qconnect_request_t req;
-				if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
+				if (qc_decode_request(&req, &params, buf, sz, sa, salen, rxtime)) {
 					LOG(debug, "failed to decode request");
 					continue;
 				}
-				s.salen = salen;
-				memcpy(&s.ss, &ss, salen);
 				if (qc_accept(s.conn, sizeof(s.conn), &d, &s.vtable, &req, &signer.vtable)) {
 					LOG(debug, "failed to accept request");
 					continue;
