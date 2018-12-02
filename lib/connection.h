@@ -45,6 +45,7 @@ struct qconnection_cfg {
 	const qcipher_class *const *ciphers;
 	const qsignature_class *const *signatures;
 	const uint32_t *versions;
+	const qcipher_class **token_cipher;
 	log_t *debug;
 	log_t *keylog;
 };
@@ -67,6 +68,7 @@ struct qconnect_request {
 	tick_t rxtime;
 	uint8_t destination[QUIC_ADDRESS_SIZE];
 	uint8_t source[QUIC_ADDRESS_SIZE];
+	uint8_t original_destination[QUIC_ADDRESS_SIZE];
 
 	const uint8_t *client_random;
 

@@ -2,6 +2,20 @@
 #include <math.h>
 
 
+static const char prng_nonce[] = "quicproxy prng nonce";
+
+static int seed_rand(br_hmac_drbg_context *c, const qconnection_cfg_t *cfg) {
+	br_hmac_drbg_init(c, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
+	br_prng_seeder seedfn = cfg->seeder ? cfg->seeder : br_prng_seeder_system(NULL);
+	return !seedfn || !seedfn(&c->vtable);
+}
+
+static void generate_id(const br_prng_class **r, uint8_t *id) {
+	id[0] = DEFAULT_SERVER_ID_LEN;
+	(*r)->generate(r, id + 1, DEFAULT_SERVER_ID_LEN);
+	memset(id + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
+}
+
 
 ////////////////////////////////////////////////
 // ACK Processing
@@ -365,10 +379,121 @@ static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t 
 	}
 	memcpy(s->p, tmp + (s->p - begin), 4 - (s->p - begin));
 	s->e -= QUIC_TAG_SIZE;
-	return s->p > s->e || !(*k)->decrypt(k, *pktnum, pkt_begin, s->p, s->e);
+	return s->p > s->e || (*k)->decrypt(k, *pktnum, pkt_begin, (size_t)(s->p - pkt_begin), s->p, s->e);
+}
+
+static size_t sockaddr_aad(uint8_t *o, const struct sockaddr *sa, socklen_t salen) {
+	uint8_t *begin = o;
+	switch (sa->sa_family) {
+	case AF_INET6: {
+		struct sockaddr_in6 *sa6 = (struct sockaddr_in6*) sa;
+		*(o++) = AF_INET6;
+		o = append(o, &sa6->sin6_addr, sizeof(sa6->sin6_addr));
+		o = append(o, &sa6->sin6_port, sizeof(sa6->sin6_port));
+		o = append(o, &sa6->sin6_scope_id, sizeof(sa6->sin6_scope_id)); // include the interface id for link-local addresses
+		return (size_t)(o - begin);
+	}
+	case AF_INET: {
+		struct sockaddr_in *sa4 = (struct sockaddr_in*) sa;
+		*(o++) = AF_INET;
+		o = append(o, &sa4->sin_addr, sizeof(sa4->sin_addr));
+		o = append(o, &sa4->sin_port, sizeof(sa4->sin_port));
+		return (size_t)(o - begin);
+	}
+	default:
+		assert(0);
+		return 0;
+	}
+}
+
+static bool is_token_valid(const qcipher_class **c, const uint8_t *token, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime, uint8_t *odst) {
+	uint8_t buf[512], *p = buf;
+	if (len < 4 + 1 + QUIC_TAG_SIZE || len > sizeof(buf)) {
+		return false;
+	}
+	memcpy(buf, token, len);
+	uint8_t aad[sizeof(struct sockaddr_storage)];
+	size_t aad_len = sockaddr_aad(aad, sa, salen);
+	uint8_t *tag = buf + len - QUIC_TAG_SIZE;
+	if ((*c)->decrypt(c, 0, aad, aad_len, p, tag)) {
+		return false;
+	}
+	tick_t create = little_32(p);
+	p += 4;
+	tickdiff_t delta = (tickdiff_t)(rxtime - create);
+	if (delta < 0 || delta > QUIC_TOKEN_TIMEOUT) {
+		return false;
+	}
+	odst[0] = *(p++);
+	if (p + odst[0] > tag || odst[0] > QUIC_ADDRESS_SIZE - 1) {
+		return false;
+	}
+	memcpy(odst + 1, p, odst[0]);
+	return true;
+}
+
+static int encode_retry(qconnect_request_t *req, void *buf, size_t bufsz) {
+	qslice_t s;
+	s.p = buf;
+	s.e = s.p + bufsz;
+	br_hmac_drbg_context rand;
+	if (seed_rand(&rand, req->server_cfg) || s.p + 1 + 4 + 1 + 8 + req->source[0] + 1 + req->destination[0] + 4 + 1 + req->destination[0] + QUIC_TAG_SIZE > s.e) {
+		return 0;
+	}
+
+	// packet header
+	*(s.p++) = RETRY_PACKET;
+	s.p = write_big_32(s.p, req->version);
+
+	// peer & local ids
+	uint8_t new_dst[QUIC_ADDRESS_SIZE];
+	generate_id(&rand.vtable, new_dst);
+	*(s.p++) = (encode_id_len(req->source[0]) << 4) | encode_id_len(new_dst[0]);
+	s.p = append(s.p, req->source + 1, req->source[0]);
+	s.p = append(s.p, new_dst + 1, new_dst[0]);
+
+	// original destination
+	*(s.p++) = 0xE0 | encode_id_len(req->destination[0]);
+	s.p = append(s.p, req->destination + 1, req->destination[0]);
+
+	// token data: timestamp & original destination
+	uint8_t *token = s.p;
+	s.p = write_little_32(s.p, req->rxtime);
+	s.p = append(s.p, req->destination, 1 + req->destination[0]);
+
+	// encrypt the token using the socket address as additional data
+	uint8_t aad[sizeof(struct sockaddr_storage)];
+	size_t aad_len = sockaddr_aad(aad, req->sa, req->salen);
+	(*req->server_cfg->token_cipher)->encrypt(req->server_cfg->token_cipher, 0, aad, aad_len, token, s.p);
+	s.p += QUIC_TAG_SIZE;
+
+	return (size_t)(s.p - (uint8_t*)buf);
+}
+
+static void process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *source, qslice_t s, tick_t now) {
+	if (s.p + 1 > s.e) {
+		return;
+	}
+	uint8_t odcil = decode_id_len(*(s.p++) & 0xF);
+	if (s.p + odcil > s.e || odcil != ch->h.c.peer_id[0] || memcmp(s.p, ch->h.c.peer_id+1, odcil)) {
+		return;
+	}
+	s.p += odcil;
+	if ((size_t)(s.e - s.p) > sizeof(ch->token)) {
+		q_internal_shutdown(&ch->h.c, QC_ERR_INTERNAL, now);
+		return;
+	}
+	memcpy(ch->h.original_destination, ch->h.c.peer_id, QUIC_ADDRESS_SIZE);
+	ch->h.c.peer_id[0] = scil;
+	memcpy(ch->h.c.peer_id + 1, source, scil);
+	memset(ch->h.c.peer_id + 1 + scil, 0, QUIC_ADDRESS_SIZE - scil - 1);
+	ch->token_size = (uint8_t)(s.e - s.p);
+	memcpy(ch->token, s.p, ch->token_size);
+	q_send_client_hello(ch, &now);
 }
 
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, void *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+	assert(sa != NULL);
 	memset(req, 0, sizeof(*req));
 	req->sa = sa;
 	req->salen = salen;
@@ -404,11 +529,18 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	}
 	req->version = version;
 
+	if (req->destination[0] != DEFAULT_SERVER_ID_LEN) {
+		return QC_PARSE_ERROR;
+	}
+
 	// token
 	uint64_t toksz;
-	if (decode_varint(&s, &toksz) || toksz) {
+	if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
+		return QC_PARSE_ERROR;
+	} else if (cfg->token_cipher && !is_token_valid(cfg->token_cipher, s.p, (size_t)toksz, sa, salen, rxtime, req->original_destination)) {
 		return QC_STATELESS_RETRY;
 	}
+	s.p += toksz;
 
 	// length
 	uint64_t paysz;
@@ -502,12 +634,15 @@ int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
 	switch (err) {
 	case QC_WRONG_VERSION:
 		return encode_version_negotiation(req, buf, bufsz);
+	case QC_STATELESS_RETRY:
+		return encode_retry(req, buf, bufsz);
 	default:
 		return 0;
 	}
 }
 
 void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+	assert(sa != NULL);
 	struct connection *c = (struct connection*)cin;
 	qslice_t s;
 	s.p = buf;
@@ -530,7 +665,9 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			uint8_t dcil = decode_id_len(*s.p >> 4);
 			uint8_t scil = decode_id_len(*s.p & 0xF);
 			s.p++;
-			s.p += dcil + scil;
+			s.p += dcil;
+			const uint8_t *source = s.p;
+			s.p += scil;
 			if (s.p > s.e) {
 				return;
 			}
@@ -544,12 +681,25 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 				return;
 			}
 
-			if (hdr == INITIAL_PACKET) {
+			switch (hdr) {
+			case INITIAL_PACKET: {
 				uint64_t toksz;
 				if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
 					return;
 				}
 				s.p += (size_t)toksz;
+				break;
+			}
+			case HANDSHAKE_PACKET:
+			case PROTECTED_PACKET:
+				break;
+			case RETRY_PACKET:
+				if (c->is_client && !c->peer_verified && !ch->h.original_destination[0]) {
+					process_retry(ch, scil, source, s, rxtime);
+				}
+				return;
+			default:
+				return;
 			}
 
 			uint64_t paysz;
@@ -616,32 +766,13 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 //////////////////////////////
 // Initialization
 
-static const char prng_nonce[] = "quicproxy prng nonce";
-
 static int init_connection(struct handshake *h, size_t csz, dispatcher_t *d, const qconnection_cfg_t *cfg) {
-	br_hmac_drbg_init(&h->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
-	br_hmac_drbg_update(&h->rand, &h, sizeof(h));
-	br_hmac_drbg_update(&h->rand, &d->last_tick, sizeof(d->last_tick));
-	br_prng_seeder seedfn = cfg->seeder;
-	if (!seedfn) {
-		seedfn = br_prng_seeder_system(NULL);
-	}
-	if (!seedfn || !seedfn(&h->rand.vtable)) {
-		return -1;
-	}
-
 	h->c.srtt = QUIC_DEFAULT_RTT;
 	h->c.min_rtt = INT32_MAX;
 	h->c.peer_cfg.ack_delay_exponent = QUIC_ACK_DELAY_SHIFT;
 	h->c.dispatcher = d;
 	h->conn_buf_end = (uint8_t*)h + csz;
-	return 0;
-}
-
-static void generate_id(const br_prng_class **r, uint8_t *id) {
-	id[0] = DEFAULT_SERVER_ID_LEN;
-	(*r)->generate(r, id + 1, DEFAULT_SERVER_ID_LEN);
-	memset(id + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
+	return seed_rand(&h->rand, cfg);
 }
 
 int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_t **vt, const char *server_name, const qconnection_cfg_t *cfg) {
@@ -712,6 +843,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	memcpy(c->peer_id, req->source, QUIC_ADDRESS_SIZE);
 	memcpy(c->local_id, req->destination, QUIC_ADDRESS_SIZE);
 	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
+	memcpy(h->original_destination, req->original_destination, QUIC_ADDRESS_SIZE);
 	memcpy(&c->addr, req->sa, req->salen);
 	c->addr_len = req->salen;
 	h->level = QC_PROTECTED;

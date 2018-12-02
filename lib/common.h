@@ -62,6 +62,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_MIN_TLP_TIMEOUT (10 * 1000)
 #define QUIC_MIN_RTO_TIMEOUT (200 * 1000)
 #define QUIC_ACK_DELAY_SHIFT 3 // = 8 us resolution
+#define QUIC_TOKEN_TIMEOUT (10 * 1000 * 1000) // 10s
 
 #define QUIC_MAX_IDS 8
 #define QUIC_MAX_ADDR 3

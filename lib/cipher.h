@@ -11,8 +11,8 @@ struct qcipher_class {
 	const br_hash_class *hash;
 	void(*init)(const qcipher_class **vt, const void *traffic);
 	void(*protect)(const qcipher_class **vt, void *pktnum, size_t num_sz, size_t pay_sz);
-	uint32_t(*decrypt)(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag);
-	void(*encrypt)(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag);
+	int(*decrypt)(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag);
+	void(*encrypt)(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag);
 };
 
 const qcipher_class *find_cipher(const qcipher_class *const *s, uint16_t code);

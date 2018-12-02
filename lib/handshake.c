@@ -196,7 +196,7 @@ static int encode_transport(qslice_t *s, uint16_t parameter, uint32_t value, siz
 	return 0;
 }
 
-static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool disable_migration) {
+static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool disable_migration, const uint8_t *orig_dst) {
 	if (s->p + 2 > s->e) {
 		return -1;
 	}
@@ -234,6 +234,14 @@ static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool
 	}
 	if (p->max_ack_delay && encode_transport(s, TP_max_ack_delay, p->max_ack_delay / 1000, 1)) {
 		return -1;
+	}
+	if (orig_dst && orig_dst[0]) {
+		if (s->p + 2 + 2 + orig_dst[0] > s->e) {
+			return -1;
+		}
+		s->p = write_big_16(s->p, TP_original_connection_id);
+		s->p = write_big_16(s->p, orig_dst[0]);
+		s->p = append(s->p, orig_dst + 1, orig_dst[0]);
 	}
 	write_big_16(params_start - 2, (uint16_t)(s->p - params_start));
 	return 0;
@@ -338,7 +346,7 @@ int encode_encrypted_extensions(const struct server_handshake *sh, qslice_t *ps)
 		ver++;
 	}
 	versions_start[-1] = (uint8_t)(s.p - versions_start);
-	if (encode_transport_params(&s, cfg, (*sh->h.c.iface)->change_peer_address == NULL)) {
+	if (encode_transport_params(&s, cfg, (*sh->h.c.iface)->change_peer_address == NULL, sh->h.original_destination)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -484,7 +492,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	s.p += 2;
 	uint8_t *transport_start = s.p;
 	s.p = write_big_32(s.p, ch->initial_version ? ch->initial_version : ch->h.c.version);
-	if (encode_transport_params(&s, cfg, (*ch->h.c.iface)->change_peer_address == NULL)) {
+	if (encode_transport_params(&s, cfg, (*ch->h.c.iface)->change_peer_address == NULL, NULL)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -1113,6 +1121,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 
 	start_encrypted_extensions:
 		memset(&c->peer_cfg, 0, sizeof(c->peer_cfg));
+		memset(&ch->u.ee, 0, sizeof(ch->u.ee));
 		assert(!h->depth);
 		h->end = UINT32_MAX;
 		GOTO_LEVEL(QC_HANDSHAKE, EXTENSIONS_LEVEL);
@@ -1142,6 +1151,9 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		goto next_encrypted_extension;
 	finish_encrypted_extensions:
 		GOTO_END(EXTENSIONS_FINISH);
+		if (memcmp(ch->u.ee.orig_dest, h->original_destination, QUIC_ADDRESS_SIZE)) {
+			return QC_ERR_TRANSPORT_PARAMETER;
+		}
 		goto start_certificates;
 
 	transport_parameters:
@@ -1182,6 +1194,8 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 			goto ack_delay_exponent;
 		case TP_max_packet_size:
 			goto max_packet_size;
+		case TP_original_connection_id:
+			goto original_connection_id;
 		case TP_disable_migration:
 			c->peer_cfg.disable_migration = true;
 			goto finish_tp;
@@ -1231,6 +1245,13 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 	max_ack_delay:
 		GET_1(EXTENSIONS_TP_max_ack_delay);
 		c->peer_cfg.max_ack_delay = 1000 * (tickdiff_t)big_16(r.p);
+		goto finish_tp;
+	original_connection_id:
+		if (h->end - r.off > QUIC_ADDRESS_SIZE - 1) {
+			return QC_ERR_PROTOCOL_VIOLATION;
+		}
+		ch->u.ee.orig_dest[0] = (uint8_t)(h->end - r.off);
+		GET_BYTES(ch->u.ee.orig_dest + 1, ch->u.ee.orig_dest[0], EXTENSIONS_TP_original_connection_id);
 		goto finish_tp;
 
 

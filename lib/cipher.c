@@ -69,23 +69,23 @@ static void protect_aes_gcm(const qcipher_class **vt, void *pktnum, size_t num_s
 	c->pn.vtable->run(&c->pn.vtable, sample, big_32((char*)sample + 12), pktnum, num_sz);
 }
 
-static uint32_t decrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static int decrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_gcm *c = (qcipher_aes_gcm*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	br_gcm_reset(&c->gcm, nonce, sizeof(nonce));
-	br_gcm_aad_inject(&c->gcm, pkt, (size_t)(enc - pkt));
+	br_gcm_aad_inject(&c->gcm, aad, aad_len);
 	br_gcm_flip(&c->gcm);
 	br_gcm_run(&c->gcm, 0, enc, (size_t)(tag - enc));
-	return br_gcm_check_tag(&c->gcm, tag);
+	return br_gcm_check_tag(&c->gcm, tag) != 1;
 }
 
-static void encrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static void encrypt_aes_gcm(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_gcm *c = (qcipher_aes_gcm*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	br_gcm_reset(&c->gcm, nonce, sizeof(nonce));
-	br_gcm_aad_inject(&c->gcm, pkt, (size_t)(enc - pkt));
+	br_gcm_aad_inject(&c->gcm, aad, aad_len);
 	br_gcm_flip(&c->gcm);
 	br_gcm_run(&c->gcm, 1, enc, (size_t)(tag - enc));
 	br_gcm_get_tag(&c->gcm, tag);
@@ -143,27 +143,25 @@ static void protect_aes_ccm(const qcipher_class **vt, void *pktnum, size_t num_s
 
 #define CCM_TAG_LEN 16
 
-static uint32_t decrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static int decrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_ccm *c = (qcipher_aes_ccm*)vt;
-	size_t aad_len = (size_t)(enc - pkt);
 	size_t data_len = (size_t)(tag - enc);
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	br_ccm_reset(&c->ccm, nonce, sizeof(nonce), aad_len, data_len, CCM_TAG_LEN);
-	br_ccm_aad_inject(&c->ccm, pkt, aad_len);
+	br_ccm_aad_inject(&c->ccm, aad, aad_len);
 	br_ccm_flip(&c->ccm);
 	br_ccm_run(&c->ccm, 0, enc, data_len);
-	return br_ccm_check_tag(&c->ccm, tag);
+	return br_ccm_check_tag(&c->ccm, tag) != 1;
 }
 
-static void encrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static void encrypt_aes_ccm(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_aes_ccm *c = (qcipher_aes_ccm*)vt;
-	size_t aad_len = (size_t)(enc - pkt);
 	size_t data_len = (size_t)(tag - enc);
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	br_ccm_reset(&c->ccm, nonce, sizeof(nonce), aad_len, data_len, CCM_TAG_LEN);
-	br_ccm_aad_inject(&c->ccm, pkt, aad_len);
+	br_ccm_aad_inject(&c->ccm, aad, aad_len);
 	br_ccm_flip(&c->ccm);
 	br_ccm_run(&c->ccm, 1, enc, data_len);
 	br_ccm_get_tag(&c->ccm, tag);
@@ -204,32 +202,32 @@ static void protect_chacha20(const qcipher_class **vt, void *pktnum, size_t num_
 	fn(c->pn_key, (char*)sample + 4, cc, pktnum, num_sz);
 }
 
-static inline uint32_t EQ0(int32_t x) {
+static uint32_t EQ0(int32_t x) {
 	uint32_t q = (uint32_t)x;
 	return ~(q | (0-q)) >> 31;
 }
 
-static uint32_t decrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static int decrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_chacha20 *c = (qcipher_chacha20*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	uint8_t tmp[16];
 	br_poly1305_run poly1305 = get_poly1305();
-	poly1305(c->data_key, nonce, enc, (size_t)(tag-enc), pkt, (size_t)(enc-pkt), tmp, get_chacha20(), 0);
+	poly1305(c->data_key, nonce, enc, (size_t)(tag-enc), aad, aad_len, tmp, get_chacha20(), 0);
 	// constant time compare the tags
 	uint32_t z = 0;
 	for (size_t u = 0; u < 16; u++) {
 		z |= tmp[u] ^ ((uint8_t*)tag)[u];
 	}
-	return EQ0(z);
+	return EQ0(z) != 1;
 }
 
-static void encrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, uint8_t *pkt, uint8_t *enc, uint8_t *tag) {
+static void encrypt_chacha20(const qcipher_class **vt, uint64_t pktnum, const void *aad, size_t aad_len, uint8_t *enc, uint8_t *tag) {
 	qcipher_chacha20 *c = (qcipher_chacha20*)vt;
 	uint8_t nonce[12];
 	get_nonce_12(nonce, pktnum, c->data_iv);
 	br_poly1305_run poly1305 = get_poly1305();
-	poly1305(c->data_key, nonce, enc, (size_t)(tag-enc), pkt, (size_t)(enc-pkt), tag, get_chacha20(), 1);
+	poly1305(c->data_key, nonce, enc, (size_t)(tag-enc), aad, aad_len, tag, get_chacha20(), 1);
 }
 
 const qcipher_class TLS_CHACHA20_POLY1305_SHA256 = {

@@ -174,7 +174,13 @@ qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long
 
 	// token
 	if (p->level == QC_INITIAL) {
-		*(s->p++) = 0;
+		if (c->is_client) {
+			struct client_handshake *ch = (struct client_handshake*)h;
+			s->p = encode_varint(s->p, ch->token_size);
+			s->p = append(s->p, ch->token, ch->token_size);
+		} else {
+			*(s->p++) = 0;
+		}
 	}
 
 	// length
@@ -224,7 +230,7 @@ qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long
 	// fill out length
 	write_big_16(packet_number - 2, VARINT_16 | (uint16_t)(s->p - packet_number));
 
-	(*p->key)->encrypt(p->key, pkts->tx_next, pkt_begin, enc_begin, tag);
+	(*p->key)->encrypt(p->key, pkts->tx_next, pkt_begin, (size_t)(enc_begin - pkt_begin), enc_begin, tag);
 	(*p->key)->protect(p->key, packet_number, (size_t)(enc_begin - packet_number), (size_t)(s->p - packet_number));
 	return pkt;
 }
@@ -337,7 +343,7 @@ int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pn
 	p.e += QUIC_TAG_SIZE;
 
 	const qcipher_class **k = &c->prot_tx.vtable;
-	(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
+	(*k)->encrypt(k, pkts->tx_next, pkt_begin, (size_t)(enc_begin - pkt_begin), enc_begin, tag);
 	(*k)->protect(k, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
 
 	int err = (*c->iface)->send(c->iface, buf, (size_t)(p.p - buf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent);

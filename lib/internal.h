@@ -149,6 +149,7 @@ enum decoder_state {
 	EXTENSIONS_TP_max_packet_size,
 	EXTENSIONS_TP_ack_delay_exponent,
 	EXTENSIONS_TP_max_ack_delay,
+	EXTENSIONS_TP_original_connection_id,
 
 	CERTIFICATES_HEADER,
 	CERTIFICATES_CONTEXT,
@@ -271,6 +272,7 @@ struct handshake {
 	uint8_t server_random[QUIC_RANDOM_SIZE];
 	uint8_t rx_finished[QUIC_MAX_HASH_SIZE];
 	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	uint8_t original_destination[QUIC_ADDRESS_SIZE];
 
 	const br_hash_class **msgs;
 	br_sha256_context msg_sha256;
@@ -283,6 +285,8 @@ struct client_handshake {
 	struct handshake h;
 	qtx_packet_t init_pkts[16];
 	qtx_packet_t hs_pkts[8];
+	uint8_t token_size;
+	uint8_t token[255];
 
 	union {
 		struct {
@@ -290,6 +294,10 @@ struct client_handshake {
 			br_ec_public_key k;
 			uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
 		} sh;
+
+		struct {
+			uint8_t orig_dest[QUIC_ADDRESS_SIZE];
+		} ee;
 
 		struct {
 			uint16_t algorithm;
