@@ -57,9 +57,9 @@ build $bin/qproxy-client.exe: clink $
  $obj/bearssl.lib $
  $obj/quic.lib $
 
-build $obj/quic/test.o: cc lib/test.c
-build $bin/quic-test.exe: clink $
- $obj/quic/test.o $
+build $obj/quic/quic_test.o: cc lib/quic_test.c
+build $bin/test_quic.exe: clink $
+ $obj/quic/quic_test.o $
  $obj/cutils.lib $
  $obj/bearssl.lib $
  $obj/quic.lib $
@@ -67,7 +67,7 @@ build $bin/quic-test.exe: clink $
 build $TGT: phony $
  $bin/qproxy-server.exe $
  $bin/qproxy-client.exe $
- $bin/quic-test.exe $
+ $bin/test_quic.exe $
  $bin/test_flag.exe $
  $bin/test_hash.exe $
  $bin/test_heap.exe $

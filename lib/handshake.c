@@ -15,8 +15,13 @@
 #define MESSAGE_HASH 254
 
 #define TLS_LEGACY_VERSION 0x303
+#define TLS_VERSION_GREASE 0x7A7A
 
 #define EC_KEY_UNCOMPRESSED 4
+#define GROUP_GREASE 0x3A3A
+#define KEY_SHARE_GREASE 0x9A9A
+#define SIG_GREASE 0x6A6A
+#define CIPHER_GREASE 0x8A8A
 
 // TLS compression methods
 #define TLS_COMPRESSION_NULL 0
@@ -46,6 +51,7 @@
 #define POST_HANDSHAKE_AUTH 49
 #define SIGNATURE_ALGORITHMS_CERT 50
 #define KEY_SHARE 51
+#define EXTENSION_GREASE 0x4A4A
 #define QUIC_TRANSPORT_PARAMETERS 0xFFA5
 
 #define TP_stream_data_bidi_local 0x00
@@ -62,9 +68,11 @@
 #define TP_stream_data_uni 0x0B
 #define TP_max_ack_delay 0x0C
 #define TP_original_connection_id 0x0D
+#define TP_grease 0x5A5A
 
 // server name
 #define HOST_NAME_TYPE 0
+#define NAME_GREASE 0xAA
 
 uint8_t *encode_varint(uint8_t *p, uint64_t val) {
 	if (val < 0x40) {
@@ -197,11 +205,14 @@ static int encode_transport(qslice_t *s, uint16_t parameter, uint32_t value, siz
 }
 
 static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool disable_migration, const uint8_t *orig_dst) {
-	if (s->p + 2 > s->e) {
+	if (s->p + 2 + 2 + 2 + 3 > s->e) {
 		return -1;
 	}
 	s->p += 2;
 	uint8_t *params_start = s->p;
+	s->p = write_big_16(s->p, TP_grease);
+	s->p = write_big_16(s->p, 3);
+	s->p = write_big_24(s->p, 0);
 	if (p->stream_data_bidi_local && encode_transport(s, TP_stream_data_bidi_local, p->stream_data_bidi_local, 4)) {
 		return -1;
 	}
@@ -362,7 +373,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 
 	// check fixed entries - up to and including cipher list size
 	qslice_t s = *ps;
-	if (s.p + 4 + 2 + QUIC_RANDOM_SIZE + 1 + 2 > s.e) {
+	if (s.p + 4 + 2 + QUIC_RANDOM_SIZE + 1 + 2 + 2 > s.e) {
 		return -1;
 	}
 
@@ -384,6 +395,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	// cipher suites
 	s.p += 2;
 	uint8_t *cipher_begin = s.p;
+	s.p = write_big_16(s.p, CIPHER_GREASE);
 	for (size_t i = 0; cfg->ciphers[i] != NULL; i++) {
 		if (s.p + 2 > s.e) {
 			return -1;
@@ -400,44 +412,54 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	*(s.p++) = TLS_COMPRESSION_NULL;
 
 	// extensions size in bytes - will fill out later
-	if (s.p + 2 > s.e) {
+	if (s.p + 2 + 2 + 2 + 2 > s.e) {
 		return -1;
 	}
 	s.p += 2;
 	uint8_t *ext_start = s.p;
+	s.p = write_big_16(s.p, EXTENSION_GREASE);
+	s.p = write_big_16(s.p, 2);
+	s.p = write_big_16(s.p, 0);
 
 	// server name
 	size_t name_len = strlen(ch->server_name);
 	if (name_len) {
-		if (s.p + 2+2+2+1+2 + name_len > s.e) {
+		if (s.p + 2+2+2+1+2+1+1+2+1+2 + name_len > s.e) {
 			return -1;
 		}
 		s.p = write_big_16(s.p, SERVER_NAME);
-		s.p = write_big_16(s.p, (uint16_t)(2 + 1 + 2 + name_len));
-		s.p = write_big_16(s.p, (uint16_t)(1 + 2 + name_len));
+		s.p = write_big_16(s.p, (uint16_t)(2+1+2+1+1+2+1+2 + name_len));
+		s.p = write_big_16(s.p, (uint16_t)(1+2+1+1+2+1+2 + name_len));
+		*(s.p++) = NAME_GREASE;
+		s.p = write_big_16(s.p, 1);
+		*(s.p++) = 0;
 		*(s.p++) = HOST_NAME_TYPE;
 		s.p = write_big_16(s.p, (uint16_t)name_len);
 		s.p = append(s.p, ch->server_name, name_len);
+		*(s.p++) = NAME_GREASE;
+		s.p = write_big_16(s.p, 0);
 	}
 
 	// supported groups
-	if (s.p + 2 + 2 + 2 + 2*ch->key_num > s.e) {
+	if (s.p + 2 + 2 + 2 + 2*ch->key_num + 2 > s.e) {
 		return -1;
 	}
 	s.p = write_big_16(s.p, SUPPORTED_GROUPS);
-	s.p = write_big_16(s.p, (uint16_t)(2 + 2*ch->key_num));
-	s.p = write_big_16(s.p, (uint16_t)(2*ch->key_num));
+	s.p = write_big_16(s.p, (uint16_t)(2*ch->key_num) + 4);
+	s.p = write_big_16(s.p, (uint16_t)(2*ch->key_num) + 2);
+	s.p = write_big_16(s.p, GROUP_GREASE);
 	for (size_t i = 0; i < ch->key_num; i++) {
 		s.p = write_big_16(s.p, cfg->groups[i]);
 	}
 
 	// signature algorithms
-	if (s.p + 6 > s.e) {
+	if (s.p + 2 + 4 + 2 > s.e) {
 		return -1;
 	}
 	s.p = write_big_16(s.p, SIGNATURE_ALGORITHMS);
 	s.p += 4;
 	uint8_t *algo_start = s.p;
+	s.p = write_big_16(s.p, SIG_GREASE);
 	for (size_t i = 0; cfg->signatures[i] != NULL; i++) {
 		if (s.p + 2 > s.e) {
 			return -1;
@@ -454,17 +476,19 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	s.p = write_big_16(s.p, SUPPORTED_VERSIONS);
 	s.p = write_big_16(s.p, 5); // extension length
 	*(s.p++) = 4; // list of versions length
-	s.p = write_big_16(s.p, 0xFAFA); // grease
+	s.p = write_big_16(s.p, TLS_VERSION_GREASE);
 	s.p = write_big_16(s.p, TLS_VERSION);
 
 	// key share
-	if (s.p + 6 > s.e) {
+	if (s.p + 2 + 4 + 2 + 2 > s.e) {
 		return -1;
 	}
 	s.p = write_big_16(s.p, KEY_SHARE);
 	s.p += 4; // fill out the header later once we know the length
-	const br_ec_impl *ec = br_ec_get_default();
 	uint8_t *keys_start = s.p;
+	s.p = write_big_16(s.p, KEY_SHARE_GREASE);
+	s.p = write_big_16(s.p, 0);
+	const br_ec_impl *ec = br_ec_get_default();
 	for (size_t i = 0; i < ch->key_num; i++) {
 		if (s.p + 2 + 2 + 1 + BR_EC_KBUF_PUB_MAX_SIZE > s.e) {
 			return -1;
@@ -668,23 +692,6 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 			}
 			break;
 		}
-		case SUPPORTED_GROUPS: {
-			qslice_t g;
-			if (decode_slice_16(&ext, &g) || ((g.e - g.p) & 1)) {
-				return -1;
-			}
-			if (!req->key.curve) {
-				while (g.p < g.e) {
-					uint16_t group = big_16(g.p);
-					g.p += 2;
-					if (group < 128 && strchr(cfg->groups, (char)group)) {
-						req->key.curve = group;
-						break;
-					}
-				}
-			}
-			break;
-		}
 		case SIGNATURE_ALGORITHMS: {
 			qslice_t a;
 			if (decode_slice_16(&ext, &a) || ((a.e - a.p) & 1)) {
@@ -727,7 +734,7 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 				if (decode_slice_16(&keys, &k)) {
 					return -1;
 				}
-				if (group < 128 && strchr(cfg->groups, (char)group) && k.p < k.e && k.p[0] == EC_KEY_UNCOMPRESSED) {
+				if (0 < group && group < 128 && strchr(cfg->groups, (char)group) && k.p < k.e && k.p[0] == EC_KEY_UNCOMPRESSED) {
 					req->key.curve = group;
 					req->key.q = k.p + 1;
 					req->key.qlen = k.e - req->key.q;
