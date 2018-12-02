@@ -14,7 +14,6 @@ struct qinterface {
 	void(*close)(const qinterface_t **iface);
 	void(*shutdown)(const qinterface_t **iface, int error);
 	int(*send)(const qinterface_t **iface, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent);
-	void(*change_peer_address)(const qinterface_t **iface, const struct sockaddr *sa, socklen_t len);
 	qstream_t*(*new_stream)(const qinterface_t **iface, bool unidirectional);
 	void(*free_stream)(const qinterface_t **iface, qstream_t *s);
 	void(*data_received)(const qinterface_t **iface, qstream_t *s);
@@ -40,12 +39,13 @@ struct qconnection_cfg {
 	uint8_t ack_delay_exponent;
 	uint16_t max_packet_size;
 	bool disable_migration;
+	bool validate_path;
 	br_prng_seeder seeder;
 	const char *groups;
 	const qcipher_class *const *ciphers;
 	const qsignature_class *const *signatures;
 	const uint32_t *versions;
-	const qcipher_class **token_cipher;
+	const qcipher_class **server_key;
 	log_t *debug;
 	log_t *keylog;
 };
@@ -66,9 +66,9 @@ int qc_connect(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t
 typedef struct qconnect_request qconnect_request_t;
 struct qconnect_request {
 	tick_t rxtime;
-	uint8_t destination[QUIC_ADDRESS_SIZE];
-	uint8_t source[QUIC_ADDRESS_SIZE];
-	uint8_t original_destination[QUIC_ADDRESS_SIZE];
+	uint8_t server[QUIC_ADDRESS_SIZE];
+	uint8_t client[QUIC_ADDRESS_SIZE];
+	uint8_t orig_server[QUIC_ADDRESS_SIZE];
 
 	const uint8_t *client_random;
 

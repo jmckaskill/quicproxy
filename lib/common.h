@@ -74,6 +74,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 
 #define QUIC_MAX_KEYSHARE 2
 #define QUIC_VERSION UINT32_C(0xFF00000F)
+#define QUIC_GREASE_VERSION UINT32_C(0x4a5a6a7a)
 #define DEFAULT_SERVER_ID_LEN 8
 #define HELLO_MIN_PACKET_SIZE 1200
 #define DEFAULT_PACKET_SIZE 1280

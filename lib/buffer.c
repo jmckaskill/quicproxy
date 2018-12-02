@@ -288,8 +288,10 @@ size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
 
 bool qbuf_next_valid(const qbuffer_t *b, uint64_t *off) {
 	assert(b->head <= *off && *off <= b->tail);
-	size_t start = (size_t)(*off % b->size);
-	size_t end = (size_t)(b->tail % b->size);
-	*off += iterate_bits(b, 0, start, end);
+	if (b->size) {
+		size_t start = (size_t)(*off % b->size);
+		size_t end = (size_t)(b->tail % b->size);
+		*off += iterate_bits(b, 0, start, end);
+	}
 	return *off < b->tail;
 }

@@ -222,6 +222,8 @@ void q_start_runtime(struct handshake *h, tick_t now) {
 	c->prot_pkts.sent = (qtx_packet_t*)(c + 1);
 	c->prot_pkts.sent_len = (h->conn_buf_end - (uint8_t*)(c+1)) / sizeof(qtx_packet_t);
 	c->peer_verified = true;
+	c->path_validated = true;
+	c->challenge_sent = true;
 	cancel_apc(c->dispatcher, &c->rx_timer);
 	q_update_scheduler_from_cfg(c);
 	q_cwnd_init(c);

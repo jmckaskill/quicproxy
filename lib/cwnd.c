@@ -1,8 +1,5 @@
 #include "internal.h"
 
-#define INITIAL_WINDOW MIN(10*DEFAULT_PACKET_SIZE, MAX(2*DEFAULT_PACKET_SIZE, 14600))
-#define MIN_WINDOW (2*DEFAULT_PACKET_SIZE)
-
 size_t q_cwnd_allowed_bytes(struct connection *c) {
 	if (c->bytes_in_flight < c->congestion_window) {
 		return (size_t)(c->congestion_window - c->bytes_in_flight);
@@ -25,13 +22,17 @@ size_t q_cwnd_allowed_bytes(struct connection *c) {
 void q_cwnd_init(struct connection *c) {
 	c->congestion_window = INITIAL_WINDOW;
 	c->bytes_in_flight = 0;
-	c->end_of_recovery = 0;
+	c->after_recovery = 0;
 	c->slow_start_threshold = UINT64_MAX;
-	c->ecn_ce_counter = 0;
 }
 
 static size_t packet_bytes(const qtx_packet_t *pkt) {
-	return q_scheduler_cwnd_size(pkt) + q_stream_cwnd_size(pkt);
+	size_t datasz = q_scheduler_cwnd_size(pkt) + q_stream_cwnd_size(pkt) + q_path_cwnd_size(pkt);
+	if (!datasz) {
+		return 0;
+	}
+	size_t ack_size = 10; // rough ballpark average as we don't keep track of the actual size
+	return datasz + 1 + DEFAULT_SERVER_ID_LEN + ack_size + QUIC_TAG_SIZE;
 }
 
 /*
@@ -40,7 +41,7 @@ static size_t packet_bytes(const qtx_packet_t *pkt) {
 */
 
 static bool in_recovery(struct connection *c, uint64_t pktnum) {
-	return pktnum <= c->end_of_recovery;
+	return pktnum < c->after_recovery;
 }
 
 /*
@@ -97,7 +98,7 @@ void q_cwnd_ack(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt) 
 
 static void congestion_event(struct connection *c, uint64_t pktnum) {
 	if (!in_recovery(c, pktnum)) {
-		c->end_of_recovery = c->prot_pkts.tx_next - 1;
+		c->after_recovery = c->prot_pkts.tx_next;
 		c->congestion_window = MAX(c->congestion_window / 2, MIN_WINDOW);
 		c->slow_start_threshold = c->congestion_window;
 	}

@@ -186,7 +186,6 @@ static const qinterface_t test_interface = {
 	&close_test,
 	&shutdown_test,
 	&send_test,
-	NULL,
 	&new_test_stream,
 	&free_test_stream,
 	NULL,
@@ -207,11 +206,13 @@ static qconnection_cfg_t client_cfg = {
 
 static qconnection_cfg_t server_cfg = {
 	.bidi_streams = 1,
+	.uni_streams = 1,
 	.max_data = 4096,
 	.stream_data_bidi_remote = 1024,
 	.groups = TLS_DEFAULT_GROUPS,
 	.ciphers = TLS_DEFAULT_CIPHERS,
 	.signatures = TLS_DEFAULT_SIGNATURES,
+	.validate_path = true,
 };
 
 int main(int argc, const char *argv[]) {
@@ -220,7 +221,7 @@ int main(int argc, const char *argv[]) {
 	static const uint8_t token_key[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
 	qcipher_aes_gcm token_cipher;
 	init_aes_128_gcm(&token_cipher, token_key);
-	server_cfg.token_cipher = &token_cipher.vtable;
+	server_cfg.server_key = &token_cipher.vtable;
 
 	struct tester c = { &test_interface };
 	struct tester s = { &test_interface };
@@ -277,7 +278,7 @@ int main(int argc, const char *argv[]) {
 	EXPECT_EQ(QC_STATELESS_RETRY, qc_decode_request(&req, &server_cfg, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW));
 	c.msgn = 0;
 	s.msgv[0].sz = qc_reject(&req, QC_STATELESS_RETRY, s.msgv[0].buf, sizeof(s.msgv[0].buf));
-	EXPECT_EQ(1 + 4 + 1 + 8 + 8 + 1 + 8 + 4 + 1 + 8 + QUIC_TAG_SIZE, s.msgv[0].sz);
+	EXPECT_GT(s.msgv[0].sz, 0);
 
 	// Receive the retry & send another client hello
 	NOW += 10 * MS;
@@ -404,13 +405,12 @@ int main(int argc, const char *argv[]) {
 
 	// send a big chunk
 	c.stream_open = true;
-	qinit_stream(&c.s, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
+	qinit_stream(&c.s, c.txbuf, sizeof(c.txbuf), NULL, 0);
 	for (int i = 0; i < 17400 / 4; i++) {
 		uint8_t le[4];
 		write_little_32(le, i);
 		qtx_write(&c.s, le, 4);
 	}
-	qtx_finish(&c.s);
 	qc_flush(c.c, &c.s);
 	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, c.msgn); // the new stream is at min flow
@@ -423,10 +423,10 @@ int main(int argc, const char *argv[]) {
 		}
 		c.msgn = 0;
 
-		EXPECT_TRUE(s.stream_open);
 		if (qrx_size(&s.s) == c.s.tx.tail) {
 			break;
 		}
+		EXPECT_TRUE(s.stream_open);
 
 		// generate the ack - this may have already been created
 		dispatch_apcs(&d, NOW, 1000);
@@ -436,13 +436,77 @@ int main(int argc, const char *argv[]) {
 		}
 		EXPECT_EQ(1, s.msgn);
 
+		// about half way through indicate that we've got all the data
+		if (qrx_size(&s.s) > c.s.tx.tail / 2) {
+			qtx_finish(&c.s);
+			qc_flush(c.c, &c.s);
+		}
+
 		// receive the ack & generate the next window full
 		NOW += 10 * MS;
 		qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
 		s.msgn = 0;
 		dispatch_apcs(&d, NOW, 1000);
-		EXPECT_EQ(4, c.msgn);
+		if (c.s.tx_max_sent < c.s.tx.tail) {
+			EXPECT_EQ(4, c.msgn);
+		}
+		EXPECT_GT(c.msgn, 0);
 	}
+
+	EXPECT_TRUE(!s.stream_open);
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(1, s.msgn); // ack and max id for uni streams
+
+	// Finish the stream on the client side
+	NOW += 10 * MS;
+	EXPECT_TRUE(!is_apc_active(&ch->h.c.tx_timer));
+	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	s.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(0, c.msgn);
+	EXPECT_TRUE(!c.stream_open);
+	NOW += 25 * MS;
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(1, c.msgn); // ack for the max id
+
+	// have the client migrate address on the ack
+	c4.sin_port++;
+	NOW += 10 * MS;
+	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
+	c.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_BYTES_EQ(ca, sizeof(c4), &sh->h.c.addr, sh->h.c.addr_len);
+	EXPECT_TRUE(!sh->h.c.path_validated && sh->h.c.challenge_sent);
+	EXPECT_EQ(1, s.msgn);
+	EXPECT_EQ(100 * 1000, sh->h.c.srtt);
+	EXPECT_EQ(0, sh->h.c.rttvar);
+	EXPECT_TRUE(!sh->h.c.have_srtt);
+	EXPECT_EQ(INITIAL_WINDOW, sh->h.c.congestion_window);
+
+	// receive the challenge on the client side
+	NOW += 10 * MS;
+	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	s.msgn = 0;
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(1, c.msgn);
+	EXPECT_TRUE(ch->h.c.have_path_response && ch->h.c.path_response_sent);
+
+	// receive the response on the server side
+	NOW += 10 * MS;
+	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
+	c.msgn = 0;
+	EXPECT_EQ(20 * 1000, sh->h.c.srtt);
+	EXPECT_TRUE(sh->h.c.have_srtt);
+	EXPECT_TRUE(sh->h.c.path_validated);
+	NOW += 25 * MS;
+	dispatch_apcs(&d, NOW, 1000);
+	EXPECT_EQ(1, s.msgn); // send back an ack
+
+	// receive the ack on the client side
+	NOW += 10 * MS;
+	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	s.msgn = 0;
+	EXPECT_TRUE(!ch->h.c.have_path_response);
 
 	// now have the server shut down the connection
 	NOW += 10 * MS;

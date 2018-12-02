@@ -74,7 +74,6 @@ static const qinterface_t server_interface = {
 	&server_close,
 	NULL,
 	&server_send,
-	NULL,
 	&server_open_stream,
 	&server_close_stream,
 	&server_read,
@@ -211,7 +210,7 @@ int main(int argc, const char *argv[]) {
 					LOG(debug, "failed to accept request");
 					continue;
 				}
-				memcpy(s.id, req.destination, QUIC_ADDRESS_SIZE);
+				memcpy(s.id, req.server, QUIC_ADDRESS_SIZE);
 				s.connected = true;
 			}
 

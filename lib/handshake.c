@@ -204,7 +204,7 @@ static int encode_transport(qslice_t *s, uint16_t parameter, uint32_t value, siz
 	return 0;
 }
 
-static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool disable_migration, const uint8_t *orig_dst) {
+static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, const uint8_t *orig_dst) {
 	if (s->p + 2 + 2 + 2 + 3 > s->e) {
 		return -1;
 	}
@@ -237,7 +237,7 @@ static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, bool
 	if (p->max_packet_size && encode_transport(s, TP_max_packet_size, p->max_packet_size, 2)) {
 		return -1;
 	}
-	if ((p->disable_migration || disable_migration) && encode_transport(s, TP_disable_migration, 0, 0)) {
+	if (p->disable_migration && encode_transport(s, TP_disable_migration, 0, 0)) {
 		return -1;
 	}
 	if (p->ack_delay_exponent && encode_transport(s, TP_ack_delay_exponent, p->ack_delay_exponent, 1)) {
@@ -357,7 +357,7 @@ int encode_encrypted_extensions(const struct server_handshake *sh, qslice_t *ps)
 		ver++;
 	}
 	versions_start[-1] = (uint8_t)(s.p - versions_start);
-	if (encode_transport_params(&s, cfg, (*sh->h.c.iface)->change_peer_address == NULL, sh->h.original_destination)) {
+	if (encode_transport_params(&s, cfg, sh->h.original_destination)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -516,7 +516,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	s.p += 2;
 	uint8_t *transport_start = s.p;
 	s.p = write_big_32(s.p, ch->initial_version ? ch->initial_version : ch->h.c.version);
-	if (encode_transport_params(&s, cfg, (*ch->h.c.iface)->change_peer_address == NULL, NULL)) {
+	if (encode_transport_params(&s, cfg, NULL)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -1396,7 +1396,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		}
 		q_start_runtime(h, rxtime);
 		// Once we start the runtime, we no longer want to track handshake packets.
-		return QC_ERR_DROP;
+		return level == QC_HANDSHAKE ? QC_ERR_DROP : 0;
 	}
 
 end:

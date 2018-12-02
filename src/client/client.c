@@ -73,7 +73,6 @@ static const qinterface_t client_interface = {
 	&client_send,
 	NULL,
 	NULL,
-	NULL,
 	&client_received,
 	&client_sent,
 	&client_start_chain,

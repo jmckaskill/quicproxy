@@ -14,13 +14,16 @@ build $obj/quic/connection.o: cc lib/connection.c
 build $obj/quic/cwnd.o: cc lib/cwnd.c
 build $obj/quic/handshake.o: cc lib/handshake.c
 build $obj/quic/kdf.o: cc lib/kdf.c
+build $obj/quic/migration.o: cc lib/migration.c
 build $obj/quic/packet.o: cc lib/packet.c
 build $obj/quic/pem.o: cc lib/pem.c
+build $obj/quic/retry.o: cc lib/retry.c
 build $obj/quic/scheduler.o: cc lib/scheduler.c
 build $obj/quic/shutdown.o: cc lib/shutdown.c
 build $obj/quic/signature.o: cc lib/signature.c
 build $obj/quic/stream.o: cc lib/stream.c
 build $obj/quic/timeouts.o: cc lib/timeouts.c
+build $obj/quic/version.o: cc lib/version.c
 build $obj/quic.lib: lib $
  $obj/quic/buffer.o $
  $obj/quic/cipher.o $
@@ -28,13 +31,16 @@ build $obj/quic.lib: lib $
  $obj/quic/cwnd.o $
  $obj/quic/handshake.o $
  $obj/quic/kdf.o $
+ $obj/quic/migration.o $
  $obj/quic/packet.o $
  $obj/quic/pem.o $
+ $obj/quic/retry.o $
  $obj/quic/scheduler.o $
  $obj/quic/shutdown.o $
  $obj/quic/signature.o $
  $obj/quic/stream.o $
  $obj/quic/timeouts.o $
+ $obj/quic/version.o $
 
 build $obj/quic/test_buffer.o: cc lib/buffer_test.c
 build $bin/test_buffer.log: run-test $bin/test_buffer.exe

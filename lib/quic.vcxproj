@@ -30,14 +30,17 @@
     <ClCompile Include="cwnd.c" />
     <ClCompile Include="handshake.c" />
     <ClCompile Include="kdf.c" />
+    <ClCompile Include="migration.c" />
     <ClCompile Include="packet.c" />
     <ClCompile Include="pem.c" />
     <ClCompile Include="quic_test.c" />
+    <ClCompile Include="retry.c" />
     <ClCompile Include="scheduler.c" />
     <ClCompile Include="shutdown.c" />
     <ClCompile Include="signature.c" />
     <ClCompile Include="stream.c" />
     <ClCompile Include="timeouts.c" />
+    <ClCompile Include="version.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="buffer.h" />

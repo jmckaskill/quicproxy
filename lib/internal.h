@@ -47,6 +47,8 @@
 #define QS_RX_STOP     (1 << 15)
 #define QS_RX_DATA_ACK (1 << 16)
 #define QS_TX_DIRTY    (1 << 17)
+#define QS_TX_START_SENT (1 << 18)
+#define QS_TX_START_ACK (1 << 29)
 
 #define QRST_STOPPING 0
 #define QRX_STREAM_MAX UINT64_C(0x4000000000000000)
@@ -102,12 +104,18 @@
 #define PENDING_BIDI 0
 #define PENDING_UNI 1
 
+#define PATH_CHALLENGE_IV 16
+#define RETRY_TOKEN_IV 32
+#define RETRY_ID_IV 512
 
 #define ARRAYSZ(A) (sizeof(A) / sizeof((A)[0]))
 #define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
 #define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+#define INITIAL_WINDOW MIN(10*DEFAULT_PACKET_SIZE, MAX(2*DEFAULT_PACKET_SIZE, 14600))
+#define MIN_WINDOW (2*DEFAULT_PACKET_SIZE)
 
 enum decoder_state {
 	SHELLO_START,
@@ -205,10 +213,14 @@ struct connection {
 	bool is_client;
 	bool have_prot_keys;
 	bool peer_verified;
+	bool path_validated;
+	bool challenge_sent;
 	bool handshake_complete;
 	bool closing;
 	bool draining;
 	bool have_srtt;
+	bool have_path_response;
+	bool path_response_sent;
 	int close_errnum;
 
 	qcipher_compat prot_tx;
@@ -236,7 +248,7 @@ struct connection {
 	// congestion window
 	uint64_t congestion_window;
 	uint64_t bytes_in_flight;
-	uint64_t end_of_recovery;
+	uint64_t after_recovery;
 	uint64_t slow_start_threshold;
 	uint64_t ecn_ce_counter;
 
@@ -250,6 +262,7 @@ struct connection {
 	tickdiff_t min_rtt;
 	tickdiff_t srtt;
 	tickdiff_t rttvar;
+	uint64_t next_rtt_pktnum;
 };
 
 struct handshake {
@@ -349,6 +362,7 @@ qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long
 struct short_packet {
 	qstream_t *stream;
 	uint64_t stream_off;
+	const uint8_t *path_challenge;
 	int close_errnum;
 	bool force_ack;
 	bool ignore_cwnd;
@@ -430,6 +444,26 @@ void q_cwnd_largest_lost(struct connection *c, uint64_t pktnum);
 void q_cwnd_rto_verified(struct connection *c, uint64_t pktnum);
 size_t q_cwnd_allowed_bytes(struct connection *c);
 
+// Retry
+size_t q_sockaddr_aad(uint8_t *o, const struct sockaddr *sa, socklen_t salen);
+int q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz);
+bool q_is_retry_valid(qconnect_request_t *req, const uint8_t *data, size_t len);
+void q_process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *source, qslice_t s, tick_t now);
+
+// Version negotiation
+int q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz);
+void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now);
+
+// Migration
+int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen);
+int q_decode_path_challenge(struct connection *c, qslice_t *p);
+int q_decode_path_response(struct connection *c, qslice_t *p);
+void q_ack_path_response(struct connection *c);
+void q_lost_path_challenge(struct connection *c);
+size_t q_path_cwnd_size(const qtx_packet_t *pkt);
+bool q_pending_migration(struct connection *c);
+int q_encode_migration(struct connection *c, qslice_t *p, qtx_packet_t *pkt);
+void q_commit_migration(struct connection *c, const qtx_packet_t *pkt);
 
 static inline uint64_t q_encode_ack_delay(tickdiff_t delay, unsigned exp) {
 	return delay >> (exp ? exp : QUIC_ACK_DELAY_SHIFT);

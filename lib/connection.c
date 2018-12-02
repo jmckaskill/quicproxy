@@ -28,13 +28,14 @@ static void update_oldest_packet(qpacket_buffer_t *b) {
 
 // from & to form a closed range
 static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to) {
-	for (uint64_t num = from; num <= to; num++) {
+	for (int64_t inum = to; inum >= (int64_t)from; inum--) {
+		uint64_t num = (uint64_t)inum;
 		if (num < b->tx_oldest) {
-			continue;
+			break;
 		}
 
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		if (b == &c->prot_pkts) {
+		if (c->path_validated && b == &c->prot_pkts) {
 			q_cwnd_ack(c, num, pkt);
 		}
 		if (pkt->stream) {
@@ -50,6 +51,9 @@ static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_
 		if (flags & QPKT_CRYPTO) {
 			q_ack_crypto(c, pkt);
 		}
+		if (flags & QPKT_PATH_RESPONSE) {
+			q_ack_path_response(c);
+		}
 		if (flags & QPKT_RETRANSMIT) {
 			c->retransmit_packets--;
 		}
@@ -62,9 +66,10 @@ static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_
 }
 
 static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to, uint64_t largest, tick_t now) {
-	for (uint64_t num = from; num <= to; num++) {
+	for (int64_t inum = to; inum >= (int64_t)from; inum--) {
+		uint64_t num = (uint64_t)inum;
 		if (num < b->tx_oldest) {
-			continue;
+			break;
 		}
 		tick_t lost = now - (c->srtt * 9 / 8);
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
@@ -73,7 +78,7 @@ static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_
 			continue;
 		}
 		// packet is lost
-		if (b == &c->prot_pkts) {
+		if (c->path_validated && b == &c->prot_pkts) {
 			q_cwnd_lost(c, pkt);
 		}
 		if (pkt->stream) {
@@ -88,6 +93,9 @@ static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_
 		}
 		if (flags & QPKT_CRYPTO) {
 			q_lost_crypto(c, pkt);
+		}
+		if (flags & QPKT_PATH_CHALLENGE) {
+			q_lost_path_challenge(c);
 		}
 		if (flags & QPKT_RETRANSMIT) {
 			c->retransmit_packets--;
@@ -131,7 +139,7 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 	uint64_t largest_lost = UINT64_MAX;
 	qtx_packet_t *pkt = &b->sent[largest % b->sent_len];
 
-	if (pkt->off != UINT64_MAX) {
+	if (pkt->off != UINT64_MAX && largest >= c->next_rtt_pktnum) {
 		tickdiff_t latest_rtt = (tickdiff_t)(rxtime - pkt->sent);
 		c->min_rtt = MIN(c->min_rtt, latest_rtt);
 
@@ -172,7 +180,7 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 		largest_lost = b->tx_oldest;
 	}
 
-	if (largest_lost != UINT64_MAX) {
+	if (largest_lost != UINT64_MAX && level == QC_PROTECTED) {
 		q_cwnd_largest_lost(c, largest_lost);
 	}
 
@@ -284,21 +292,18 @@ static int process_protected_frame(struct connection *c, qslice_t *s, tick_t rxt
 		case ACK:
 			LOG(c->local_cfg->debug, "RX ACK");
 			return decode_ack(c, QC_PROTECTED, hdr, s, rxtime);
+		case PATH_CHALLENGE:
+			q_async_ack(c, rxtime);
+			return q_decode_path_challenge(c, s);
 		case PATH_RESPONSE:
-		case PATH_CHALLENGE: {
-			if (s->p + 8 > s->e) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			s->p += 8;
-			LOG(c->local_cfg->debug, "RX PATH CHLG/RESP");
-			q_fast_async_ack(c, rxtime);
-			return 0;
-		}
+			q_async_ack(c, rxtime);
+			return q_decode_path_response(c, s);
 		case NEW_TOKEN: {
 			uint64_t len;
 			if (decode_varint(s, &len) || len > (uint64_t)(s->e - s->p)) {
 				return QC_ERR_FRAME_ENCODING;
 			}
+			s->p += (size_t)len;
 			LOG(c->local_cfg->debug, "RX TOKEN");
 			q_async_ack(c, rxtime);
 			return 0;
@@ -334,8 +339,31 @@ static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcryp
 	}
 }
 
-static int process_packet(struct connection *c, qslice_t s, enum qcrypto_level level, tick_t rxtime) {
-	int err = 0;
+static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t *s, uint64_t *pktnum) {
+	// copy the encoded packet number data out so that if it is less
+	// than 4 bytes, we can copy it back after
+	uint8_t tmp[4];
+	memcpy(tmp, s->p, 4);
+	(*k)->protect(k, s->p, 4, s->e - s->p);
+	uint8_t *begin = s->p;
+	if (decode_packet_number(s, pktnum)) {
+		return -1;
+	}
+	memcpy(s->p, tmp + (s->p - begin), 4 - (s->p - begin));
+	s->e -= QUIC_TAG_SIZE;
+	return s->p > s->e || (*k)->decrypt(k, *pktnum, pkt_begin, (size_t)(s->p - pkt_begin), s->p, s->e);
+}
+
+static int process_packet(struct connection *c, const qcipher_class **key, enum qcrypto_level level, uint8_t *pkt_begin, qslice_t s, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+	uint64_t pktnum;
+	if (decrypt_packet(key, pkt_begin, &s, &pktnum)) {
+		return 0;
+	}
+	int err = q_update_address(c, pktnum, sa, salen);
+	if (err) {
+		q_internal_shutdown(c, err, rxtime);
+		return -1;
+	}
 	while (!err && s.p < s.e) {
 		if (!c->peer_verified) {
 			err = process_handshake_frame(c, &s, level, rxtime);
@@ -344,7 +372,16 @@ static int process_packet(struct connection *c, qslice_t s, enum qcrypto_level l
 			err = process_protected_frame(c, &s, rxtime);
 		}
 	}
-	return err;
+	if (!err) {
+		q_receive_packet(c, level, pktnum, rxtime);
+	} else if (err != QC_ERR_DROP) {
+		q_internal_shutdown(c, err, rxtime);
+		return -1;
+	}
+	if (c->path_validated) {
+		q_start_idle_timer(c, rxtime);
+	}
+	return 0;
 }
 
 int qc_get_destination(void *buf, size_t len, uint8_t *out) {
@@ -367,131 +404,6 @@ int qc_get_destination(void *buf, size_t len, uint8_t *out) {
 	return 0;
 }
 
-static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t *s, uint64_t *pktnum) {
-	// copy the encoded packet number data out so that if it is less
-	// than 4 bytes, we can copy it back after
-	uint8_t tmp[4];
-	memcpy(tmp, s->p, 4);
-	(*k)->protect(k, s->p, 4, s->e - s->p);
-	uint8_t *begin = s->p;
-	if (decode_packet_number(s, pktnum)) {
-		return -1;
-	}
-	memcpy(s->p, tmp + (s->p - begin), 4 - (s->p - begin));
-	s->e -= QUIC_TAG_SIZE;
-	return s->p > s->e || (*k)->decrypt(k, *pktnum, pkt_begin, (size_t)(s->p - pkt_begin), s->p, s->e);
-}
-
-static size_t sockaddr_aad(uint8_t *o, const struct sockaddr *sa, socklen_t salen) {
-	uint8_t *begin = o;
-	switch (sa->sa_family) {
-	case AF_INET6: {
-		struct sockaddr_in6 *sa6 = (struct sockaddr_in6*) sa;
-		*(o++) = AF_INET6;
-		o = append(o, &sa6->sin6_addr, sizeof(sa6->sin6_addr));
-		o = append(o, &sa6->sin6_port, sizeof(sa6->sin6_port));
-		o = append(o, &sa6->sin6_scope_id, sizeof(sa6->sin6_scope_id)); // include the interface id for link-local addresses
-		return (size_t)(o - begin);
-	}
-	case AF_INET: {
-		struct sockaddr_in *sa4 = (struct sockaddr_in*) sa;
-		*(o++) = AF_INET;
-		o = append(o, &sa4->sin_addr, sizeof(sa4->sin_addr));
-		o = append(o, &sa4->sin_port, sizeof(sa4->sin_port));
-		return (size_t)(o - begin);
-	}
-	default:
-		assert(0);
-		return 0;
-	}
-}
-
-static bool is_token_valid(const qcipher_class **c, const uint8_t *token, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime, uint8_t *odst) {
-	uint8_t buf[512], *p = buf;
-	if (len < 4 + 1 + QUIC_TAG_SIZE || len > sizeof(buf)) {
-		return false;
-	}
-	memcpy(buf, token, len);
-	uint8_t aad[sizeof(struct sockaddr_storage)];
-	size_t aad_len = sockaddr_aad(aad, sa, salen);
-	uint8_t *tag = buf + len - QUIC_TAG_SIZE;
-	if ((*c)->decrypt(c, 0, aad, aad_len, p, tag)) {
-		return false;
-	}
-	tick_t create = little_32(p);
-	p += 4;
-	tickdiff_t delta = (tickdiff_t)(rxtime - create);
-	if (delta < 0 || delta > QUIC_TOKEN_TIMEOUT) {
-		return false;
-	}
-	odst[0] = *(p++);
-	if (p + odst[0] > tag || odst[0] > QUIC_ADDRESS_SIZE - 1) {
-		return false;
-	}
-	memcpy(odst + 1, p, odst[0]);
-	return true;
-}
-
-static int encode_retry(qconnect_request_t *req, void *buf, size_t bufsz) {
-	qslice_t s;
-	s.p = buf;
-	s.e = s.p + bufsz;
-	br_hmac_drbg_context rand;
-	if (seed_rand(&rand, req->server_cfg) || s.p + 1 + 4 + 1 + 8 + req->source[0] + 1 + req->destination[0] + 4 + 1 + req->destination[0] + QUIC_TAG_SIZE > s.e) {
-		return 0;
-	}
-
-	// packet header
-	*(s.p++) = RETRY_PACKET;
-	s.p = write_big_32(s.p, req->version);
-
-	// peer & local ids
-	uint8_t new_dst[QUIC_ADDRESS_SIZE];
-	generate_id(&rand.vtable, new_dst);
-	*(s.p++) = (encode_id_len(req->source[0]) << 4) | encode_id_len(new_dst[0]);
-	s.p = append(s.p, req->source + 1, req->source[0]);
-	s.p = append(s.p, new_dst + 1, new_dst[0]);
-
-	// original destination
-	*(s.p++) = 0xE0 | encode_id_len(req->destination[0]);
-	s.p = append(s.p, req->destination + 1, req->destination[0]);
-
-	// token data: timestamp & original destination
-	uint8_t *token = s.p;
-	s.p = write_little_32(s.p, req->rxtime);
-	s.p = append(s.p, req->destination, 1 + req->destination[0]);
-
-	// encrypt the token using the socket address as additional data
-	uint8_t aad[sizeof(struct sockaddr_storage)];
-	size_t aad_len = sockaddr_aad(aad, req->sa, req->salen);
-	(*req->server_cfg->token_cipher)->encrypt(req->server_cfg->token_cipher, 0, aad, aad_len, token, s.p);
-	s.p += QUIC_TAG_SIZE;
-
-	return (size_t)(s.p - (uint8_t*)buf);
-}
-
-static void process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *source, qslice_t s, tick_t now) {
-	if (s.p + 1 > s.e) {
-		return;
-	}
-	uint8_t odcil = decode_id_len(*(s.p++) & 0xF);
-	if (s.p + odcil > s.e || odcil != ch->h.c.peer_id[0] || memcmp(s.p, ch->h.c.peer_id+1, odcil)) {
-		return;
-	}
-	s.p += odcil;
-	if ((size_t)(s.e - s.p) > sizeof(ch->token)) {
-		q_internal_shutdown(&ch->h.c, QC_ERR_INTERNAL, now);
-		return;
-	}
-	memcpy(ch->h.original_destination, ch->h.c.peer_id, QUIC_ADDRESS_SIZE);
-	ch->h.c.peer_id[0] = scil;
-	memcpy(ch->h.c.peer_id + 1, source, scil);
-	memset(ch->h.c.peer_id + 1 + scil, 0, QUIC_ADDRESS_SIZE - scil - 1);
-	ch->token_size = (uint8_t)(s.e - s.p);
-	memcpy(ch->token, s.p, ch->token_size);
-	q_send_client_hello(ch, &now);
-}
-
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, void *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	assert(sa != NULL);
 	memset(req, 0, sizeof(*req));
@@ -508,20 +420,20 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	}
 	uint32_t version = big_32(s.p);
 	s.p += 4;
-	req->destination[0] = decode_id_len(*s.p >> 4);
-	req->source[0] = decode_id_len(*s.p & 0xF);
+	req->server[0] = decode_id_len(*s.p >> 4);
+	req->client[0] = decode_id_len(*s.p & 0xF);
 	s.p++;
-	if (s.p + req->destination[0] + req->source[0] > s.e) {
+	if (s.p + req->server[0] + req->client[0] > s.e) {
 		return QC_PARSE_ERROR;
 	}
 
 	// destination
-	memcpy(req->destination + 1, s.p, req->destination[0]);
-	s.p += req->destination[0];
+	memcpy(req->server + 1, s.p, req->server[0]);
+	s.p += req->server[0];
 
 	// source
-	memcpy(req->source + 1, s.p, req->source[0]);
-	s.p += req->source[0];
+	memcpy(req->client + 1, s.p, req->client[0]);
+	s.p += req->client[0];
 
 	// check version
 	if (version != QUIC_VERSION) {
@@ -529,7 +441,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	}
 	req->version = version;
 
-	if (req->destination[0] != DEFAULT_SERVER_ID_LEN) {
+	if (req->server[0] != DEFAULT_SERVER_ID_LEN) {
 		return QC_PARSE_ERROR;
 	}
 
@@ -537,7 +449,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	uint64_t toksz;
 	if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
 		return QC_PARSE_ERROR;
-	} else if (cfg->token_cipher && !is_token_valid(cfg->token_cipher, s.p, (size_t)toksz, sa, salen, rxtime, req->original_destination)) {
+	} else if (cfg->validate_path && !q_is_retry_valid(req, s.p, (size_t)toksz)) {
 		return QC_STATELESS_RETRY;
 	}
 	s.p += toksz;
@@ -551,7 +463,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 
 	// decrypt
 	qcipher_aes_gcm key;
-	init_initial_cipher(&key, true, req->destination);
+	init_initial_cipher(&key, true, req->server);
 	if (decrypt_packet(&key.vtable, (uint8_t*)buf, &s, &req->pktnum)) {
 		return QC_PARSE_ERROR;
 	}
@@ -564,6 +476,9 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 			s.p = find_non_padding(s.p, s.e);
 			break;
 		case CRYPTO: {
+			if (req->chello) {
+				return QC_PARSE_ERROR;
+			}
 			uint64_t off, len;
 			if (decode_varint(&s, &off) || off != 0 || decode_varint(&s, &len) || len > (uint64_t)(s.e - s.p)) {
 				return QC_PARSE_ERROR;
@@ -585,61 +500,17 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	return 0;
 }
 
-uint32_t QUIC_VERSIONS[] = {
-	QUIC_VERSION,
-	0x4A5A6A7A,
-	0,
-};
-
-static int encode_version_negotiation(qconnect_request_t *req, void *buf, size_t bufsz) {
-	const uint32_t *ver = req->server_cfg->versions ? req->server_cfg->versions : QUIC_VERSIONS;
-	size_t num = 0;
-	while (ver[num]) {
-		num++;
-	}
-	if (1 + 4 + 1 + req->destination[0] + req->source[0] + num * 4 > bufsz) {
-		return 0;
-	}
-	uint8_t *p = buf;
-	*(p++) = 0xE3;
-	p = write_big_32(p, 0);
-	*(p++) = (encode_id_len(req->source[0]) << 4) | encode_id_len(req->destination[0]);
-	p = append(p, req->source + 1, req->source[0]);
-	p = append(p, req->destination + 1, req->destination[0]);
-	for (size_t i = 0; i < num; i++) {
-		p = write_big_32(p, ver[i]);
-	}
-	return p - (uint8_t*)buf;
-}
-
-static void process_version_negotiation(struct client_handshake *ch, qslice_t s, tick_t now) {
-	size_t n = (s.e - s.p) / 4;
-	struct connection *c = &ch->h.c;
-	const uint32_t *our_ver = c->local_cfg->versions ? c->local_cfg->versions : QUIC_VERSIONS;
-	while (*our_ver) {
-		for (size_t i = 0; i < n; i++) {
-			if (*our_ver == big_32(s.p + 4 * i)) {
-				ch->initial_version = c->version;
-				c->version = *our_ver;
-				q_send_client_hello(ch, &now);
-				return;
-			}
-		}
-		our_ver++;
-	}
-	q_internal_shutdown(&ch->h.c, QC_ERR_VERSION_NEGOTIATION, now);
-}
-
 int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
 	switch (err) {
 	case QC_WRONG_VERSION:
-		return encode_version_negotiation(req, buf, bufsz);
+		return q_encode_version(req, buf, bufsz);
 	case QC_STATELESS_RETRY:
-		return encode_retry(req, buf, bufsz);
+		return q_encode_retry(req, buf, bufsz);
 	default:
 		return 0;
 	}
 }
+
 
 void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	assert(sa != NULL);
@@ -675,7 +546,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			// check the version
 			struct client_handshake *ch = (struct client_handshake*)c;
 			if (c->is_client && !c->peer_verified && !ch->initial_version && !version) {
-				process_version_negotiation(ch, s, rxtime);
+				q_process_version(ch, s, rxtime);
 				return;
 			} else if (version != QUIC_VERSION) {
 				return;
@@ -695,7 +566,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 				break;
 			case RETRY_PACKET:
 				if (c->is_client && !c->peer_verified && !ch->h.original_destination[0]) {
-					process_retry(ch, scil, source, s, rxtime);
+					q_process_retry(ch, scil, source, s, rxtime);
 				}
 				return;
 			default:
@@ -725,35 +596,15 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 				continue;
 			}
 
-			uint64_t pktnum;
-			if (decrypt_packet(&key.vtable, pkt_begin, &pkt, &pktnum)) {
-				continue;
-			}
-			q_start_idle_timer(c, rxtime);
-			int err = process_packet(c, pkt, level, rxtime);
-			if (!err) {
-				q_receive_packet(c, level, pktnum, rxtime);
-			} else if (err != QC_ERR_DROP) {
-				q_internal_shutdown(c, err, rxtime);
+			if (process_packet(c, &key.vtable, level, pkt_begin, pkt, sa, salen, rxtime)) {
 				return;
 			}
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
 			s.p += DEFAULT_SERVER_ID_LEN;
-			if (s.p > s.e || !c->have_prot_keys) {
-				return;
-			}
-			uint64_t pktnum;
-			if (decrypt_packet(&c->prot_rx.vtable, pkt_begin, &s, &pktnum)) {
-				return;
-			}
-			q_start_idle_timer(c, rxtime);
-			int err = process_packet(c, s, QC_PROTECTED, rxtime);
-			if (!err) {
-				q_receive_packet(c, QC_PROTECTED, pktnum, rxtime);
-			} else if (err != QC_ERR_DROP) {
-				q_internal_shutdown(c, err, rxtime);
+			if (s.p <= s.e && c->have_prot_keys) {
+				process_packet(c, &c->prot_rx.vtable, QC_PROTECTED, pkt_begin, s, sa, salen, rxtime);
 			}
 			return;
 		}
@@ -840,10 +691,10 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	c->local_cfg = req->server_cfg;
 	c->peer_cfg = req->client_cfg;
 	sh->signer = signer;
-	memcpy(c->peer_id, req->source, QUIC_ADDRESS_SIZE);
-	memcpy(c->local_id, req->destination, QUIC_ADDRESS_SIZE);
+	memcpy(c->peer_id, req->client, QUIC_ADDRESS_SIZE);
+	memcpy(c->local_id, req->server, QUIC_ADDRESS_SIZE);
 	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
-	memcpy(h->original_destination, req->original_destination, QUIC_ADDRESS_SIZE);
+	memcpy(h->original_destination, req->orig_server, QUIC_ADDRESS_SIZE);
 	memcpy(&c->addr, req->sa, req->salen);
 	c->addr_len = req->salen;
 	h->level = QC_PROTECTED;

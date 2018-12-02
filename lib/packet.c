@@ -287,6 +287,9 @@ int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pn
 	if (q_encode_scheduler(c, &p, pkt)) {
 		return -1;
 	}
+	if (q_encode_migration(c, &p, pkt)) {
+		return -1;
+	}
 
 	// client finished
 	if (include_client_finished) {
@@ -361,6 +364,7 @@ int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pn
 		q_commit_stream(c, s->stream, pkt);
 	}
 	q_commit_scheduler(c, pkt);
+	q_commit_migration(c, pkt);
 	q_cwnd_sent(c, pkt);
 	pkts->tx_next++;
 	if (pnow) {

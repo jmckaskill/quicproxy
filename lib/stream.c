@@ -23,6 +23,7 @@ void q_setup_remote_stream(struct connection *c, qstream_t *s, uint64_t id) {
 	}
 	assert(qbuf_max(&s->rx) >= s->rx_max_allowed);
 	s->id = id;
+	s->flags |= QS_TX_START_SENT | QS_TX_START_ACK;
 }
 
 void q_setup_local_stream(struct connection *c, qstream_t *s, uint64_t id) {
@@ -220,9 +221,8 @@ int q_encode_stream(struct connection *c, qslice_t *p, const qstream_t *s, uint6
 	}
 	assert(s->id != UINT64_MAX);
 
-	// send in every packet for now
 	uint64_t new_max = qbuf_max(&s->rx);
-	if (new_max > s->rx_max_allowed) {
+	if (new_max > s->rx_max_allowed && !(s->flags & QS_TX_STOP)) {
 		*(p->p++) = MAX_STREAM_DATA;
 		p->p = encode_varint(p->p, s->id);
 		p->p = encode_varint(p->p, new_max);
@@ -244,7 +244,8 @@ int q_encode_stream(struct connection *c, qslice_t *p, const qstream_t *s, uint6
 		pkt->flags |= QPKT_RETRANSMIT | QPKT_RST;
 	}
 
-	if ((qbuf_next_valid(&s->tx, poff) && *poff < s->tx_max_allowed) || ((s->flags & QS_TX_FIN) && !(s->flags & QS_TX_FIN_SENT))) {
+	bool not_started = !(s->flags & QS_TX_START_SENT);
+	if (not_started || (qbuf_next_valid(&s->tx, poff) && *poff < s->tx_max_allowed) || ((s->flags & QS_TX_FIN) && !(s->flags & QS_TX_FIN_SENT))) {
 		uint8_t *stream_header = p->p;
 		*(p->p++) = STREAM | STREAM_LEN_FLAG;
 		p->p = encode_varint(p->p, s->id);
@@ -263,12 +264,12 @@ int q_encode_stream(struct connection *c, qslice_t *p, const qstream_t *s, uint6
 
 		bool have_fin = at_tx_eof(s, *poff + sz);
 
-		if (have_fin || sz) {
+		if (have_fin || sz || not_started) {
 			if (have_fin) {
 				*stream_header |= STREAM_FIN_FLAG;
 				pkt->flags |= QPKT_FIN;
 			}
-			if (sz) {
+			if (sz || not_started) {
 				pkt->off = *poff;
 				pkt->len = sz;
 				pkt->flags |= QPKT_RETRANSMIT;
@@ -311,8 +312,9 @@ void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 			c->data_sent += new_data;
 			s->tx_max_sent = end;
 		}
-		insert_stream_packet(s, pkt, pkt->off);
 	}
+	s->flags |= QS_TX_START_SENT;
+	insert_stream_packet(s, pkt, pkt->off);
 	pkt->stream = s;
 }
 
@@ -343,6 +345,7 @@ void q_ack_stream(struct connection *c, qtx_packet_t *pkt) {
 	if (((s->flags & QS_RX_FIN_ACK) && (s->flags & QS_RX_DATA_ACK)) || (s->flags & QS_RX_RST_ACK)) {
 		s->flags |= QS_TX_COMPLETE;
 	}
+	s->flags |= QS_TX_START_ACK;
 	remove_stream_if_complete(c, s);
 }
 
@@ -360,9 +363,14 @@ void q_lost_stream(struct connection *c, qtx_packet_t *pkt) {
 	if (pkt->flags & QPKT_FIN && !(s->flags & QS_RX_FIN_ACK)) {
 		s->flags &= ~QS_TX_FIN_SENT;
 	}
+	if (!(s->flags & QS_TX_START_ACK)) {
+		s->flags &= ~QS_TX_START_SENT;
+	}
 	if (!(s->flags & QS_TX_RST) && pkt->len) {
 		qbuf_mark_valid(&s->tx, pkt->off, pkt->len);
 	}
+	s->flags |= QS_TX_DIRTY;
+	qc_flush((qconnection_t*)c, s);
 }
 
 
