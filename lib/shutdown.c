@@ -1,6 +1,6 @@
 #include "internal.h"
 
-void q_send_close(qconnection_t *c, tick_t now) {
+void q_send_close(struct connection *c, tick_t now) {
 	struct short_packet sp = {
 		.ignore_cwnd = true,
 		.ignore_closing = true,
@@ -11,7 +11,7 @@ void q_send_close(qconnection_t *c, tick_t now) {
 	q_send_short_packet(c, &sp, &now);
 }
 
-static void free_streams(qconnection_t *c) {
+static void free_streams(struct connection *c) {
 	if ((*c->iface)->free_stream) {
 		for (int i = 0; i < 4; i++) {
 			for (rbnode *n = rb_begin(&c->rx_streams[i], RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
@@ -28,7 +28,8 @@ static void free_streams(qconnection_t *c) {
 	}
 }
 
-void qc_shutdown(qconnection_t *c, int error) {
+void qc_shutdown(qconnection_t *cin, int error) {
+	struct connection *c = (struct connection*)cin;
 	if (!c->closing) {
 		c->closing = true;
 		c->close_errnum = error;
@@ -37,7 +38,7 @@ void qc_shutdown(qconnection_t *c, int error) {
 	}
 }
 
-void q_internal_shutdown(qconnection_t *c, int error, tick_t now) {
+void q_internal_shutdown(struct connection *c, int error, tick_t now) {
 	if (!c->closing) {
 		c->closing = true;
 		c->close_errnum = error;
@@ -49,7 +50,7 @@ void q_internal_shutdown(qconnection_t *c, int error, tick_t now) {
 	}
 }
 
-int q_decode_close(qconnection_t *c, uint8_t hdr, qslice_t *s, tick_t rxtime) {
+int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t rxtime) {
 	if (s->p + 2 + 1 > s->e) {
 		return QC_ERR_FRAME_ENCODING;
 	}
@@ -68,7 +69,7 @@ int q_decode_close(qconnection_t *c, uint8_t hdr, qslice_t *s, tick_t rxtime) {
 	return 0;
 }
 
-int q_encode_close(qconnection_t *c, qslice_t *s, qtx_packet_t *pkt) {
+int q_encode_close(struct connection *c, qslice_t *s, qtx_packet_t *pkt) {
 	if (s->p + 1 + 2 + 1 + 1 > s->e) {
 		return -1;
 	}
@@ -93,10 +94,10 @@ int q_encode_close(qconnection_t *c, qslice_t *s, qtx_packet_t *pkt) {
 	return 0;
 }
 
-void q_ack_close(qconnection_t *c) {
+void q_ack_close(struct connection *c) {
 	c->draining = true;
 }
 
-void q_lost_close(qconnection_t *c, tick_t now) {
+void q_lost_close(struct connection *c, tick_t now) {
 	q_send_close(c, now);
 }

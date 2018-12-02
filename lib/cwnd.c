@@ -3,7 +3,7 @@
 #define INITIAL_WINDOW MIN(10*DEFAULT_PACKET_SIZE, MAX(2*DEFAULT_PACKET_SIZE, 14600))
 #define MIN_WINDOW (2*DEFAULT_PACKET_SIZE)
 
-size_t q_cwnd_allowed_bytes(qconnection_t *c) {
+size_t q_cwnd_allowed_bytes(struct connection *c) {
 	if (c->bytes_in_flight < c->congestion_window) {
 		return (size_t)(c->congestion_window - c->bytes_in_flight);
 	} else {
@@ -22,7 +22,7 @@ size_t q_cwnd_allowed_bytes(qconnection_t *c) {
 	  ecn_ce_counter = 0
 */
 
-void q_cwnd_init(qconnection_t *c) {
+void q_cwnd_init(struct connection *c) {
 	c->congestion_window = INITIAL_WINDOW;
 	c->bytes_in_flight = 0;
 	c->end_of_recovery = 0;
@@ -39,7 +39,7 @@ static size_t packet_bytes(const qtx_packet_t *pkt) {
 		return packet_number <= end_of_recovery
 */
 
-static bool in_recovery(qconnection_t *c, uint64_t pktnum) {
+static bool in_recovery(struct connection *c, uint64_t pktnum) {
 	return pktnum <= c->end_of_recovery;
 }
 
@@ -51,7 +51,7 @@ static bool in_recovery(qconnection_t *c, uint64_t pktnum) {
 		bytes_in_flight += bytes_sent
 */
 
-void q_cwnd_sent(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt) {
 	c->bytes_in_flight += packet_bytes(pkt);
 }
 /*
@@ -69,7 +69,7 @@ void q_cwnd_sent(qconnection_t *c, const qtx_packet_t *pkt) {
 			congestion_window += kMaxDatagramSize * acked_packet.bytes / congestion_window
 */
 
-void q_cwnd_ack(qconnection_t *c, uint64_t pktnum, const qtx_packet_t *pkt) {
+void q_cwnd_ack(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt) {
 	size_t bytes = packet_bytes(pkt);
 	c->bytes_in_flight -= bytes;
 	if (in_recovery(c, pktnum)) {
@@ -95,9 +95,9 @@ void q_cwnd_ack(qconnection_t *c, uint64_t pktnum, const qtx_packet_t *pkt) {
 		  ssthresh = congestion_window
 */
 
-static void congestion_event(qconnection_t *c, uint64_t pktnum) {
+static void congestion_event(struct connection *c, uint64_t pktnum) {
 	if (!in_recovery(c, pktnum)) {
-		c->end_of_recovery = c->pkts[QC_PROTECTED].tx_next - 1;
+		c->end_of_recovery = c->prot_pkts.tx_next - 1;
 		c->congestion_window = MAX(c->congestion_window / 2, MIN_WINDOW);
 		c->slow_start_threshold = c->congestion_window;
 	}
@@ -116,7 +116,7 @@ static void congestion_event(qconnection_t *c, uint64_t pktnum) {
 		  // packet is past the end of the previous recovery epoch.
 		  CongestionEvent(ack.largest_acked_packet)
 */
-void q_cwnd_ecn(qconnection_t *c, uint64_t pktnum, uint64_t ecn_ce) {
+void q_cwnd_ecn(struct connection *c, uint64_t pktnum, uint64_t ecn_ce) {
 	if (ecn_ce > c->ecn_ce_counter) {
 		c->ecn_ce_counter = ecn_ce;
 		congestion_event(c, pktnum);
@@ -137,11 +137,11 @@ void q_cwnd_ecn(qconnection_t *c, uint64_t pktnum, uint64_t ecn_ce) {
 		// is past the end of the previous recovery epoch.
 		CongestionEvent(largest_lost_packet.packet_number)
 */
-void q_cwnd_lost(qconnection_t *c, const qtx_packet_t *pkt) {
+void q_cwnd_lost(struct connection *c, const qtx_packet_t *pkt) {
 	c->bytes_in_flight -= packet_bytes(pkt);
 }
 
-void q_cwnd_largest_lost(qconnection_t *c, uint64_t pktnum) {
+void q_cwnd_largest_lost(struct connection *c, uint64_t pktnum) {
 	congestion_event(c, pktnum);
 }
 
@@ -158,7 +158,7 @@ void q_cwnd_largest_lost(qconnection_t *c, uint64_t pktnum) {
 			bytes_in_flight -= sent_packet.bytes
 			sent_packets.remove(sent_packet.packet_number)
 */
-void q_cwnd_rto_verified(qconnection_t *c, uint64_t pktnum) {
+void q_cwnd_rto_verified(struct connection *c, uint64_t pktnum) {
 	c->congestion_window = MIN_WINDOW;
 }
 

@@ -20,10 +20,9 @@ struct server {
 	int fd;
 	socklen_t salen;
 	struct sockaddr_storage ss;
-	qconnection_t conn;
+	qconnection_t conn[1024];
 	qstream_t stream;
 	bool stream_opened;
-	uint8_t pktbuf[4096];
 	uint8_t txbuf[4096];
 	uint8_t rxbuf[4096];
 };
@@ -34,12 +33,12 @@ static void server_close(const qinterface_t **vt) {
 	s->stream_opened = false;
 }
 
-static int server_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+static int server_send(const qinterface_t **vt, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent) {
 	struct server *s = (struct server*) vt;
 	stack_string str;
-	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, (struct sockaddr*)(addr ? addr : &s->ss), s->salen), (int)len);
+	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa ? sa : (struct sockaddr*)&s->ss, s->salen), (int)len);
 
-	if (sendto(s->fd, buf, (int)len, 0, (struct sockaddr*)(addr ? addr : &s->ss), s->salen) != (int)len) {
+	if (sendto(s->fd, buf, (int)len, 0, sa ? sa : (struct sockaddr*)&s->ss, s->salen) != (int)len) {
 		LOG(debug, "TX failed");
 		return -1;
 	}
@@ -70,7 +69,7 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	LOG(debug, "received '%s'", buf);
 	qtx_write(stream, "reply ", strlen("reply "));
 	qtx_write(stream, buf, sz);
-	qc_flush(&s->conn, stream);
+	qc_flush(s->conn, stream);
 }
 
 static const qinterface_t server_interface = {
@@ -181,9 +180,10 @@ int main(int argc, const char *argv[]) {
 
 		for (;;) {
 			struct sockaddr_storage ss;
+			struct sockaddr *sa = (struct sockaddr*) &ss;
 			socklen_t salen = sizeof(ss);
 			char buf[4096];
-			int sz = recvfrom(s.fd, buf, sizeof(buf), 0, (struct sockaddr*)&ss, &salen);
+			int sz = recvfrom(s.fd, buf, sizeof(buf), 0, sa, &salen);
 			if (sz < 0) {
 				if (would_block()) {
 					break;
@@ -194,7 +194,7 @@ int main(int argc, const char *argv[]) {
 			}
 
 			tick_t rxtime = get_tick();
-			LOG(debug, "RX from %s %d bytes", sockaddr_string(&str, (struct sockaddr*)&ss, salen), sz);
+			LOG(debug, "RX from %s %d bytes", sockaddr_string(&str, sa, salen), sz);
 
 			uint8_t dest[QUIC_ADDRESS_SIZE];
 			if (qc_get_destination(buf, sz, dest)) {
@@ -202,7 +202,7 @@ int main(int argc, const char *argv[]) {
 			}
 
 			if (s.connected && !memcmp(dest, s.id, QUIC_ADDRESS_SIZE)) {
-				qc_recv(&s.conn, NULL, buf, sz, rxtime );
+				qc_recv(s.conn, buf, sz, sa, salen, rxtime);
 			} else if (!s.connected) {
 				qconnect_request_t req;
 				if (qc_decode_request(&req, buf, sz, rxtime, &params)) {
@@ -211,7 +211,7 @@ int main(int argc, const char *argv[]) {
 				}
 				s.salen = salen;
 				memcpy(&s.ss, &ss, salen);
-				if (qc_accept(&s.conn, &d, &s.vtable, &req, &signer.vtable, s.pktbuf, sizeof(s.pktbuf))) {
+				if (qc_accept(s.conn, sizeof(s.conn), &d, &s.vtable, &req, &signer.vtable)) {
 					LOG(debug, "failed to accept request");
 					continue;
 				}

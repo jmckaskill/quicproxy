@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <math.h>
 
-static const char prng_nonce[] = "quicproxy prng nonce";
 
 
 ////////////////////////////////////////////////
@@ -14,8 +13,7 @@ static void update_oldest_packet(qpacket_buffer_t *b) {
 }
 
 // from & to form a closed range
-static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64_t from, uint64_t to) {
-	qpacket_buffer_t *b = &c->pkts[level];
+static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to) {
 	for (uint64_t num = from; num <= to; num++) {
 		if (num < b->tx_oldest) {
 			continue;
@@ -47,15 +45,14 @@ static void process_ack_range(qconnection_t *c, enum qcrypto_level level, uint64
 	}
 }
 
-static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64_t from, uint64_t to, uint64_t largest, tick_t now) {
-	qpacket_buffer_t *b = &c->pkts[level];
+static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to, uint64_t largest, tick_t now) {
 	for (uint64_t num = from; num <= to; num++) {
 		if (num < b->tx_oldest) {
 			continue;
 		}
 		tick_t lost = now - (c->srtt * 9 / 8);
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		if (level == QC_PROTECTED && num + 3 > largest && (int32_t)(pkt->sent - lost) > 0) {
+		if (b == &c->prot_pkts && num + 3 > largest && (int32_t)(pkt->sent - lost) > 0) {
 			// the packet is too new to be lost yet by either the fast retransmit or early retransmit
 			continue;
 		}
@@ -85,7 +82,7 @@ static void process_gap_range(qconnection_t *c, enum qcrypto_level level, uint64
 	}
 }
 
-static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, qslice_t *s, tick_t rxtime) {
+static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hdr, qslice_t *s, tick_t rxtime) {
 	uint64_t largest, raw_delay, count, first;
 	if (decode_varint(s, &largest)
 		|| decode_varint(s, &raw_delay)
@@ -105,7 +102,8 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 		q_cwnd_ecn(c, largest, ce);
 	}
 
-	qpacket_buffer_t *b = &c->pkts[level];
+	qpacket_buffer_t *b = (level == QC_PROTECTED) ? &c->prot_pkts : &((struct handshake*)c)->pkts[level];
+	assert(level == QC_PROTECTED || !c->peer_verified);
 	if (largest < b->tx_oldest) {
 		return 0;
 	} else if (largest >= b->tx_next) {
@@ -135,7 +133,7 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 	}
 
 	uint64_t next = largest - first;
-	process_ack_range(c, level, next, largest);
+	process_ack_range(c, b, next, largest);
 
 	while (count) {
 		uint64_t gap, block;
@@ -144,15 +142,15 @@ static int decode_ack(qconnection_t *c, enum qcrypto_level level, uint8_t hdr, q
 		}
 		uint64_t to = next - gap - 2;
 		uint64_t from = to - block;
-		process_gap_range(c, level, to, next - 1, largest, rxtime);
-		process_ack_range(c, level, from, to);
+		process_gap_range(c, b, to, next - 1, largest, rxtime);
+		process_ack_range(c, b, from, to);
 		largest_lost = from;
 		next = from;
 		count--;
 	}
 
 	if (b->tx_oldest < next) {
-		process_gap_range(c, level, b->tx_oldest, next - 1, largest, rxtime);
+		process_gap_range(c, b, b->tx_oldest, next - 1, largest, rxtime);
 		largest_lost = b->tx_oldest;
 	}
 
@@ -179,7 +177,7 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 	return p;
 }
 
-static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime) {
+static int process_protected_frame(struct connection *c, qslice_t *s, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	if ((hdr & STREAM_MASK) == STREAM) {
 		q_async_ack(c, rxtime);
@@ -295,7 +293,7 @@ static int process_protected_frame(qconnection_t *c, qslice_t *s, tick_t rxtime)
 	}
 }
 
-static int process_handshake_frame(qconnection_t *c, qslice_t *s, enum qcrypto_level level, tick_t rxtime) {
+static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcrypto_level level, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	switch (hdr) {
 	default:
@@ -318,42 +316,36 @@ static int process_handshake_frame(qconnection_t *c, qslice_t *s, enum qcrypto_l
 	}
 }
 
-static int process_packet(qconnection_t *c, qslice_t s, enum qcrypto_level level, tick_t rxtime) {
+static int process_packet(struct connection *c, qslice_t s, enum qcrypto_level level, tick_t rxtime) {
 	int err = 0;
 	while (!err && s.p < s.e) {
-		if (level == QC_PROTECTED && c->peer_verified) {
-			err = process_protected_frame(c, &s, rxtime);
-		} else {
+		if (!c->peer_verified) {
 			err = process_handshake_frame(c, &s, level, rxtime);
+		} else {
+			assert(level == QC_PROTECTED);
+			err = process_protected_frame(c, &s, rxtime);
 		}
 	}
 	return err;
 }
 
 int qc_get_destination(void *buf, size_t len, uint8_t *out) {
+	// this should only rely on the invariants as we don't check the version yet
 	uint8_t *u = buf;
-	if (!len) {
-		return -1;
+	if (len < 1 + DEFAULT_SERVER_ID_LEN) {
+		return QC_PARSE_ERROR;
 	}
-	uint8_t *pid;
-	if (*u & LONG_HEADER_FLAG) {
-		if (len < 6) {
+	memset(out, 0, QUIC_ADDRESS_SIZE);
+	if (u[0] & LONG_HEADER_FLAG) {
+		out[0] = decode_id_len(u[5] >> 4);
+		if (len < (size_t)(6 + out[0])) {
 			return QC_PARSE_ERROR;
-		} else if (big_32(u + 1) != QUIC_VERSION) {
-			return QC_WRONG_VERSION;
-		} else if (decode_id_len(u[5] >> 4) != DEFAULT_SERVER_ID_LEN) {
-			return QC_STATELESS_RETRY;
 		}
-		pid = u + 6;
+		memcpy(out + 1, u + 6, out[0]);
 	} else {
-		if (len < 1 + DEFAULT_SERVER_ID_LEN) {
-			return QC_PARSE_ERROR;
-		}
-		pid = u + 1;
+		out[0] = DEFAULT_SERVER_ID_LEN;
+		memcpy(out + 1, u + 1, DEFAULT_SERVER_ID_LEN);
 	}
-	out[0] = DEFAULT_SERVER_ID_LEN;
-	memcpy(out + 1, pid, DEFAULT_SERVER_ID_LEN);
-	memset(out + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
 	return 0;
 }
 
@@ -372,8 +364,8 @@ static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t 
 	return s->p > s->e || !(*k)->decrypt(k, *pktnum, pkt_begin, s->p, s->e);
 }
 
-int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rxtime, const qconnection_cfg_t *cfg) {
-	memset(h, 0, sizeof(*h));
+int qc_decode_request(qconnect_request_t *req, void *buf, size_t buflen, tick_t rxtime, const qconnection_cfg_t *cfg) {
+	memset(req, 0, sizeof(*req));
 	qslice_t s;
 	s.p = (uint8_t*)buf;
 	s.e = s.p + buflen;
@@ -385,20 +377,20 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 	if (version != QUIC_VERSION) {
 		return QC_WRONG_VERSION;
 	}
-	h->destination[0] = decode_id_len(*s.p >> 4);
-	h->source[0] = decode_id_len(*s.p & 0xF);
+	req->destination[0] = decode_id_len(*s.p >> 4);
+	req->source[0] = decode_id_len(*s.p & 0xF);
 	s.p++;
-	if (h->destination[0] != DEFAULT_SERVER_ID_LEN) {
+	if (req->destination[0] != DEFAULT_SERVER_ID_LEN) {
 		return QC_STATELESS_RETRY;
 	}
 
 	// destination
-	memcpy(h->destination + 1, s.p, DEFAULT_SERVER_ID_LEN);
+	memcpy(req->destination + 1, s.p, DEFAULT_SERVER_ID_LEN);
 	s.p += DEFAULT_SERVER_ID_LEN;
 
 	// source
-	memcpy(h->source + 1, s.p, h->source[0]);
-	s.p += h->source[0];
+	memcpy(req->source + 1, s.p, req->source[0]);
+	s.p += req->source[0];
 
 	// token
 	uint64_t toksz;
@@ -416,7 +408,7 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 	// decrypt
 	qcipher_aes_gcm key;
 	uint64_t pktnum;
-	init_initial_cipher(&key, true, h->destination);
+	init_initial_cipher(&key, true, req->destination);
 	if (decrypt_packet(&key.vtable, (uint8_t*)buf, &s, &pktnum)) {
 		return QC_PARSE_ERROR;
 	}
@@ -435,31 +427,31 @@ int qc_decode_request(qconnect_request_t *h, void *buf, size_t buflen, tick_t rx
 			if (decode_varint(&s, &off) || decode_varint(&s, &len)) {
 				return QC_PARSE_ERROR;
 			}
-			h->chello = s.p;
-			if (decode_client_hello(&s, h, cfg)) {
+			req->chello = s.p;
+			if (decode_client_hello(&s, req, cfg)) {
 				return QC_PARSE_ERROR;
 			}
-			h->chello_size = (size_t)len;
+			req->chello_size = (size_t)len;
 			have_hello = true;
 			break;
 		}
 		}
 	}
 
-	h->rxtime = rxtime;
-	h->server_cfg = cfg;
+	req->rxtime = rxtime;
+	req->server_cfg = cfg;
 	return have_hello ? QC_NO_ERROR : QC_PARSE_ERROR;
 }
 
-void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t rxtime) {
+void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+	struct connection *c = (struct connection*)cin;
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
 
-	// Be careful that we only return an error to the app after
-	// we verify the tag. An error to the app causes the connection
-	// to be dropped. We want to be sure it's actually from the remote
-	// and that's its not a fake message.
+	// Be careful that we only shutdown the connection if we encounter
+	// an error after verifying the tag. We want to be sure it's actually
+	// from the remote and not a fake message.
 
 	while (s.p < s.e) {
 		uint8_t *pkt_begin = s.p;
@@ -479,29 +471,12 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			s.p++;
 			s.p += dcil + scil;
 
-			enum qcrypto_level level = QC_INITIAL;
-			qcipher_compat key;
-			key.vtable = NULL;
-
-			switch (hdr) {
-			case INITIAL_PACKET: {
-				level = QC_INITIAL;
+			if (hdr == INITIAL_PACKET) {
 				uint64_t toksz;
 				if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
 					return;
 				}
 				s.p += (size_t)toksz;
-				init_initial_cipher(&key.aes_gcm, !c->is_client, c->is_client ? c->peer_id : c->local_id);
-				break;
-			}
-			case HANDSHAKE_PACKET:
-				level = QC_HANDSHAKE;
-				if (c->cipher) {
-					c->cipher->init(&key.vtable, c->hs_rx);
-				}
-				break;
-			default:
-				break;
 			}
 
 			uint64_t paysz;
@@ -510,7 +485,20 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			}
 			qslice_t pkt = { s.p, s.p + (size_t)paysz };
 			s.p = pkt.e;
-			if (!key.vtable) {
+
+			enum qcrypto_level level;
+			qcipher_compat key;
+
+			if (c->peer_verified) {
+				continue;
+			} else if (hdr == INITIAL_PACKET) {
+				init_initial_cipher(&key.aes_gcm, !c->is_client, c->is_client ? c->peer_id : c->local_id);
+				level = QC_INITIAL;
+			} else if (hdr == HANDSHAKE_PACKET && c->prot_rx.vtable) {
+				struct handshake *h = (struct handshake*)c;
+				c->prot_rx.vtable->init(&key.vtable, h->hs_rx);
+				level = QC_HANDSHAKE;
+			} else {
 				continue;
 			}
 
@@ -520,13 +508,12 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 			}
 			q_start_idle_timer(c, rxtime);
 			int err = process_packet(c, pkt, level, rxtime);
-			if (err == QC_ERR_DROP) {
-				continue;
-			} else if (err) {
+			if (!err) {
+				q_receive_packet(c, level, pktnum, rxtime);
+			} else if (err != QC_ERR_DROP) {
 				q_internal_shutdown(c, err, rxtime);
 				return;
 			}
-			q_receive_packet(c, level, pktnum, rxtime);
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
@@ -556,46 +543,25 @@ void qc_recv(qconnection_t *c, const void *addr, void *buf, size_t len, tick_t r
 //////////////////////////////
 // Initialization
 
-static int init_connection(qconnection_t *c, bool is_client, br_prng_seeder seedfn, void *buf, size_t size) {
-	memset(c, 0, sizeof(*c));
-	br_hmac_drbg_init(&c->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
+static const char prng_nonce[] = "quicproxy prng nonce";
+
+static int init_connection(struct handshake *h, size_t csz, dispatcher_t *d, const qconnection_cfg_t *cfg) {
+	br_hmac_drbg_init(&h->rand, &br_sha256_vtable, prng_nonce, sizeof(prng_nonce));
+	br_hmac_drbg_update(&h->rand, &h, sizeof(h));
+	br_hmac_drbg_update(&h->rand, &d->last_tick, sizeof(d->last_tick));
+	br_prng_seeder seedfn = cfg->seeder;
 	if (!seedfn) {
 		seedfn = br_prng_seeder_system(NULL);
 	}
-	if (!seedfn || !seedfn(&c->rand.vtable)) {
+	if (!seedfn || !seedfn(&h->rand.vtable)) {
 		return -1;
 	}
 
-	char *s = (char*)ALIGN_UP(uintptr_t, (uintptr_t)buf, 8);
-	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + size, 8);
-
-	c->is_client = is_client;
-
-	if (is_client) {
-		c->pkts[QC_INITIAL].sent_len = 10; // resend of client hellos
-		c->pkts[QC_HANDSHAKE].sent_len = 5; // only have acks
-	} else {
-		// on the server side we limit the number of packets allowed to be in flight
-		// this limits reflection attacks
-		c->pkts[QC_INITIAL].sent_len = 2;
-		c->pkts[QC_HANDSHAKE].sent_len = 3;
-	}
-
-	size_t hspkts = sizeof(qtx_packet_t) * (c->pkts[QC_INITIAL].sent_len + c->pkts[QC_HANDSHAKE].sent_len);
-	if (s + hspkts >= e) {
-		return -1;
-	}
-	c->pkts[QC_INITIAL].sent = (qtx_packet_t*)s;
-	c->pkts[QC_HANDSHAKE].sent = (qtx_packet_t*)s + c->pkts[QC_INITIAL].sent_len;
-	c->pkts[QC_PROTECTED].sent = (qtx_packet_t*)(s + hspkts);
-	c->pkts[QC_PROTECTED].sent_len = (size_t)(e - s - hspkts) / sizeof(qtx_packet_t);
-
-	br_sha256_init(&c->msg_sha256);
-	br_sha384_init(&c->msg_sha384);
-	c->srtt = QUIC_DEFAULT_RTT;
-	c->min_rtt = INT32_MAX;
-	c->peer_cfg.ack_delay_exponent = QUIC_ACK_DELAY_SHIFT;
-
+	h->c.srtt = QUIC_DEFAULT_RTT;
+	h->c.min_rtt = INT32_MAX;
+	h->c.peer_cfg.ack_delay_exponent = QUIC_ACK_DELAY_SHIFT;
+	h->c.dispatcher = d;
+	h->conn_buf_end = (uint8_t*)h + csz;
 	return 0;
 }
 
@@ -605,81 +571,110 @@ static void generate_id(const br_prng_class **r, uint8_t *id) {
 	memset(id + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
 }
 
-int qc_connect(qconnection_t *c, dispatcher_t *d, const qinterface_t **vt, const char *server_name, const qconnection_cfg_t *cfg, void *buf, size_t size) {
-	if (init_connection(c, true, cfg->seeder, buf, size)) {
+int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_t **vt, const char *server_name, const qconnection_cfg_t *cfg) {
+	struct connection *c = (struct connection*)cin;
+	struct handshake *h = (struct handshake*)cin;
+	struct client_handshake *ch = (struct client_handshake*)cin;
+	if (csz < sizeof(*ch) + BR_EC_KBUF_PRIV_MAX_SIZE) {
 		return -1;
 	}
+	memset(ch, 0, sizeof(*ch));
+	if (init_connection(h, csz, d, cfg)) {
+		return -1;
+	}
+	c->is_client = true;
 	c->iface = vt;
-	c->dispatcher = d;
 	c->local_cfg = cfg;
-	c->server_name = server_name;
-	generate_id(&c->rand.vtable, c->peer_id);
-	generate_id(&c->rand.vtable, c->local_id);
-	init_client_decoder(c);
+	ch->server_name = server_name;
+	generate_id(&h->rand.vtable, c->peer_id);
+	generate_id(&h->rand.vtable, c->local_id);
+	h->level = QC_INITIAL;
+	h->state = SHELLO_START;
+	h->pkts[QC_INITIAL].sent = ch->init_pkts;
+	h->pkts[QC_INITIAL].sent_len = ARRAYSZ(ch->init_pkts);
+	h->pkts[QC_HANDSHAKE].sent = ch->hs_pkts;
+	h->pkts[QC_HANDSHAKE].sent_len = ARRAYSZ(ch->hs_pkts);
 
 	// generate a private key for the high priority groups
 	const br_ec_impl *ec = br_ec_get_default();
-	for (size_t i = 0, knum = MIN(QUIC_MAX_KEYSHARE, strlen(cfg->groups)); i < knum; i++) {
-		if (!br_ec_keygen(&c->rand.vtable, ec, &c->keys[i], c->key_data[i], cfg->groups[i])) {
+	size_t n = 0;
+	while (cfg->groups[n] != 0 && &ch->keys[(n+1) * BR_EC_KBUF_PRIV_MAX_SIZE] <= h->conn_buf_end) {
+		if (!br_ec_keygen(&h->rand.vtable, ec, NULL, &ch->keys[n * BR_EC_KBUF_PRIV_MAX_SIZE], cfg->groups[n])) {
 			return -1;
 		}
+		n++;
 	}
+	ch->key_num = n;
 
 	// generate the client random
-	c->rand.vtable->generate(&c->rand.vtable, c->client_random, sizeof(c->client_random));
+	h->rand.vtable->generate(&h->rand.vtable, c->client_random, sizeof(c->client_random));
 
 	tick_t now = 0;
-	if (q_send_client_hello(c, &now)) {
+	if (q_send_client_hello(ch, &now)) {
 		return -1;
 	}
 
-	q_start_handshake(c, now);
+	q_start_handshake(h, now);
 	return 0;
 }
 
-int qc_accept(qconnection_t *c, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *h, const qsigner_class *const *s, void *buf, size_t size) {
-	if (init_connection(c, false, h->server_cfg->seeder, buf, size)) {
+int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *req, const qsigner_class *const *signer) {
+	struct connection *c = (struct connection*)cin;
+	struct handshake *h = (struct handshake*)cin;
+	struct server_handshake *sh = (struct server_handshake*)cin;
+	if (csz < sizeof(*sh)) {
 		return -1;
 	}
+	memset(sh, 0, sizeof(*sh));
+	if (init_connection(h, csz, d, req->server_cfg)) {
+		return -1;
+	}
+	c->is_client = false;
 	c->iface = vt;
-	c->dispatcher = d;
-	c->local_cfg = h->server_cfg;
-	c->peer_cfg = h->client_cfg;
-	c->signer = s;
-	memcpy(c->peer_id, h->source, QUIC_ADDRESS_SIZE);
-	memcpy(c->local_id, h->destination, QUIC_ADDRESS_SIZE);
-	memcpy(c->client_random, h->client_random, QUIC_RANDOM_SIZE);
-	init_server_decoder(c);
+	c->local_cfg = req->server_cfg;
+	c->peer_cfg = req->client_cfg;
+	sh->signer = signer;
+	memcpy(c->peer_id, req->source, QUIC_ADDRESS_SIZE);
+	memcpy(c->local_id, req->destination, QUIC_ADDRESS_SIZE);
+	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
+	h->level = QC_PROTECTED;
+	h->state = FINISHED_START;
+	h->pkts[QC_INITIAL].sent = sh->init_pkts;
+	h->pkts[QC_INITIAL].sent_len = ARRAYSZ(sh->init_pkts);
+	h->pkts[QC_HANDSHAKE].sent = sh->hs_pkts;
+	h->pkts[QC_HANDSHAKE].sent_len = ARRAYSZ(sh->hs_pkts);
 
 	// key group
-	if (!h->key.curve || !br_ec_keygen(&c->rand.vtable, br_ec_get_default(), &c->keys[0], c->key_data[0], h->key.curve)) {
+	if (!req->key.curve || !br_ec_keygen(&h->rand.vtable, br_ec_get_default(), &sh->sk, sh->key_data, req->key.curve)) {
 		return -1;
 	}
 
 	// certificates
-	c->signature = choose_signature(c->signer, h->signatures);
-	if (!c->signature) {
+	sh->signature = choose_signature(signer, req->signatures);
+	if (!sh->signature) {
 		return -1;
 	}
 
 	// cipher & transcript
-	const br_hash_class **msgs = init_cipher(c, h->cipher);
+	const br_hash_class **msgs = init_cipher(h, req->cipher);
 	if (msgs == NULL) {
 		return -1;
 	}
-	(*msgs)->update(msgs, h->chello, h->chello_size);
+	req->cipher->hash->init(msgs);
+	(*msgs)->update(msgs, req->chello, req->chello_size);
 
 	// send server hello
-	q_receive_packet(c, QC_INITIAL, 0, h->rxtime);
-	if (q_send_server_hello(c, &h->key, h->rxtime)) {
+	q_receive_packet(c, QC_INITIAL, 0, req->rxtime);
+	if (q_send_server_hello(sh, &req->key, req->rxtime)) {
 		return -1;
 	}
 
-	q_start_handshake(c, h->rxtime);
+	q_start_handshake(h, req->rxtime);
 	return 0;
 }
 
-void qc_move(qconnection_t *c, dispatcher_t *d) {
+void qc_move(qconnection_t *cin, dispatcher_t *d) {
+	struct connection *c = (struct connection*)cin;
 	if (c->dispatcher != d) {
 		move_apc(c->dispatcher, d, &c->tx_timer);
 		move_apc(c->dispatcher, d, &c->rx_timer);
@@ -688,7 +683,8 @@ void qc_move(qconnection_t *c, dispatcher_t *d) {
 	}
 }
 
-void qc_close(qconnection_t *c) {
+void qc_close(qconnection_t *cin) {
+	struct connection *c = (struct connection*)cin;
 	cancel_apc(c->dispatcher, &c->tx_timer);
 	cancel_apc(c->dispatcher, &c->rx_timer);
 	cancel_apc(c->dispatcher, &c->idle_timer);

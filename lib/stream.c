@@ -8,7 +8,7 @@ void qinit_stream(qstream_t *s, void *txbuf, size_t txlen, void *rxbuf, size_t r
 	s->id = UINT64_MAX;
 }
 
-void q_setup_remote_stream(qconnection_t *c, qstream_t *s, uint64_t id) {
+void q_setup_remote_stream(struct connection *c, qstream_t *s, uint64_t id) {
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
 	if (uni) {
 		qbuf_init(&s->tx, NULL, 0);
@@ -25,7 +25,7 @@ void q_setup_remote_stream(qconnection_t *c, qstream_t *s, uint64_t id) {
 	s->id = id;
 }
 
-void q_setup_local_stream(qconnection_t *c, qstream_t *s, uint64_t id) {
+void q_setup_local_stream(struct connection *c, qstream_t *s, uint64_t id) {
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
 	if (uni) {
 		qbuf_init(&s->rx, NULL, 0);
@@ -86,14 +86,14 @@ void qtx_write(qstream_t *s, const void *data, size_t len) {
 	s->flags |= QS_TX_DIRTY;
 }
 
-static void remove_stream_if_complete(qconnection_t *c, qstream_t *s) {
+static void remove_stream_if_complete(struct connection *c, qstream_t *s) {
 	assert(s->id >= 0);
 	if ((s->flags & QS_RX_COMPLETE) && (s->flags & QS_TX_COMPLETE)) {
 		q_remove_stream(c, s);
 	}
 }
 
-static int update_recv_flow(qconnection_t *c, qstream_t *s, uint64_t end) {
+static int update_recv_flow(struct connection *c, qstream_t *s, uint64_t end) {
 	assert(end <= qbuf_max(&s->rx));
 	if (end > s->rx_max_allowed) {
 		return -1;
@@ -111,7 +111,7 @@ static int update_recv_flow(qconnection_t *c, qstream_t *s, uint64_t end) {
 	return 0;
 }
 
-int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const void *p, size_t sz) {
+int q_recv_stream(struct connection *c, qstream_t *s, bool fin, uint64_t off, const void *p, size_t sz) {
 	uint64_t end = off + sz;
 	if (update_recv_flow(c, s, end)) {
 		return QC_ERR_FLOW_CONTROL;
@@ -144,21 +144,21 @@ int q_recv_stream(qconnection_t *c, qstream_t *s, bool fin, uint64_t off, const 
 	return 0;
 }
 
-int q_recv_max_stream(qconnection_t *c, qstream_t *s, uint64_t off) {
+int q_recv_max_stream(struct connection *c, qstream_t *s, uint64_t off) {
 	s->tx_max_allowed = MAX(s->tx_max_allowed, off);
-	qc_flush(c, s);
+	qc_flush((qconnection_t*)c, s);
 	return 0;
 }
 
-int q_recv_stop(qconnection_t *c, qstream_t *s, int errnum) {
+int q_recv_stop(struct connection *c, qstream_t *s, int errnum) {
 	s->rx_errnum = errnum;
 	s->flags |= QS_RX_STOP;
 	qtx_cancel(s, QRST_STOPPING);
-	qc_flush(c, s);
+	qc_flush((qconnection_t*)c, s);
 	return 0;
 }
 
-int q_recv_reset(qconnection_t *c, qstream_t *s, int errnum, uint64_t off) {
+int q_recv_reset(struct connection *c, qstream_t *s, int errnum, uint64_t off) {
 	if (s->rx_max_received > off) {
 		// hang on, we've received data after the "final offset"
 		return QC_ERR_PROTOCOL_VIOLATION;
@@ -214,7 +214,7 @@ size_t q_stream_cwnd_size(const qtx_packet_t *pkt) {
 	return ret;
 }
 
-int q_encode_stream(qconnection_t *c, qslice_t *p, const qstream_t *s, uint64_t *poff, qtx_packet_t *pkt) {
+int q_encode_stream(struct connection *c, qslice_t *p, const qstream_t *s, uint64_t *poff, qtx_packet_t *pkt) {
 	if (p->p + 1 + 8 + 8 + 2 > p->e) {
 		return -1;
 	}
@@ -290,7 +290,7 @@ int q_encode_stream(qconnection_t *c, qslice_t *p, const qstream_t *s, uint64_t 
 	return 0;
 }
 
-void q_commit_stream(qconnection_t *c, qstream_t *s, qtx_packet_t *pkt) {
+void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 	if (pkt->flags & QPKT_STREAM_DATA) {
 		s->rx_max_allowed = qbuf_max(&s->rx);
 	}
@@ -316,7 +316,7 @@ void q_commit_stream(qconnection_t *c, qstream_t *s, qtx_packet_t *pkt) {
 	pkt->stream = s;
 }
 
-void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt) {
+void q_ack_stream(struct connection *c, qtx_packet_t *pkt) {
 	qstream_t *s = pkt->stream;
 	rb_remove(&s->tx_packets, &pkt->rb);
 	pkt->stream = NULL;
@@ -346,7 +346,7 @@ void q_ack_stream(qconnection_t *c, qtx_packet_t *pkt) {
 	remove_stream_if_complete(c, s);
 }
 
-void q_lost_stream(qconnection_t *c, qtx_packet_t *pkt) {
+void q_lost_stream(struct connection *c, qtx_packet_t *pkt) {
 	qstream_t *s = pkt->stream;
 	rb_remove(&s->tx_packets, &pkt->rb);
 	pkt->stream = NULL;

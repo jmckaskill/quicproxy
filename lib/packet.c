@@ -3,8 +3,9 @@
 //////////////////////////
 // Ack Generation
 
-void q_receive_packet(qconnection_t *c, enum qcrypto_level level, uint64_t num, tick_t rxtime) {
-	qpacket_buffer_t *s = &c->pkts[level];
+void q_receive_packet(struct connection *c, enum qcrypto_level level, uint64_t num, tick_t rxtime) {
+	qpacket_buffer_t *s = (level == QC_PROTECTED) ? &c->prot_pkts : &((struct handshake*)c)->pkts[level];
+	assert(level == QC_PROTECTED || !c->peer_verified);
 	if (level == QC_PROTECTED && !c->handshake_complete) {
 		// Until this point, the client will send the finished message in every
 		// protected packet. Once the server has acknowledged one, we know that it
@@ -142,8 +143,11 @@ static int encode_ack_frame(qslice_t *s, qpacket_buffer_t *pkts, tickdiff_t dela
 	return 0;
 }
 
-qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_packet *p, tick_t now) {
-	qpacket_buffer_t *pkts = &c->pkts[p->level];
+qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long_packet *p, tick_t now) {
+	struct connection *c = &h->c;
+	assert(!c->peer_verified);
+	assert(p->level <= QC_HANDSHAKE);
+	qpacket_buffer_t *pkts = &h->pkts[p->level];
 	if (c->closing) {
 		return NULL;
 	} else if (pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
@@ -225,8 +229,8 @@ qtx_packet_t *q_encode_long_packet(qconnection_t *c, qslice_t *s, struct long_pa
 	return pkt;
 }
 
-int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) {
-	qpacket_buffer_t *pkts = &c->pkts[QC_PROTECTED];
+int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pnow) {
+	qpacket_buffer_t *pkts = &c->prot_pkts;
 	if (!c->peer_verified || (!s->ignore_closing && c->closing) || (!s->ignore_draining && c->draining)) {
 		return -1;
 	} else if (pkts->tx_next == pkts->tx_oldest + pkts->sent_len) {
@@ -239,23 +243,6 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 
 	uint8_t buf[DEFAULT_PACKET_SIZE];
 	qslice_t p = { buf, buf + sizeof(buf) };
-	qtx_packet_t *init = NULL;
-	qtx_packet_t *hs = NULL;
-
-	// get the ack for QC_INITIAL & QC_HANDSHAKE
-	if (include_client_finished) {
-		qcipher_aes_gcm ik;
-		qcipher_compat hk;
-		struct long_packet ip = { .level = QC_INITIAL,.key = &ik.vtable };
-		struct long_packet hp = { .level = QC_HANDSHAKE,.key = &hk.vtable };
-		init_initial_cipher(&ik, true, c->peer_id);
-		c->cipher->init(&hk.vtable, c->hs_tx);
-		init = q_encode_long_packet(c, &p, &ip, *pnow);
-		hs = q_encode_long_packet(c, &p, &hp, *pnow);
-		if (!init || !hs) {
-			return -1;
-		}
-	}
 
 	if (p.p + 1 + c->peer_id[0] + QUIC_TAG_SIZE > p.e) {
 		return -1;
@@ -304,7 +291,7 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 		*(p.p++) = 0; // offset
 		p.p += 2; // length
 		uint8_t *fin_start = p.p;
-		int err = encode_finished(&p, c->cipher->hash, c->finished_hash);
+		int err = encode_finished(&p, c->prot_tx.vtable->hash, c->tx_finished);
 		if (err) {
 			return err;
 		}
@@ -353,17 +340,9 @@ int q_send_short_packet(qconnection_t *c, struct short_packet *s, tick_t *pnow) 
 	(*k)->encrypt(k, pkts->tx_next, pkt_begin, enc_begin, tag);
 	(*k)->protect(k, packet_number, (size_t)(enc_begin - packet_number), (size_t)(p.p - packet_number));
 
-	int err = (*c->iface)->send(c->iface, NULL, buf, (size_t)(p.p - buf), &pkt->sent);
+	int err = (*c->iface)->send(c->iface, buf, (size_t)(p.p - buf), NULL, 0, &pkt->sent);
 	if (err) {
 		return err;
-	}
-	if (init) {
-		init->sent = pkt->sent;
-		c->pkts[QC_INITIAL].tx_next++;
-	}
-	if (hs) {
-		hs->sent = pkt->sent;
-		c->pkts[QC_HANDSHAKE].tx_next++;
 	}
 	if (pkt->flags & QPKT_RETRANSMIT) {
 		c->retransmit_packets++;

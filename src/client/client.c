@@ -14,12 +14,11 @@ static tick_t get_tick() {
 
 struct client {
 	const qinterface_t *vtable;
-	qconnection_t conn;
+	qconnection_t conn[1024];
 	int fd;
 	qstream_t stream;
 	uint8_t txbuf[4096];
 	uint8_t rxbuf[4096];
-	uint8_t pktbuf[4096];
 	log_t *debug;
 	br_x509_minimal_context x509;
 	uint32_t counter;
@@ -29,7 +28,7 @@ static void client_close(const qinterface_t **vt) {
 	exit(2);
 }
 
-static int client_send(const qinterface_t **vt, const void *addr, const void *buf, size_t len, tick_t *sent) {
+static int client_send(const qinterface_t **vt, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent) {
 	struct client *c = (struct client*) vt;
 	LOG(c->debug, "TX %d bytes", (int)len);
 	if (send(c->fd, buf, (int)len, 0) != (int)len) {
@@ -59,7 +58,7 @@ static void client_sent(const qinterface_t **vt, qstream_t *stream) {
 		sprintf(buf, "%08x", c->counter++);
 		qtx_write(stream, buf, 8);
 	}
-	qc_flush(&c->conn, stream);
+	qc_flush(c->conn, stream);
 }
 
 static const br_x509_class **client_start_chain(const qinterface_t **vt, const char *server_name) {
@@ -133,14 +132,14 @@ int main(int argc, const char *argv[]) {
 	init_dispatcher(&d, get_tick());
 
 	c.fd = fd;
-	if (qc_connect(&c.conn, &d, &c.vtable, "localhost", &params, c.pktbuf, sizeof(c.pktbuf))) {
+	if (qc_connect(c.conn, sizeof(c.conn), &d, &c.vtable, "localhost", &params)) {
 		FATAL(c.debug, "failed to connect to [%s]:%d", host, port);
 	}
 	LOG(c.debug, "");
 
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
 	qtx_write(&c.stream, "hello world", 11);
-	qc_flush(&c.conn, &c.stream);
+	qc_flush(c.conn, &c.stream);
 
 	for (;;) {
 		int timeoutms = dispatch_apcs(&d, get_tick(), 1000);
@@ -165,7 +164,7 @@ int main(int argc, const char *argv[]) {
 			}
 			tick_t rxtime = get_tick();
 			LOG(c.debug, "RX %d bytes", r);
-			qc_recv(&c.conn, NULL, buf, r, rxtime);
+			qc_recv(c.conn, buf, r, NULL, 0, rxtime);
 			LOG(c.debug, "");
 		}
 	}
