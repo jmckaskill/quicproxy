@@ -11,8 +11,9 @@
 #include <inttypes.h>
 
 // packet flags
-#define QPKT_PATH_CHALLENGE	(1 << 0)
-#define QPKT_PATH_RESPONSE	(1 << 1)
+#define QPKT_SEND          (1 << 0)
+#define QPKT_PATH_CHALLENGE	(1 << 1)
+#define QPKT_PATH_RESPONSE	(1 << 2)
 #define QPKT_FIN				(1 << 3)
 #define QPKT_RST				(1 << 4)
 #define QPKT_STOP			(1 << 5)
@@ -21,7 +22,7 @@
 #define QPKT_MAX_ID_UNI		(1 << 8)
 #define QPKT_MAX_ID_BIDI		(1 << 9)
 #define QPKT_NEW_TOKEN		(1 << 10)
-#define QPKT_RETRANSMIT		(1 << 11)
+#define QPKT_CWND            (1 << 11)
 #define QPKT_CLOSE			(1 << 12)
 #define QPKT_NEW_ID			(1 << 13)
 #define QPKT_RETIRE_ID		(1 << 14)
@@ -213,8 +214,8 @@ struct connection {
 	bool challenge_sent;
 	bool handshake_complete;
 	bool closing;
+	bool close_sent;
 	bool draining;
-	bool have_srtt;
 	bool have_path_response;
 	bool path_response_sent;
 	int close_errnum;
@@ -254,15 +255,14 @@ struct connection {
 	// timeout
 	int rx_timer_count;
 	apc_t rx_timer;
-	apc_t tx_timer;
+	apc_t ack_timer;
 	apc_t idle_timer;
 	apc_t flush_apc;
 	dispatcher_t *dispatcher;
-	uint64_t retransmit_pktnum;
+	uint64_t rto_next;
 	tickdiff_t min_rtt;
 	tickdiff_t srtt;
 	tickdiff_t rttvar;
-	uint64_t next_rtt_pktnum;
 };
 
 struct handshake {
@@ -301,6 +301,9 @@ struct client_handshake {
 	uint8_t token_size;
 	uint8_t token[255];
 
+	const br_x509_class **x509;
+	const char *server_name;
+
 	union {
 		struct {
 			uint16_t tls_version;
@@ -316,7 +319,6 @@ struct client_handshake {
 			uint16_t algorithm;
 			size_t len;
 			uint8_t sig[QUIC_MAX_SIG_SIZE];
-			const br_x509_class **x;
 		} v;
 
 		struct {
@@ -324,7 +326,6 @@ struct client_handshake {
 			uint8_t fin[QUIC_MAX_HASH_SIZE];
 		} f;
 	} u;
-	const char *server_name;
 	uint32_t initial_version;
 	bool hashed_hello;
 
@@ -346,9 +347,8 @@ struct server_handshake {
 
 // Packet sending
 
-#define SEND_IGNORE_CWND 1
-#define SEND_EMPTY 2
-#define SEND_PING 4
+#define SEND_FORCE 1
+#define SEND_PING 2
 qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags);
 uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned exp);
 
@@ -363,7 +363,6 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
 void q_ack_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
 void q_lost_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
-size_t q_stream_cwnd_size(const qtx_packet_t *pkt);
 
 // Scheduler
 
@@ -377,7 +376,6 @@ int q_decode_stream_data(struct connection *c, qslice_t *s);
 int q_decode_max_data(struct connection *c, qslice_t *s);
 int q_decode_max_id(struct connection *c, qslice_t *p);
 
-size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt);
 bool q_pending_scheduler(struct connection *c);
 uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt);
@@ -386,36 +384,34 @@ void q_remove_stream(struct connection *c, qstream_t *s);
 
 // Shutdown
 
-void q_internal_shutdown(struct connection *c, int errnum, tick_t now);
-void q_send_close(struct connection *c, tick_t now);
+void q_internal_shutdown(struct connection *c, int errnum);
 int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t now);
 uint8_t *q_encode_close(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
+void q_commit_close(struct connection *c, qtx_packet_t *pkt);
 void q_ack_close(struct connection *c);
-void q_lost_close(struct connection *c, tick_t now);
+void q_lost_close(struct connection *c);
 
 // Timers
 
 void q_fast_async_ack(struct connection *c, tick_t now);
 void q_async_ack(struct connection *c, tick_t now);
 
-void q_start_probe_timer(struct connection *c, tick_t now);
-void q_start_ping_timeout(struct connection *c, tick_t now);
+void q_reset_rx_timer(struct connection *c, tick_t now);
 void q_async_send_data(struct connection *c);
-void q_start_idle_timer(struct connection *c, tick_t now);
+void q_reset_idle_timer(struct connection *c, tick_t now);
 
-void q_start_handshake(struct handshake *h, tick_t now);
-void q_start_runtime(struct handshake *h, tick_t now);
-void q_start_shutdown(struct connection *c, tick_t now);
-void q_async_shutdown(struct connection *c);
+void q_start_migration(struct connection *c, tick_t now);
+void q_start_handshake_timers(struct handshake *h, tick_t now);
+void q_start_runtime_timers(struct handshake *h, tick_t now);
+void q_start_shutdown(struct connection *c);
 
 // Congestion
-void q_cwnd_init(struct connection *c);
-void q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt);
+void q_reset_cwnd(struct connection *c, uint64_t first_after_reset);
+size_t q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt);
 void q_ack_cwnd(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt);
 void q_cwnd_ecn(struct connection *c, uint64_t pktnum, uint64_t ecn_ce);
 void q_lost_cwnd(struct connection *c, const qtx_packet_t *pkt);
 void q_cwnd_largest_lost(struct connection *c, uint64_t pktnum);
-void q_cwnd_rto_verified(struct connection *c, uint64_t pktnum);
 bool q_cwnd_allow(struct connection *c);
 
 // Retry
@@ -429,13 +425,11 @@ size_t q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz);
 void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now);
 
 // Migration
-int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen);
+int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
 int q_decode_path_challenge(struct connection *c, qslice_t *p);
 int q_decode_path_response(struct connection *c, qslice_t *p);
 void q_ack_path_response(struct connection *c);
 void q_lost_path_challenge(struct connection *c);
-size_t q_path_cwnd_size(const qtx_packet_t *pkt);
-bool q_pending_migration(struct connection *c);
 uint8_t *q_encode_migration(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_migration(struct connection *c, const qtx_packet_t *pkt);
 

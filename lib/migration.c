@@ -32,7 +32,7 @@ static uint8_t *encode_path_challenge(struct connection *c, uint8_t *p) {
 	return p + 8;
 }
 
-int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen) {
+int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	if (pktnum < c->prot_pkts.rx_next) {
 		return 0;
 	}
@@ -49,13 +49,10 @@ int q_update_address(struct connection *c, uint64_t pktnum, const struct sockadd
 	}
 	memcpy(&c->addr, sa, salen);
 	c->addr_len = salen;
-	q_cwnd_init(c);
-	c->rttvar = 0;
-	c->have_srtt = false;
-	c->srtt = QUIC_DEFAULT_RTT;
+	q_reset_cwnd(c, c->prot_pkts.tx_next);
 	c->path_validated = false;
 	c->challenge_sent = false;
-	c->next_rtt_pktnum = c->prot_pkts.tx_next;
+	q_start_migration(c, rxtime);
 	q_async_send_data(c);
 	return 0;
 }
@@ -87,21 +84,22 @@ int q_decode_path_response(struct connection *c, qslice_t *p) {
 	return 0;
 }
 
-bool q_pending_migration(struct connection *c) {
-	return (!c->path_validated && !c->challenge_sent)
-		|| (c->have_path_response && !c->path_response_sent);
-}
-
 uint8_t *q_encode_migration(struct connection *c, uint8_t *p, qtx_packet_t *pkt) {
 	if (!c->path_validated) {
 		*(p++) = PATH_CHALLENGE;
 		p = encode_path_challenge(c, p);
-		pkt->flags |= QPKT_PATH_CHALLENGE | QPKT_RETRANSMIT;
+		pkt->flags |= QPKT_PATH_CHALLENGE;
+		if (!c->challenge_sent) {
+			pkt->flags |= QPKT_SEND;
+		}
 	}
 	if (c->have_path_response) {
 		*(p++) = PATH_RESPONSE;
 		p = append(p, c->tx_finished, 8);
 		pkt->flags |= QPKT_PATH_RESPONSE;
+		if (!c->path_response_sent) {
+			pkt->flags |= QPKT_SEND;
+		}
 	}
 	return p;
 }
@@ -110,7 +108,7 @@ void q_commit_migration(struct connection *c, const qtx_packet_t *pkt) {
 	if (pkt->flags & QPKT_PATH_CHALLENGE) {
 		c->challenge_sent = true;
 	}
-	if (c->have_path_response) {
+	if (pkt->flags & QPKT_PATH_RESPONSE) {
 		c->path_response_sent = true;
 	}
 }
@@ -125,18 +123,6 @@ void q_lost_path_challenge(struct connection *c) {
 		q_async_send_data(c);
 	}
 }
-
-size_t q_path_cwnd_size(const qtx_packet_t *pkt) {
-	size_t ret = 0;
-	if (pkt->flags & QPKT_PATH_CHALLENGE) {
-		ret += 9;
-	}
-	if (pkt->flags & QPKT_PATH_RESPONSE) {
-		ret += 9;
-	}
-	return ret;
-}
-
 
 
 

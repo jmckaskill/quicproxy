@@ -110,7 +110,7 @@ static int update_recv_flow(struct connection *c, qstream_t *s, uint64_t end) {
 		c->rx_data += new_data;
 		s->rx_max_received = end;
 		// schedule a send to update connection max data
-		if (q_pending_scheduler(c)) {
+		if (q_cwnd_allow(c) && q_pending_scheduler(c)) {
 			q_async_send_data(c);
 		}
 	}
@@ -201,23 +201,6 @@ static void insert_stream_packet(qstream_t *s, qtx_packet_t *pkt, uint64_t off) 
 	rb_insert(&s->packets, p, &pkt->rb, dir);
 }
 
-size_t q_stream_cwnd_size(const qtx_packet_t *pkt) {
-	size_t ret = 0;
-	if (pkt->flags & QPKT_STREAM_DATA) {
-		ret += 1 + 4 + 4;
-	}
-	if (pkt->flags & QPKT_STOP) {
-		ret += 1 + 2;
-	}
-	if (pkt->flags & QS_TX_RST) {
-		ret += 1 + 2 + 4;
-	}
-	if (pkt->len || (pkt->flags & QS_TX_FIN)) {
-		ret += 1 + 4 + 4 + 2 + pkt->len;
-	}
-	return ret;
-}
-
 uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt) {
 	uint8_t *begin = p;
 
@@ -233,7 +216,7 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		*(p++) = STOP_SENDING;
 		p = encode_varint(p, s->id);
 		p = write_big_16(p, (uint16_t)(s->stop_errnum - QC_ERR_APP_OFFSET));
-		pkt->flags |= QPKT_RETRANSMIT | QPKT_STOP;
+		pkt->flags |= QPKT_STOP;
 	}
 
 	if (s->flags & QS_TX_RST_SEND) {
@@ -241,7 +224,7 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		p = encode_varint(p, s->id);
 		p = write_big_16(p, (uint16_t)(s->rst_errnum - QC_ERR_APP_OFFSET));
 		p = encode_varint(p, s->tx.tail);
-		pkt->flags |= QPKT_RETRANSMIT | QPKT_RST;
+		pkt->flags |= QPKT_RST;
 	}
 
 	uint64_t sflow = s->tx_max_allowed;
@@ -276,12 +259,12 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 
 		pkt->off = s->tx_next;
 		pkt->len = sz;
-		pkt->flags |= QPKT_RETRANSMIT;
 		LOG(c->local_cfg->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d", s->id, pkt->off, pkt->len);
 	}
 
 	if (p > begin) {
 		pkt->stream = s;
+		pkt->flags |= QPKT_SEND;
 	}
 
 	return p;

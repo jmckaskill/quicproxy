@@ -916,8 +916,10 @@ static int check_signature(struct client_handshake *ch, uint16_t algorithm, cons
 	const br_hash_class **msgs = ch->h.msgs;
 	uint8_t verify[QUIC_MAX_CERT_VERIFY_SIZE];
 	size_t vlen = calc_cert_verify(verify, false, *msgs, msg_hash);
-	const br_x509_pkey *pk = (*ch->u.v.x)->get_pkey(ch->u.v.x, NULL);
-	if (type->verify(type, pk, verify, vlen, sig, slen)) {
+
+	unsigned usages;
+	const br_x509_pkey *pk = (*ch->x509)->get_pkey(ch->x509, &usages);
+	if (!(usages & BR_KEYTYPE_KEYX) || type->verify(type, pk, verify, vlen, sig, slen)) {
 		return QC_ERR_TLS_HANDSHAKE_FAILURE;
 	}
 	return 0;
@@ -1277,7 +1279,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 	start_certificates:
 		assert(!h->depth);
 		h->end = UINT32_MAX;
-		ch->u.v.x = (*c->iface)->start_chain(c->iface, ch->server_name);
+		(*ch->x509)->start_chain(ch->x509, ch->server_name);
 		GET_4(CERTIFICATES_HEADER);
 		if (r.p[0] != CERTIFICATE) {
 			return CRYPTO_ERROR;
@@ -1298,17 +1300,17 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		}
 		GET_3(CERTIFICATES_DATA_SIZE);
 		PUSH_END = r.off + big_24(r.p);
-		(*ch->u.v.x)->start_cert(ch->u.v.x, big_24(r.p));
+		(*ch->x509)->start_cert(ch->x509, big_24(r.p));
 		h->state = CERTIFICATES_DATA;
 	case CERTIFICATES_DATA:
 		if (r.have < h->end) {
-			(*ch->u.v.x)->append(ch->u.v.x, r.base + r.off, r.have - r.off);
+			(*ch->x509)->append(ch->x509, r.base + r.off, r.have - r.off);
 			goto end;
 		}
-		(*ch->u.v.x)->append(ch->u.v.x, r.base + r.off, h->end - r.off);
+		(*ch->x509)->append(ch->x509, r.base + r.off, h->end - r.off);
 		r.off = h->end;
 		h->end = POP_END;
-		(*ch->u.v.x)->end_cert(ch->u.v.x);
+		(*ch->x509)->end_cert(ch->x509);
 		// we don't support any extensions currently, so just skip over the data
 		GET_2(CERTIFICATES_EXT_SIZE);
 		PUSH_END = r.off + big_16(r.p);
@@ -1317,7 +1319,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		goto next_certificate;
 	finish_certificates:
 		GOTO_END(CERTIFICATES_FINISH);
-		switch ((*ch->u.v.x)->end_chain(ch->u.v.x)) {
+		switch ((*ch->x509)->end_chain(ch->x509)) {
 		case 0:
 			break;
 		case BR_ERR_X509_CRITICAL_EXTENSION:
@@ -1399,12 +1401,12 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 
 			// handshake is not complete until the server acks a packet containing the finished frame
 			c->handshake_complete = false;
-			LOG(c->local_cfg->debug, "sending client finished");
+			LOG(c->local_cfg->debug, "generated client finished");
 		} else {
 			c->handshake_complete = true;
 			LOG(c->local_cfg->debug, "server handshake complete");
 		}
-		q_start_runtime(h, rxtime);
+		q_start_runtime_timers(h, rxtime);
 		// Once we start the runtime, we no longer want to track handshake packets.
 		return level == QC_HANDSHAKE ? QC_ERR_DROP : 0;
 	}

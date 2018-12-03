@@ -191,7 +191,9 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	p = q_encode_scheduler(c, p, pkt);
 	p = q_encode_migration(c, p, pkt);
 
-	if (!(flags & SEND_IGNORE_CWND) && !q_cwnd_allow(c)) {
+	if ((flags & SEND_FORCE) || !pkts->tx_next) {
+		pkt->flags |= QPKT_SEND;
+	} else if (!q_cwnd_allow(c)) {
 		return NULL;
 	}
 
@@ -225,7 +227,7 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 		*(p++) = PING;
 	}
 
-	if (!(flags & SEND_EMPTY) && !pkt->stream && pkts->tx_next && !q_pending_scheduler(c) && !q_pending_migration(c)) {
+	if (!(pkt->flags & QPKT_SEND)) {
 		// No reason to send
 		return NULL;
 	}
@@ -243,18 +245,18 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	if ((*c->iface)->send(c->iface, buf, (size_t)(p - buf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent)) {
 		return NULL;
 	}
-
-	if (pkt->flags & QPKT_RETRANSMIT) {
-		c->retransmit_packets++;
-		q_start_probe_timer(c, pkt->sent);
+	if (q_cwnd_sent(c, pkt)) {
+		// this has non ack content
+		pkt->flags |= QPKT_CWND;
+		q_reset_rx_timer(c, pkt->sent);
 	}
-	cancel_apc(c->dispatcher, &c->tx_timer);
 	if (pkt->stream) {
 		commit_stream(c, pkt->stream, pkt);
 	}
 	q_commit_scheduler(c, pkt);
 	q_commit_migration(c, pkt);
-	q_cwnd_sent(c, pkt);
+	q_commit_close(c, pkt);
+	cancel_apc(c->dispatcher, &c->ack_timer);
 	pkts->tx_next++;
 	return pkt;
 }
@@ -279,7 +281,7 @@ void q_remove_stream(struct connection *c, qstream_t *s) {
 	}
 
 	// flush the new max id through
-	if (q_pending_scheduler(c)) {
+	if (q_cwnd_allow(c) && q_pending_scheduler(c)) {
 		q_async_send_data(c);
 	}
 }
@@ -430,20 +432,6 @@ int q_decode_max_data(struct connection *c, qslice_t *p) {
 	return 0;
 }
 
-size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt) {
-	size_t ret = 0;
-	if (pkt->flags & QPKT_MAX_DATA) {
-		ret += 1 + 4;
-	}
-	if (pkt->flags & QPKT_MAX_ID_UNI) {
-		ret += 1 + 4;
-	}
-	if (pkt->flags & QPKT_MAX_ID_BIDI) {
-		ret += 1 + 4;
-	}
-	return ret;
-}
-
 static uint64_t rx_max_data(struct connection *c) {
 	return c->rx_data + c->local_cfg->max_data;
 }
@@ -466,7 +454,7 @@ uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt)
 	if (rx_max_data(c) > c->rx_data_max) {
 		*(p++) = MAX_DATA;
 		p = encode_varint(p, rx_max_data(c));
-		pkt->flags |= QPKT_MAX_DATA;
+		pkt->flags |= QPKT_MAX_DATA | QPKT_SEND;
 	}
 
 	// Max Stream IDs
@@ -476,12 +464,12 @@ uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt)
 	if (max_id(c, STREAM_UNI) > c->max_id[uni]) {
 		*(p++) = MAX_STREAM_ID;
 		p = encode_varint(p, (max_id(c, STREAM_UNI) << 1));
-		pkt->flags |= QPKT_MAX_ID_UNI;
+		pkt->flags |= QPKT_MAX_ID_UNI | QPKT_SEND;
 	}
 	if (max_id(c, STREAM_BIDI) > c->max_id[bidi]) {
 		*(p++) = MAX_STREAM_ID;
 		p = encode_varint(p, (max_id(c, STREAM_BIDI) << 1));
-		pkt->flags |= QPKT_MAX_ID_BIDI;
+		pkt->flags |= QPKT_MAX_ID_BIDI | QPKT_SEND;
 	}
 	return p;
 }

@@ -42,6 +42,6 @@ void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now) {
 		}
 		our_ver++;
 	}
-	q_internal_shutdown(&ch->h.c, QC_ERR_VERSION_NEGOTIATION, now);
+	q_internal_shutdown(&ch->h.c, QC_ERR_VERSION_NEGOTIATION);
 }
 

@@ -61,12 +61,6 @@ static void client_sent(const qinterface_t **vt, qstream_t *stream) {
 	qc_flush(c->conn, stream);
 }
 
-static const br_x509_class **client_start_chain(const qinterface_t **vt, const char *server_name) {
-	struct client *c = (struct client*) vt;
-	c->x509.vtable->start_chain(&c->x509.vtable, server_name);
-	return &c->x509.vtable;
-}
-
 static const qinterface_t client_interface = {
 	&client_close,
 	NULL,
@@ -75,7 +69,6 @@ static const qinterface_t client_interface = {
 	NULL,
 	&client_received,
 	&client_sent,
-	&client_start_chain,
 };
 
 int main(int argc, const char *argv[]) {
@@ -131,7 +124,7 @@ int main(int argc, const char *argv[]) {
 	init_dispatcher(&d, get_tick());
 
 	c.fd = fd;
-	if (qc_connect(c.conn, sizeof(c.conn), &d, &c.vtable, "localhost", &params)) {
+	if (qc_connect(c.conn, sizeof(c.conn), &d, &c.vtable, &params, "localhost", &c.x509.vtable)) {
 		FATAL(c.debug, "failed to connect to [%s]:%d", host, port);
 	}
 	LOG(c.debug, "");

@@ -11,14 +11,13 @@
 
 typedef struct qinterface qinterface_t;
 struct qinterface {
-	void(*close)(const qinterface_t **iface);
+	void(*free)(const qinterface_t **iface);
 	void(*shutdown)(const qinterface_t **iface, int error);
 	int(*send)(const qinterface_t **iface, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent);
 	qstream_t*(*new_stream)(const qinterface_t **iface, bool unidirectional);
 	void(*free_stream)(const qinterface_t **iface, qstream_t *s);
 	void(*data_received)(const qinterface_t **iface, qstream_t *s);
 	void(*data_sent)(const qinterface_t **iface, qstream_t *s);
-	const br_x509_class**(*start_chain)(const qinterface_t **iface, const char *server_name);
 };
 
 
@@ -60,7 +59,7 @@ void qc_move(qconnection_t *c, dispatcher_t *d);
 void qc_flush(qconnection_t *c, qstream_t *s);
 
 // Client code
-int qc_connect(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const char *server_name, const qconnection_cfg_t *p);
+int qc_connect(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnection_cfg_t *cfg, const char *server_name, const br_x509_class **x);
 
 // Server code
 typedef struct qconnect_request qconnect_request_t;
@@ -92,7 +91,7 @@ struct qconnect_request {
 
 int qc_get_destination(void *buf, size_t len, uint8_t *out);
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *params, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
-int qc_accept(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *h, const qsigner_class *const *s);
+int qc_accept(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *req, const qsigner_class *const *s);
 size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz);
 
 

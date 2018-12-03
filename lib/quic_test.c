@@ -132,7 +132,6 @@ struct tester {
 	char txbuf[32 * 1024];
 	char rxbuf[32 * 1024];
 	qconnection_t c[1024];
-	br_x509_knownkey_context x509;
 };
 
 static void close_test(const qinterface_t **vt) {
@@ -175,13 +174,6 @@ static void free_test_stream(const qinterface_t **vt, qstream_t *s) {
 	t->stream_open = false;
 }
 
-static const br_x509_class **start_test_chain(const qinterface_t **vt, const char *server_name) {
-	struct tester *t = (struct tester*)vt;
-	br_x509_knownkey_init_ec(&t->x509, &test_pkey, BR_KEYTYPE_KEYX);
-	t->x509.vtable->start_chain(&t->x509.vtable, server_name);
-	return &t->x509.vtable;
-}
-
 static const qinterface_t test_interface = {
 	&close_test,
 	&shutdown_test,
@@ -190,7 +182,6 @@ static const qinterface_t test_interface = {
 	&free_test_stream,
 	NULL,
 	NULL,
-	&start_test_chain,
 };
 
 static const uint32_t client_versions[] = { 0x1A2A3A4A, QUIC_VERSION, 0 };
@@ -247,8 +238,11 @@ int main(int argc, const char *argv[]) {
 	s4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	s4.sin_port = htons(443);
 
+	br_x509_knownkey_context x509;
+	br_x509_knownkey_init_ec(&x509, &test_pkey, BR_KEYTYPE_KEYX);
+
 	// Send the client hello
-	EXPECT_EQ(0, qc_connect(c.c, sizeof(c.c), &d, &c.vtable, "localhost", &client_cfg));
+	EXPECT_EQ(0, qc_connect(c.c, sizeof(c.c), &d, &c.vtable, &client_cfg, "localhost", &x509.vtable));
 	EXPECT_EQ(1, c.msgn); // Client Hello
 	EXPECT_EQ(1, ch->h.pkts[0].tx_next);
 	EXPECT_EQ(0, ch->h.pkts[0].tx_oldest);
@@ -465,7 +459,7 @@ int main(int argc, const char *argv[]) {
 
 	// Finish the stream on the client side
 	NOW += 10 * MS;
-	EXPECT_TRUE(!is_apc_active(&ch->h.c.tx_timer));
+	EXPECT_TRUE(!is_apc_active(&ch->h.c.ack_timer));
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
@@ -484,9 +478,8 @@ int main(int argc, const char *argv[]) {
 	EXPECT_BYTES_EQ(ca, sizeof(c4), &sh->h.c.addr, sh->h.c.addr_len);
 	EXPECT_TRUE(!sh->h.c.path_validated && sh->h.c.challenge_sent);
 	EXPECT_EQ(1, s.msgn);
-	EXPECT_EQ(100 * 1000, sh->h.c.srtt);
+	EXPECT_EQ(0, sh->h.c.srtt);
 	EXPECT_EQ(0, sh->h.c.rttvar);
-	EXPECT_TRUE(!sh->h.c.have_srtt);
 	EXPECT_EQ(INITIAL_WINDOW, sh->h.c.congestion_window);
 
 	// receive the challenge on the client side
@@ -503,7 +496,6 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_EQ(20 * 1000, sh->h.c.srtt);
-	EXPECT_TRUE(sh->h.c.have_srtt);
 	EXPECT_TRUE(sh->h.c.path_validated);
 	NOW += 25 * MS;
 	dispatch_apcs(&d, NOW, 1000);
