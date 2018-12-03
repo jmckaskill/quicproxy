@@ -13,7 +13,6 @@
 // packet flags
 #define QPKT_PATH_CHALLENGE	(1 << 0)
 #define QPKT_PATH_RESPONSE	(1 << 1)
-#define QPKT_ACK				(1 << 2)
 #define QPKT_FIN				(1 << 3)
 #define QPKT_RST				(1 << 4)
 #define QPKT_STOP			(1 << 5)
@@ -26,29 +25,26 @@
 #define QPKT_CLOSE			(1 << 12)
 #define QPKT_NEW_ID			(1 << 13)
 #define QPKT_RETIRE_ID		(1 << 14)
-#define QPKT_CRYPTO			(1 << 15)
 
 // stream flags
 #define QS_TX_COMPLETE (1 << 0)
 #define QS_RX_COMPLETE (1 << 1)
-#define QS_TX_QUEUED   (1 << 2)
-#define QS_TX_PENDING  (1 << 3)
 #define QS_TX_FIN      (1 << 4)
-#define QS_TX_FIN_SENT (1 << 5)
+#define QS_TX_FIN_SEND (1 << 5)
 #define QS_RX_FIN_ACK  (1 << 6)
 #define QS_RX_FIN      (1 << 7)
 #define QS_TX_RST      (1 << 8)
-#define QS_TX_RST_SENT (1 << 9)
+#define QS_TX_RST_SEND (1 << 9)
 #define QS_RX_RST_ACK  (1 << 10)
 #define QS_RX_RST      (1 << 11)
 #define QS_TX_STOP     (1 << 12)
-#define QS_TX_STOP_SENT (1 << 13)
+#define QS_TX_STOP_SEND (1 << 13)
 #define QS_RX_STOP_ACK (1 << 14)
 #define QS_RX_STOP     (1 << 15)
-#define QS_RX_DATA_ACK (1 << 16)
-#define QS_TX_DIRTY    (1 << 17)
-#define QS_TX_START_SENT (1 << 18)
-#define QS_TX_START_ACK (1 << 29)
+#define QS_TX_CONTROL  (1 << 16)
+#define QS_TX_DATA     (1 << 17)
+#define QS_STARTED      (1 << 18)
+#define QS_NOT_STARTED      (1 << 19)
 
 #define QRST_STOPPING 0
 #define QRX_STREAM_MAX UINT64_C(0x4000000000000000)
@@ -235,15 +231,18 @@ struct connection {
 	// streams
 	size_t retransmit_packets;
 	rbtree rx_streams[4];
+	struct qstream_list *uni_pending;
+	struct qstream_list *bidi_pending;
+	struct qstream_list *data_pending;
+	struct qstream_list *ctrl_pending;
 	uint64_t next_id[4];
 	uint64_t max_id[4];
-	rbtree pending_streams[2];
-	rbtree tx_streams;
-	uint64_t tx_max_data;
-	uint64_t data_sent;
-	uint64_t rx_max_data;
-	uint64_t data_received;
-	uint8_t tx_flags;
+
+	// connection flow control
+	uint64_t tx_data_max;
+	uint64_t tx_data;
+	uint64_t rx_data_max;
+	uint64_t rx_data;
 
 	// congestion window
 	uint64_t congestion_window;
@@ -257,6 +256,7 @@ struct connection {
 	apc_t rx_timer;
 	apc_t tx_timer;
 	apc_t idle_timer;
+	apc_t flush_apc;
 	dispatcher_t *dispatcher;
 	uint64_t retransmit_pktnum;
 	tickdiff_t min_rtt;
@@ -346,34 +346,11 @@ struct server_handshake {
 
 // Packet sending
 
-void q_receive_packet(struct connection *c, enum qcrypto_level level, uint64_t num, tick_t rxtime);
-
-struct long_packet {
-	enum qcrypto_level level;
-	const qcipher_class **key;
-	size_t crypto_off;
-	const uint8_t *crypto_data;
-	size_t crypto_size;
-	bool pad;
-};
-
-qtx_packet_t *q_encode_long_packet(struct handshake *h, qslice_t *s, struct long_packet *p, tick_t now);
-
-struct short_packet {
-	qstream_t *stream;
-	uint64_t stream_off;
-	const uint8_t *path_challenge;
-	int close_errnum;
-	bool force_ack;
-	bool ignore_cwnd;
-	bool ignore_closing;
-	bool ignore_draining;
-	bool send_close;
-	bool send_ack;
-	bool send_stop;
-};
-
-int q_send_short_packet(struct connection *c, struct short_packet *s, tick_t *pnow);
+#define SEND_IGNORE_CWND 1
+#define SEND_EMPTY 2
+#define SEND_PING 4
+qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags);
+uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned exp);
 
 // Streams
 void q_setup_local_stream(struct connection *c, qstream_t *s, uint64_t id);
@@ -382,16 +359,16 @@ int q_recv_stream(struct connection *c, qstream_t *s, bool fin, uint64_t off, co
 int q_recv_max_stream(struct connection *c, qstream_t *s, uint64_t off);
 int q_recv_stop(struct connection *c, qstream_t *s, int errnum);
 int q_recv_reset(struct connection *c, qstream_t *s, int errnum, uint64_t off);
-int q_encode_stream(struct connection *c, qslice_t *p, const qstream_t *s, uint64_t *poff, qtx_packet_t *pkt);
+uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt);
 void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
-void q_ack_stream(struct connection *c, qtx_packet_t *pkt);
-void q_lost_stream(struct connection *c, qtx_packet_t *pkt);
+void q_ack_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
+void q_lost_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
 size_t q_stream_cwnd_size(const qtx_packet_t *pkt);
 
 // Scheduler
 
 void q_update_scheduler_from_cfg(struct connection *c);
-int q_send_data(struct connection *c, int ignore_cwnd_pkts, tick_t now);
+void q_free_streams(struct connection *c);
 
 int q_decode_stream(struct connection *c, uint8_t hdr, qslice_t *s);
 int q_decode_reset(struct connection *c, qslice_t *s);
@@ -402,10 +379,8 @@ int q_decode_max_id(struct connection *c, qslice_t *p);
 
 size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt);
 bool q_pending_scheduler(struct connection *c);
-int q_encode_scheduler(struct connection *c, qslice_t *p, qtx_packet_t *pkt);
+uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt);
-void q_ack_scheduler(struct connection *c, const qtx_packet_t *pkt);
-void q_lost_scheduler(struct connection *c, const qtx_packet_t *pkt);
 
 void q_remove_stream(struct connection *c, qstream_t *s);
 
@@ -414,7 +389,7 @@ void q_remove_stream(struct connection *c, qstream_t *s);
 void q_internal_shutdown(struct connection *c, int errnum, tick_t now);
 void q_send_close(struct connection *c, tick_t now);
 int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t now);
-int q_encode_close(struct connection *c, qslice_t *p, qtx_packet_t *pkt);
+uint8_t *q_encode_close(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_ack_close(struct connection *c);
 void q_lost_close(struct connection *c, tick_t now);
 
@@ -422,7 +397,6 @@ void q_lost_close(struct connection *c, tick_t now);
 
 void q_fast_async_ack(struct connection *c, tick_t now);
 void q_async_ack(struct connection *c, tick_t now);
-void q_draining_ack(struct connection *c, tick_t now);
 
 void q_start_probe_timer(struct connection *c, tick_t now);
 void q_start_ping_timeout(struct connection *c, tick_t now);
@@ -437,21 +411,21 @@ void q_async_shutdown(struct connection *c);
 // Congestion
 void q_cwnd_init(struct connection *c);
 void q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt);
-void q_cwnd_ack(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt);
+void q_ack_cwnd(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt);
 void q_cwnd_ecn(struct connection *c, uint64_t pktnum, uint64_t ecn_ce);
-void q_cwnd_lost(struct connection *c, const qtx_packet_t *pkt);
+void q_lost_cwnd(struct connection *c, const qtx_packet_t *pkt);
 void q_cwnd_largest_lost(struct connection *c, uint64_t pktnum);
 void q_cwnd_rto_verified(struct connection *c, uint64_t pktnum);
-size_t q_cwnd_allowed_bytes(struct connection *c);
+bool q_cwnd_allow(struct connection *c);
 
 // Retry
 size_t q_sockaddr_aad(uint8_t *o, const struct sockaddr *sa, socklen_t salen);
-int q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz);
+size_t q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz);
 bool q_is_retry_valid(qconnect_request_t *req, const uint8_t *data, size_t len);
 void q_process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *source, qslice_t s, tick_t now);
 
 // Version negotiation
-int q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz);
+size_t q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz);
 void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now);
 
 // Migration
@@ -462,7 +436,7 @@ void q_ack_path_response(struct connection *c);
 void q_lost_path_challenge(struct connection *c);
 size_t q_path_cwnd_size(const qtx_packet_t *pkt);
 bool q_pending_migration(struct connection *c);
-int q_encode_migration(struct connection *c, qslice_t *p, qtx_packet_t *pkt);
+uint8_t *q_encode_migration(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_migration(struct connection *c, const qtx_packet_t *pkt);
 
 static inline uint64_t q_encode_ack_delay(tickdiff_t delay, unsigned exp) {

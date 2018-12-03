@@ -283,6 +283,7 @@ int main(int argc, const char *argv[]) {
 	// Receive the retry & send another client hello
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, c.msgn);
 	EXPECT_EQ(3, ch->h.pkts[0].tx_next);
 	EXPECT_EQ(8, ch->h.original_destination[0]);
@@ -299,8 +300,8 @@ int main(int argc, const char *argv[]) {
 	// Receive the server hello & send the client finished
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
-	s.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	s.msgn = 0;
 	EXPECT_TRUE(ch->h.c.peer_verified);
 	EXPECT_TRUE(!ch->h.c.handshake_complete);
 	EXPECT_TRUE(!sh->h.c.peer_verified);
@@ -312,8 +313,8 @@ int main(int argc, const char *argv[]) {
 	// Receive the client finished & send an ACK
 	NOW += 10 * MS;
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
-	c.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	c.msgn = 0;
 	EXPECT_TRUE(sh->h.c.peer_verified);
 	EXPECT_TRUE(sh->h.c.handshake_complete);
 	EXPECT_EQ(20 * MS, sh->h.c.srtt);
@@ -322,6 +323,7 @@ int main(int argc, const char *argv[]) {
 	// Receive the ACK
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_TRUE(ch->h.c.handshake_complete);
 	EXPECT_EQ(0, c.msgn);
@@ -341,6 +343,7 @@ int main(int argc, const char *argv[]) {
 	// Receive the bidi stream
 	NOW += 10 * MS;
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_TRUE(s.stream_open);
 	char buf[64];
@@ -359,6 +362,7 @@ int main(int argc, const char *argv[]) {
 	// receive the ack
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_TRUE((c.s.flags & QS_TX_COMPLETE) && !(c.s.flags & QS_RX_COMPLETE));
 	EXPECT_EQ(20 * MS, ch->h.c.srtt); // ack delay should be accommodated for
@@ -373,6 +377,7 @@ int main(int argc, const char *argv[]) {
 	// receive the response
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_TRUE((c.s.flags & QS_TX_COMPLETE) && (c.s.flags & QS_RX_COMPLETE));
 	EXPECT_TRUE(!c.stream_open); // since we have both the receive and transmit, the library should release the stream
@@ -393,13 +398,14 @@ int main(int argc, const char *argv[]) {
 	// and send back an updated max id
 	NOW += 10 * MS;
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
-	c.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	c.msgn = 0;
 	EXPECT_TRUE(!s.stream_open);
 	EXPECT_EQ(1, s.msgn);
 
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_EQ(0, c.msgn);
 
@@ -421,6 +427,7 @@ int main(int argc, const char *argv[]) {
 		for (size_t i = 0; i < c.msgn; i++) {
 			qc_recv(s.c, c.msgv[i].buf, c.msgv[i].sz, ca, sizeof(c4), NOW);
 		}
+		dispatch_apcs(&d, NOW, 1000);
 		c.msgn = 0;
 
 		if (qrx_size(&s.s) == c.s.tx.tail) {
@@ -445,8 +452,8 @@ int main(int argc, const char *argv[]) {
 		// receive the ack & generate the next window full
 		NOW += 10 * MS;
 		qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
-		s.msgn = 0;
 		dispatch_apcs(&d, NOW, 1000);
+		s.msgn = 0;
 		if (c.s.tx_max_sent < c.s.tx.tail) {
 			EXPECT_EQ(4, c.msgn);
 		}
@@ -454,15 +461,14 @@ int main(int argc, const char *argv[]) {
 	}
 
 	EXPECT_TRUE(!s.stream_open);
-	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, s.msgn); // ack and max id for uni streams
 
 	// Finish the stream on the client side
 	NOW += 10 * MS;
 	EXPECT_TRUE(!is_apc_active(&ch->h.c.tx_timer));
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
-	s.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	s.msgn = 0;
 	EXPECT_EQ(0, c.msgn);
 	EXPECT_TRUE(!c.stream_open);
 	NOW += 25 * MS;
@@ -473,8 +479,8 @@ int main(int argc, const char *argv[]) {
 	c4.sin_port++;
 	NOW += 10 * MS;
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
-	c.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	c.msgn = 0;
 	EXPECT_BYTES_EQ(ca, sizeof(c4), &sh->h.c.addr, sh->h.c.addr_len);
 	EXPECT_TRUE(!sh->h.c.path_validated && sh->h.c.challenge_sent);
 	EXPECT_EQ(1, s.msgn);
@@ -486,14 +492,15 @@ int main(int argc, const char *argv[]) {
 	// receive the challenge on the client side
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
-	s.msgn = 0;
 	dispatch_apcs(&d, NOW, 1000);
+	s.msgn = 0;
 	EXPECT_EQ(1, c.msgn);
 	EXPECT_TRUE(ch->h.c.have_path_response && ch->h.c.path_response_sent);
 
 	// receive the response on the server side
 	NOW += 10 * MS;
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_EQ(20 * 1000, sh->h.c.srtt);
 	EXPECT_TRUE(sh->h.c.have_srtt);
@@ -505,6 +512,7 @@ int main(int argc, const char *argv[]) {
 	// receive the ack on the client side
 	NOW += 10 * MS;
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
+	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_TRUE(!ch->h.c.have_path_response);
 
@@ -524,19 +532,9 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_EQ(QC_ERR_SERVER_BUSY, c.shutdown_reason);
-	EXPECT_EQ(1, c.msgn);
 	EXPECT_TRUE(ch->h.c.closing);
 	EXPECT_TRUE(ch->h.c.draining);
 	EXPECT_TRUE(!c.conn_closed);
-
-	// receive the shutdown ack back on the server
-	NOW += 10 * MS;
-	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
-	c.msgn = 0;
-	EXPECT_EQ(20 * MS, sh->h.c.srtt); // ack delay should be dealt with
-	EXPECT_TRUE(sh->h.c.draining);
-	EXPECT_TRUE(!s.conn_closed);
-	EXPECT_EQ(0, s.msgn);
 
 	// and sometime later both sides should shut down
 	NOW += 600 * MS;

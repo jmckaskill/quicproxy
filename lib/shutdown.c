@@ -1,31 +1,7 @@
 #include "internal.h"
 
 void q_send_close(struct connection *c, tick_t now) {
-	struct short_packet sp = {
-		.ignore_cwnd = true,
-		.ignore_closing = true,
-		.send_close = true,
-		.close_errnum = c->close_errnum,
-		.send_ack = true,
-	};
-	q_send_short_packet(c, &sp, &now);
-}
-
-static void free_streams(struct connection *c) {
-	if ((*c->iface)->free_stream) {
-		for (int i = 0; i < 4; i++) {
-			for (rbnode *n = rb_begin(&c->rx_streams[i], RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
-				qstream_t *s = container_of(n, qstream_t, rxnode);
-				(*c->iface)->free_stream(c->iface, s);
-			}
-		}
-		for (int i = 0; i < 2; i++) {
-			for (rbnode *n = rb_begin(&c->pending_streams[i], RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
-				qstream_t *s = container_of(n, qstream_t, rxnode);
-				(*c->iface)->free_stream(c->iface, s);
-			}
-		}
-	}
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY);
 }
 
 void qc_shutdown(qconnection_t *cin, int error) {
@@ -33,7 +9,7 @@ void qc_shutdown(qconnection_t *cin, int error) {
 	if (!c->closing) {
 		c->closing = true;
 		c->close_errnum = error;
-		free_streams(c);
+		q_free_streams(c);
 		q_async_shutdown(c);
 	}
 }
@@ -45,7 +21,7 @@ void q_internal_shutdown(struct connection *c, int error, tick_t now) {
 		if ((*c->iface)->shutdown) {
 			(*c->iface)->shutdown(c->iface, error);
 		}
-		free_streams(c);
+		q_free_streams(c);
 		q_start_shutdown(c, now);
 	}
 }
@@ -69,29 +45,25 @@ int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t rxtime
 	return 0;
 }
 
-int q_encode_close(struct connection *c, qslice_t *s, qtx_packet_t *pkt) {
-	if (s->p + 1 + 2 + 1 + 1 > s->e) {
-		return -1;
-	}
-
+uint8_t *q_encode_close(struct connection *c, uint8_t *p, qtx_packet_t *pkt) {
 	int errnum = c->close_errnum;
 	if (QC_ERR_APP_OFFSET <= errnum && errnum < QC_ERR_APP_END) {
-		*(s->p++) = APPLICATION_CLOSE;
-		s->p = write_big_16(s->p, (uint16_t)(errnum - QC_ERR_APP_OFFSET));
-		*(s->p++) = 0; // reason
+		*(p++) = APPLICATION_CLOSE;
+		p = write_big_16(p, (uint16_t)(errnum - QC_ERR_APP_OFFSET));
+		*(p++) = 0; // reason
 	} else if (0 <= errnum && errnum < QC_ERR_QUIC_MAX) {
-		*(s->p++) = CONNECTION_CLOSE;
-		s->p = write_big_16(s->p, (uint16_t)(errnum));
-		*(s->p++) = 0; // frame type
-		*(s->p++) = 0; // reason phrase
+		*(p++) = CONNECTION_CLOSE;
+		p = write_big_16(p, (uint16_t)(errnum));
+		*(p++) = 0; // frame type
+		*(p++) = 0; // reason phrase
 	} else {
-		*(s->p++) = CONNECTION_CLOSE;
-		s->p = write_big_16(s->p, QC_ERR_INTERNAL);
-		*(s->p++) = 0; // frame type
-		*(s->p++) = 0; // reason phrase
+		*(p++) = CONNECTION_CLOSE;
+		p = write_big_16(p, QC_ERR_INTERNAL);
+		*(p++) = 0; // frame type
+		*(p++) = 0; // reason phrase
 	}
 	pkt->flags |= QPKT_CLOSE;
-	return 0;
+	return p;
 }
 
 void q_ack_close(struct connection *c) {

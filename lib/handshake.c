@@ -586,6 +586,16 @@ int encode_verify(qslice_t *ps, const qsignature_class *type, const void *sig, s
 	return 0;
 }
 
+uint8_t *encode_client_finished(struct connection *c, uint8_t *p) {
+	size_t hash_len = digest_size(c->prot_tx.vtable->hash);
+	*p++ = CRYPTO;
+	*p++ = 0; // offset
+	*p++ = (uint8_t)(4 + hash_len); // crypto length
+	*p++ = FINISHED;
+	p = write_big_24(p, (uint32_t)hash_len);
+	return append(p, c->tx_finished, hash_len);
+}
+
 int encode_finished(qslice_t *ps, const br_hash_class *digest, const void *verify) {
 	qslice_t s = *ps;
 	size_t len = digest_size(digest);
@@ -1420,7 +1430,89 @@ end:
 ///////////////////////////////
 // Handshake
 
-int q_send_client_hello(struct client_handshake *ch, tick_t *pnow) {
+static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const qcipher_class **key, enum qcrypto_level level, uint64_t off, const void *crypto, size_t len, tick_t now) {
+	struct connection *c = &h->c;
+	assert(!c->peer_verified);
+	assert(level <= QC_HANDSHAKE);
+	qpacket_buffer_t *pkts = &h->pkts[level];
+
+	if (c->closing || pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
+		return NULL;
+	} else if (s->p + 1 + 4 + 2 * QUIC_ADDRESS_SIZE + 1 + 2 + 4 + QUIC_TAG_SIZE > s->e) {
+		return NULL;
+	}
+
+	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
+	memset(pkt, 0, sizeof(*pkt));
+
+	// header
+	uint8_t *pkt_begin = s->p;
+	*(s->p++) = level == QC_INITIAL ? INITIAL_PACKET : HANDSHAKE_PACKET;
+	s->p = write_big_32(s->p, c->version);
+
+	// connection IDs
+	*(s->p++) = (encode_id_len(c->peer_id[0]) << 4) | encode_id_len(c->local_id[0]);
+	s->p = append(s->p, c->peer_id + 1, c->peer_id[0]);
+	s->p = append(s->p, c->local_id + 1, c->local_id[0]);
+
+	// token
+	if (level == QC_INITIAL) {
+		if (c->is_client) {
+			struct client_handshake *ch = (struct client_handshake*)h;
+			s->p = encode_varint(s->p, ch->token_size);
+			s->p = append(s->p, ch->token, ch->token_size);
+		} else {
+			*(s->p++) = 0;
+		}
+	}
+
+	// length
+	s->p += 2;
+
+	// packet number
+	uint8_t *packet_number = s->p;
+	s->p = encode_packet_number(s->p, pkts->tx_next);
+	uint8_t *enc_begin = s->p;
+
+	// ack frame
+	s->p = q_encode_ack(pkts, s->p, now, QUIC_ACK_DELAY_SHIFT);
+
+	// crypto frame
+	if (len) {
+		uint16_t chdr = 1 + 4 + 4;
+		if (s->p + chdr + QUIC_TAG_SIZE > s->e) {
+			return NULL;
+		}
+		uint16_t sz = (uint16_t)MIN(len, (size_t)(s->e - s->p) - chdr);
+		*(s->p++) = CRYPTO;
+		s->p = encode_varint(s->p, off);
+		s->p = encode_varint(s->p, sz);
+		s->p = append(s->p, crypto, sz);
+		pkt->off = off;
+		pkt->len = sz;
+	}
+
+	// padding
+	if (level == QC_INITIAL && c->is_client) {
+		size_t pad = (size_t)(s->e - s->p) - QUIC_TAG_SIZE;
+		memset(s->p, PADDING, pad);
+		s->p += pad;
+	}
+
+	// tag
+	uint8_t *tag = s->p;
+	s->p += QUIC_TAG_SIZE;
+
+	// fill out length
+	write_big_16(packet_number - 2, VARINT_16 | (uint16_t)(s->p - packet_number));
+
+	(*key)->encrypt(key, pkts->tx_next, pkt_begin, (size_t)(enc_begin - pkt_begin), enc_begin, tag);
+	(*key)->protect(key, packet_number, (size_t)(enc_begin - packet_number), (size_t)(s->p - packet_number));
+	return pkt;
+}
+
+
+qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now) {
 	struct handshake *h = &ch->h;
 	struct connection *c = &h->c;
 
@@ -1428,7 +1520,7 @@ int q_send_client_hello(struct client_handshake *ch, tick_t *pnow) {
 	uint8_t tlsbuf[1024];
 	qslice_t tls = { tlsbuf, tlsbuf + sizeof(tlsbuf) };
 	if (encode_client_hello(ch, &tls)) {
-		return -1;
+		return NULL;
 	}
 
 	if (!ch->hashed_hello) {
@@ -1445,28 +1537,19 @@ int q_send_client_hello(struct client_handshake *ch, tick_t *pnow) {
 	// encode the UDP packet
 	uint8_t udpbuf[DEFAULT_PACKET_SIZE];
 	qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
-	struct long_packet lp = {
-		.level = QC_INITIAL,
-		.key = &key.vtable,
-		.pad = true,
-		.crypto_off = 0,
-		.crypto_data = tlsbuf,
-		.crypto_size = (size_t)(tls.p - tlsbuf),
-	};
-	qtx_packet_t *pkt = q_encode_long_packet(h, &udp, &lp, *pnow);
+	qtx_packet_t *pkt = encode_long_packet(h, &udp, &key.vtable, QC_INITIAL, 0, tlsbuf, (size_t)(tls.p - tlsbuf), now);
 	if (pkt == NULL) {
-		return -1;
+		return NULL;
 	}
 
 	// send it
 	LOG(c->local_cfg->debug, "TX CLIENT HELLO");
 	if ((*c->iface)->send(c->iface, udpbuf, (size_t)(udp.p - udpbuf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent)) {
-		return -1;
+		return NULL;
 	}
 
 	h->pkts[QC_INITIAL].tx_next++;
-	*pnow = pkt->sent;
-	return 0;
+	return pkt;
 }
 
 int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk, tick_t now) {
@@ -1554,34 +1637,20 @@ int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk,
 	init_initial_cipher(&ik, false, c->local_id);
 	c->prot_tx.vtable->init(&hk.vtable, h->hs_tx);
 
-	// encode and sent it
-	struct long_packet ip = {
-		.level = QC_INITIAL,
-		.key = &ik.vtable,
-		.crypto_off = 0,
-		.crypto_data = tlsbuf,
-		.crypto_size = init_len,
-	};
-	struct long_packet hp = {
-		.level = QC_HANDSHAKE,
-		.key = &hk.vtable,
-		.crypto_off = 0,
-		.crypto_data = ext_begin,
-		.crypto_size = (size_t)(s.p - ext_begin),
-	};
-
-	LOG(c->local_cfg->debug, "TX SERVER HELLO");
-
 	// try and combine both initial and handshake into the same udp packet and send them
-	while (ip.crypto_size || hp.crypto_size) {
+	size_t hs_len = (size_t)(s.p - ext_begin);
+	size_t init_sent = 0;
+	size_t hs_sent = 0;
+
+	while (init_sent < init_len || hs_sent < hs_len) {
 		uint8_t udpbuf[DEFAULT_PACKET_SIZE];
 		qslice_t udp = { udpbuf, udpbuf + sizeof(udpbuf) };
 		qtx_packet_t *ipkt = NULL, *hpkt = NULL;
-		if (ip.crypto_size) {
-			ipkt = q_encode_long_packet(h, &udp, &ip, now);
+		if (init_sent < init_len) {
+			ipkt = encode_long_packet(h, &udp, &ik.vtable, QC_INITIAL, init_sent, tlsbuf + init_sent, init_len - init_sent, now);
 		}
-		if (hp.crypto_size) {
-			hpkt = q_encode_long_packet(h, &udp, &hp, now);
+		if (hs_sent < hs_len) {
+			hpkt = encode_long_packet(h, &udp, &hk.vtable, QC_HANDSHAKE, hs_sent, ext_begin + hs_sent, hs_len - hs_sent, now);
 		}
 		if (!ipkt && !hpkt) {
 			return -1;
@@ -1590,23 +1659,17 @@ int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk,
 			return -1;
 		}
 		if (ipkt) {
+			init_sent += ipkt->len;
 			ipkt->sent = now;
 			h->pkts[QC_INITIAL].tx_next++;
 		}
 		if (hpkt) {
+			hs_sent += hpkt->len;
 			hpkt->sent = now;
 			h->pkts[QC_HANDSHAKE].tx_next++;
 		}
 	}
 
 	return 0;
-}
-
-void q_ack_crypto(struct connection *c, qtx_packet_t *pkt) {
-
-}
-
-void q_lost_crypto(struct connection *c, qtx_packet_t *pkt) {
-
 }
 

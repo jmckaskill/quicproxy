@@ -29,8 +29,8 @@ struct qconnection_cfg {
 	uint32_t stream_data_bidi_remote; // for bidi streams initiated by the remote
 	uint32_t stream_data_uni; // for uni streams initiated by the remote
 	// these indicate the maximum number of concurrent streams allowed
-	uint16_t bidi_streams;
-	uint16_t uni_streams;
+	uint32_t bidi_streams;
+	uint32_t uni_streams;
 	// the initial maximum of the total data sent to us
 	uint32_t max_data;
 	tickdiff_t idle_timeout;
@@ -93,7 +93,7 @@ struct qconnect_request {
 int qc_get_destination(void *buf, size_t len, uint8_t *out);
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *params, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
 int qc_accept(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *h, const qsigner_class *const *s);
-int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz);
+size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz);
 
 
 

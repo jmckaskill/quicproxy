@@ -32,7 +32,8 @@ static void on_retransmission_timeout(apc_t *a, tick_t now) {
 	struct connection *c = container_of(a, struct connection, rx_timer);
 	LOG(c->local_cfg->debug, "RTO %d", c->rx_timer_count);
 	c->retransmit_pktnum = c->prot_pkts.tx_next;
-	q_send_data(c, 2, now);
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY | SEND_PING);
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY | SEND_PING);
 	add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, c->rx_timer_count++), &on_retransmission_timeout);
 	LOG(c->local_cfg->debug, "");
 }
@@ -40,10 +41,10 @@ static void on_retransmission_timeout(apc_t *a, tick_t now) {
 static void on_probe_timeout(apc_t *a, tick_t now) {
 	struct connection *c = container_of(a, struct connection, rx_timer);
 	LOG(c->local_cfg->debug, "TLP %d", c->rx_timer_count);
-	q_send_data(c, 1, now);
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY | SEND_PING);
 	if (c->rx_timer_count == 2) {
 		c->rx_timer_count = 0;
-		add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, 0), &on_retransmission_timeout);
+		add_timed_apc(c->dispatcher, a, now + retransmission_timeout(c, c->rx_timer_count++), &on_retransmission_timeout);
 	} else {
 		add_timed_apc(c->dispatcher, a, now + probe_timeout(c, c->rx_timer_count++), &on_probe_timeout);
 	}
@@ -56,7 +57,7 @@ static void on_handshake_timeout(apc_t *a, tick_t now) {
 	LOG(c->local_cfg->debug, "HS timeout %d", c->rx_timer_count);
 	assert(!c->peer_verified);
 	if (c->is_client) {
-		q_send_client_hello((struct client_handshake*)c, &now);
+		q_send_client_hello((struct client_handshake*)c, now);
 	} else {
 		q_send_server_hello((struct server_handshake*)c, NULL, now);
 	}
@@ -100,11 +101,7 @@ static void start_close_timer(struct connection *c, tick_t now) {
 static void on_ping_timeout(apc_t *a, tick_t now) {
 	struct connection *c = container_of(a, struct connection, tx_timer);
 	LOG(c->local_cfg->debug, "PING timeout");
-	struct short_packet sp = {
-		.force_ack = true,
-		.ignore_cwnd = true,
-	};
-	q_send_short_packet(c, &sp, &now);
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY | SEND_PING);
 	q_start_ping_timeout(c, now);
 	LOG(c->local_cfg->debug, "");
 }
@@ -118,30 +115,9 @@ void q_start_ping_timeout(struct connection *c, tick_t now) {
 static void on_ack_timeout(apc_t *a, tick_t now) {
 	struct connection *c = container_of(a, struct connection, tx_timer);
 	LOG(c->local_cfg->debug, "ACK timeout");
-	// try and send a packet with data
-	if (q_send_data(c, 0, now) == 0) {
-		// otherwise fall back to just an ack
-		struct short_packet sp = {
-			.ignore_cwnd = true,
-			.ignore_closing = true,
-			.send_ack = true,
-			.send_close = c->closing,
-		};
-		q_send_short_packet(c, &sp, &now);
-	}
+	q_send_packet(c, now, SEND_IGNORE_CWND | SEND_EMPTY);
 	q_start_ping_timeout(c, now);
 	LOG(c->local_cfg->debug, "");
-}
-
-static void async_draining_ack(apc_t *a, tick_t now) {
-	struct connection *c = container_of(a, struct connection, tx_timer);
-	struct short_packet sp = {
-		.ignore_cwnd = true,
-		.ignore_closing = true,
-		.ignore_draining = true,
-		.send_ack = true,
-	};
-	q_send_short_packet(c, &sp, &now);
 }
 
 static void async_ack(struct connection *c, tick_t wakeup) {
@@ -158,23 +134,20 @@ void q_fast_async_ack(struct connection *c, tick_t now) {
 	async_ack(c, now + QUIC_SHORT_ACK_TIMEOUT);
 }
 
-void q_draining_ack(struct connection *c, tick_t now) {
-	add_apc(c->dispatcher, &c->tx_timer, &async_draining_ack);
-}
+// Flush data
 
 static void on_async_send_data(apc_t *a, tick_t now) {
-	struct connection *c = container_of(a, struct connection, tx_timer);
-	q_send_data(c, 0, now);
-	q_start_ping_timeout(c, now);
+	struct connection *c = container_of(a, struct connection, flush_apc);
+	while (q_send_packet(c, now, 0) != NULL) {
+	}
 }
 
 void q_async_send_data(struct connection *c) {
-	add_apc(c->dispatcher, &c->tx_timer, &on_async_send_data);
+	add_apc(c->dispatcher, &c->flush_apc, &on_async_send_data);
 }
 
 
 // Idle timer - used for detecting an idle link
-
 
 static void on_idle_timeout(apc_t *w, tick_t now) {
 	struct connection *c = container_of(w, struct connection, idle_timer);

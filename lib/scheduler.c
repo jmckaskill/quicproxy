@@ -1,13 +1,108 @@
 #include "internal.h"
 #include "connection.h"
 
-static void add_local_stream(struct connection *c, qstream_t *s) {
-	int uni = s->rx.size ? STREAM_BIDI : STREAM_UNI;
-	int local = c->is_client ? STREAM_CLIENT : STREAM_SERVER;
-	uint64_t id = ((c->next_id[uni | local]++) << 2) | uni | local;
-	q_setup_local_stream(c, s, id);
-	rbtree *rx = &c->rx_streams[uni | local];
-	rb_insert(rx, rb_begin(rx, RB_RIGHT), &s->rxnode, RB_RIGHT);
+static void enqueue(struct qstream_list **head, struct qstream_list *node) {
+	assert(!node->next && !node->prev);
+	if (*head) {
+		node->next = *head;
+		node->prev = (*head)->prev;
+		node->next->prev = node;
+		node->prev->next = node;
+	} else {
+		node->next = node;
+		node->prev = node;
+		*head = node;
+	}
+}
+
+static struct qstream_list *remove_head(struct qstream_list **head) {
+	struct qstream_list *n = *head;
+	*head = n->next;
+	n->next->prev = n->prev;
+	n->prev->next = n->next;
+	n->next = NULL;
+	n->prev = NULL;
+	return n;
+}
+
+static void dequeue(struct qstream_list **head, struct qstream_list *node) {
+	assert(node->next && node->prev);
+	node->next->prev = node->prev;
+	node->prev->next = node->next;
+	node->next = NULL;
+	node->prev = NULL;
+	if (*head == node) {
+		*head = node->next;
+	}
+}
+
+static bool has_data(qstream_t *s) {
+	return s->tx_next < s->tx_max_allowed && s->tx_next < s->tx.tail;
+}
+
+void qc_flush(qconnection_t *cin, qstream_t *s) {
+	struct connection *c = (struct connection*)cin;
+	if (c->closing) {
+		return;
+	}
+
+	if (s->id == UINT64_MAX) {
+		if (!s->ctrl.next) {
+			bool uni = (s->rx.size == 0);
+			enqueue(uni ? &c->uni_pending : &c->bidi_pending, &s->ctrl);
+			int type = (c->is_client ? STREAM_CLIENT : STREAM_SERVER) | (uni ? STREAM_UNI : STREAM_BIDI);
+			if (q_cwnd_allow(c) && c->next_id[type] < c->max_id[type]) {
+				q_async_send_data(c);
+			}
+		}
+	} else {
+		if ((s->flags & QS_TX_CONTROL) && !s->ctrl.next) {
+			enqueue(&c->ctrl_pending, &s->ctrl);
+			if (q_cwnd_allow(c)) {
+				q_async_send_data(c);
+			}
+		} else if (has_data(s) && !s->data.next) {
+			enqueue(&c->data_pending, &s->data);
+			if (q_cwnd_allow(c) && c->tx_data < c->tx_data_max) {
+				q_async_send_data(c);
+			}
+		}
+	}
+}
+
+static void commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
+	q_commit_stream(c, s, pkt);
+
+	int type = s->id & 3;
+	if (s->id == c->next_id[type]) {
+		c->next_id[type] += 4;
+		rb_insert(&c->rx_streams[type], rb_begin(&c->rx_streams[type], RB_RIGHT), &s->rxnode, RB_RIGHT);
+		dequeue((s->id & STREAM_UNI_MASK) == STREAM_UNI ? &c->uni_pending : &c->bidi_pending, &s->ctrl);
+	}
+
+	if (has_data(s) && !s->data.next) {
+		enqueue(&c->data_pending, &s->data);
+	} else if (!has_data(s) && s->data.next) {
+		dequeue(&c->data_pending, &s->data);
+	} else if (c->data_pending == &s->data) {
+		c->data_pending = s->data.next;
+	}
+
+	if (s->ctrl.next) {
+		dequeue(&c->ctrl_pending, &s->ctrl);
+	}
+}
+
+static qstream_t *find_stream(struct connection *c, uint64_t id) {
+	rbnode *n = c->rx_streams[id & 3].root;
+	while (n) {
+		qstream_t *s = container_of(n, qstream_t, rxnode);
+		if (s->id == id) {
+			return s;
+		}
+		n = (id < s->id) ? n->child[RB_LEFT] : n->child[RB_RIGHT];
+	}
+	return NULL;
 }
 
 static int create_remote_stream(struct connection *c, uint64_t id, qstream_t **ps) {
@@ -17,22 +112,11 @@ static int create_remote_stream(struct connection *c, uint64_t id, qstream_t **p
 		return QC_ERR_STREAM_ID;
 	} else if (c->closing) {
 		return 0;
+	} else if ((*ps = find_stream(c, id)) != NULL) {
+		return 0;
 	}
 
-	{
-		rbnode *n = c->rx_streams[id & 3].root;
-		while (n) {
-			qstream_t *s = container_of(n, qstream_t, rxnode);
-			if (s->id == id) {
-				*ps = s;
-				return 0;
-			}
-			n = (id < s->id) ? n->child[RB_LEFT] : n->child[RB_RIGHT];
-		}
-	}
-
-	if ((id >> 2) < c->next_id[id & 3]
-		|| (id & STREAM_SERVER) == (c->is_client ? 0 : STREAM_SERVER)) {
+	if (id < c->next_id[id & 3] || (id & STREAM_SERVER_MASK) == (c->is_client ? STREAM_CLIENT : STREAM_SERVER)) {
 		// this must be an out of order frame from an old stream
 		// we already closed
 		return 0;
@@ -44,134 +128,145 @@ static int create_remote_stream(struct connection *c, uint64_t id, qstream_t **p
 
 	// now we need to create the stream (and all the intermediate streams)
 	bool uni = (id & STREAM_UNI_MASK) == STREAM_UNI;
-	rbnode *n = rb_begin(&c->rx_streams[id & 3], RB_RIGHT);
-	while (c->next_id[id & 3] <= (id >> 2)) {
+	rbnode *prev = rb_begin(&c->rx_streams[id & 3], RB_RIGHT);
+	while (c->next_id[id & 3] <= id) {
 		qstream_t *s = (*c->iface)->new_stream(c->iface, uni);
 		if (!s) {
 			return QC_ERR_INTERNAL;
 		}
 		*ps = s;
-		q_setup_remote_stream(c, s, (c->next_id[id & 3]++ << 2) | (id & 3));
-		rb_insert(&c->rx_streams[id & 3], n, &s->rxnode, RB_RIGHT);
-		n = &s->rxnode;
-		s->flags |= QS_TX_DIRTY;
+		q_setup_remote_stream(c, s, c->next_id[id & 3]);
+		rb_insert(&c->rx_streams[id & 3], prev, &s->rxnode, RB_RIGHT);
+		prev = &s->rxnode;
+		c->next_id[id & 3] += 4;
+
 		qc_flush((qconnection_t*)c, s);
 	}
 	return 0;
 }
 
-static int send_stream(struct connection *c, qstream_t *s, int ignore_cwnd_pkts, tick_t *pnow) {
-	struct short_packet sp = {
-		.stream = s,
-		.stream_off = s->tx.head,
-		.send_ack = true,
-	};
-	qbuf_next_valid(&s->tx, &sp.stream_off);
-	int sent = 0;
-	for (;;) {
-		sp.ignore_cwnd = (sent < ignore_cwnd_pkts);
-		if (q_send_short_packet(c, &sp, pnow)) {
-			rb_insert(&c->tx_streams, rb_begin(&c->tx_streams, RB_RIGHT), &s->txnode, RB_RIGHT);
-			s->flags |= QS_TX_QUEUED;
-			return sent;
+void q_free_streams(struct connection *c) {
+	if ((*c->iface)->free_stream) {
+		for (int i = 0; i < 4; i++) {
+			for (rbnode *n = rb_begin(&c->rx_streams[i], RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
+				qstream_t *s = container_of(n, qstream_t, rxnode);
+				(*c->iface)->free_stream(c->iface, s);
+			}
 		}
-		sent++;
-		if (!qbuf_next_valid(&s->tx, &sp.stream_off)) {
-			return sent;
+		while (c->uni_pending) {
+			qstream_t *s = container_of(remove_head(&c->uni_pending), qstream_t, ctrl);
+			(*c->iface)->free_stream(c->iface, s);
+		}
+		while (c->bidi_pending) {
+			qstream_t *s = container_of(remove_head(&c->bidi_pending), qstream_t, ctrl);
+			(*c->iface)->free_stream(c->iface, s);
 		}
 	}
 }
 
-int q_send_data(struct connection *c, int ignore_cwnd_pkts, tick_t now) {
-	if (!c->peer_verified) {
-		return -1;
-	}
-	int sent = 0;
-
-	for (rbnode *n = rb_begin(&c->tx_streams, RB_LEFT); n != NULL;) {
-		qstream_t *s = container_of(n, qstream_t, txnode);
-		n = rb_next(n, RB_RIGHT);
-		rb_remove(&c->tx_streams, &s->txnode);
-		s->flags &= ~QS_TX_QUEUED;
-
-		int ret = send_stream(c, s, ignore_cwnd_pkts, &now);
-		ignore_cwnd_pkts -= ret;
-		sent += ret;
+qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
+	qpacket_buffer_t *pkts = &c->prot_pkts;
+	if (!c->peer_verified || pkts->tx_next == pkts->tx_oldest + pkts->sent_len || c->draining) {
+		return NULL;
 	}
 
-	for (int uni = 0; uni <= 1; uni++) {
-		rbtree *p = &c->pending_streams[uni];
-		int type = (uni << 1) | (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
-		for (rbnode *n = rb_begin(p, RB_LEFT); n != NULL && c->next_id[type] < c->max_id[type];) {
-			qstream_t *s = container_of(n, qstream_t, txnode);
-			n = rb_next(n, RB_RIGHT);
-			rb_remove(p, &s->txnode);
-			s->flags &= ~QS_TX_PENDING;
+	uint8_t buf[DEFAULT_PACKET_SIZE], *p = buf;
+	uint8_t *e = p + sizeof(buf) - QUIC_TAG_SIZE;
 
-			add_local_stream(c, s);
+	qtx_packet_t *pkt = &pkts->sent[pkts->tx_next % pkts->sent_len];
+	memset(pkt, 0, sizeof(*pkt));
 
-			int ret = send_stream(c, s, ignore_cwnd_pkts, &now);
-			ignore_cwnd_pkts -= ret;
-			sent += ret;
-		}
+	// Header
+	*(p++) = SHORT_PACKET;
+	p = append(p, c->peer_id + 1, c->peer_id[0]);
+	uint8_t *pktnum = p;
+	p = encode_packet_number(p, pkts->tx_next);
+	uint8_t *enc = p;
+
+	// Connection level frames
+	if (!c->handshake_complete) {
+		p = encode_client_finished(c, p);
+	}
+	p = q_encode_ack(pkts, p, now, c->local_cfg->ack_delay_exponent);
+	p = q_encode_scheduler(c, p, pkt);
+	p = q_encode_migration(c, p, pkt);
+
+	if (!(flags & SEND_IGNORE_CWND) && !q_cwnd_allow(c)) {
+		return NULL;
 	}
 
-	if (!sent && (q_pending_scheduler(c) || q_pending_migration(c))) {
-		struct short_packet sp = {
-			.send_ack = true,
-		};
-		sent += q_send_short_packet(c, &sp, &now) ? 0 : 1;
-	}
+	// Main body of the packet - Stream level data
+	int local = c->is_client ? STREAM_CLIENT : STREAM_SERVER;
+	int bidi = local | STREAM_BIDI;
+	int uni = local | STREAM_UNI;
 
-	if (!sent && !c->prot_pkts.tx_next) {
-		// we need to send something to get the client finished through
-		// for the client, we need a packet for the finished data
-		// for the server, we need a packet to return the ack
-		struct short_packet sp = {
-			.ignore_cwnd = true,
-			.send_ack = true,
-		};
-		sent += q_send_short_packet(c, &sp, &now) ? 0 : 1;
-	}
-
-	return sent;
-}
-
-void qc_flush(qconnection_t *cin, qstream_t *s) {
-	struct connection *c = (struct connection*)cin;
 	if (c->closing) {
-		return;
+		p = q_encode_close(c, p, pkt);
+
+	} else if (c->bidi_pending && c->next_id[bidi] < c->max_id[bidi]) {
+		qstream_t *s = container_of(c->bidi_pending, qstream_t, ctrl);
+		q_setup_local_stream(c, s, c->next_id[bidi]);
+		p = q_encode_stream(c, s, p, e, pkt);
+
+	} else if (c->uni_pending && c->next_id[uni] < c->max_id[uni]) {
+		qstream_t *s = container_of(c->uni_pending, qstream_t, ctrl);
+		q_setup_local_stream(c, s, c->next_id[uni]);
+		p = q_encode_stream(c, s, p, e, pkt);
+
+	} else if (c->data_pending && c->tx_data < c->tx_data_max) {
+		qstream_t *s = container_of(c->data_pending, qstream_t, data);
+		p = q_encode_stream(c, s, p, e, pkt);
+
+	} else if (c->ctrl_pending) {
+		qstream_t *s = container_of(c->ctrl_pending, qstream_t, ctrl);
+		p = q_encode_stream(c, s, p, e, pkt);
+
+	} else if (flags & SEND_PING) {
+		*(p++) = PING;
 	}
 
-	if (s) {
-		if (s->id == UINT64_MAX) {
-			if (!(s->flags & QS_TX_PENDING)) {
-				bool uni = s->rx.size == 0;
-				rbtree *p = &c->pending_streams[uni ? 1 : 0];
-				rb_insert(p, rb_begin(p, RB_RIGHT), &s->txnode, RB_RIGHT);
-				s->flags |= QS_TX_PENDING;
-			}
-		} else if (s->flags & QS_TX_DIRTY) {
-			if (!(s->flags & QS_TX_QUEUED)) {
-				rb_insert(&c->tx_streams, rb_begin(&c->tx_streams, RB_RIGHT), &s->txnode, RB_RIGHT);
-				s->flags |= QS_TX_QUEUED;
-			}
-		} else {
-			return;
-		}
+	if (!(flags & SEND_EMPTY) && !pkt->stream && pkts->tx_next && !q_pending_scheduler(c) && !q_pending_migration(c)) {
+		// No reason to send
+		return NULL;
 	}
 
-	if (c->peer_verified) {
-		q_async_send_data(c);
+	if (!c->handshake_complete) {
+		memset(p, PADDING, (size_t)(e - p));
+		p = e;
 	}
+
+	p += QUIC_TAG_SIZE;
+	write_big_16(pktnum - 2, VARINT_16 | (uint16_t)(p - pktnum));
+	c->prot_tx.vtable->encrypt(&c->prot_tx.vtable, pkts->tx_next, buf, (size_t)(enc - buf), enc, p - QUIC_TAG_SIZE);
+	c->prot_tx.vtable->protect(&c->prot_tx.vtable, pktnum, (size_t)(enc - pktnum), (size_t)(p - pktnum));
+
+	if ((*c->iface)->send(c->iface, buf, (size_t)(p - buf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent)) {
+		return NULL;
+	}
+
+	if (pkt->flags & QPKT_RETRANSMIT) {
+		c->retransmit_packets++;
+		q_start_probe_timer(c, pkt->sent);
+	}
+	cancel_apc(c->dispatcher, &c->tx_timer);
+	if (pkt->stream) {
+		commit_stream(c, pkt->stream, pkt);
+	}
+	q_commit_scheduler(c, pkt);
+	q_commit_migration(c, pkt);
+	q_cwnd_sent(c, pkt);
+	pkts->tx_next++;
+	return pkt;
 }
+
 
 void q_remove_stream(struct connection *c, qstream_t *s) {
-	if (s->flags & QS_TX_QUEUED) {
-		rb_remove(&c->tx_streams, &s->txnode);
-	}
+	assert(s->id != UINT64_MAX);
+	assert(!s->ctrl.next);
+	assert(!s->data.next);
 	rb_remove(&c->rx_streams[s->id & 3], &s->rxnode);
-	for (rbnode *n = rb_begin(&s->tx_packets, RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
+
+	for (rbnode *n = rb_begin(&s->packets, RB_LEFT); n != NULL; n = rb_next(n, RB_RIGHT)) {
 		qtx_packet_t *pkt = container_of(n, qtx_packet_t, rb);
 		assert(pkt->off != UINT64_MAX);
 		pkt->stream = NULL;
@@ -179,13 +274,12 @@ void q_remove_stream(struct connection *c, qstream_t *s) {
 		pkt->len = 0;
 	}
 
-	bool is_local = (s->id & STREAM_SERVER_MASK) == (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
 	if ((*c->iface)->free_stream) {
 		(*c->iface)->free_stream(c->iface, s);
 	}
 
 	// flush the new max id through
-	if (!is_local) {
+	if (q_pending_scheduler(c)) {
 		q_async_send_data(c);
 	}
 }
@@ -291,19 +385,18 @@ int q_decode_stream_data(struct connection *c, qslice_t *p) {
 		return err;
 	}
 
-	q_recv_max_stream(c, s, max);
-	return 0;
+	return q_recv_max_stream(c, s, max);
 }
 
 void q_update_scheduler_from_cfg(struct connection *c) {
 	int local = (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
-	c->max_id[STREAM_BIDI | local] = c->peer_cfg.bidi_streams;
-	c->max_id[STREAM_BIDI | remote] = c->local_cfg->bidi_streams;
-	c->max_id[STREAM_UNI | local] = c->peer_cfg.uni_streams;
-	c->max_id[STREAM_UNI | remote] = c->local_cfg->uni_streams;
-	c->tx_max_data = c->peer_cfg.max_data;
-	c->rx_max_data = c->local_cfg->max_data;
+	c->max_id[STREAM_BIDI | local] = (c->peer_cfg.bidi_streams << 2) | STREAM_BIDI | local;
+	c->max_id[STREAM_BIDI | remote] = (c->local_cfg->bidi_streams << 2) | STREAM_BIDI | remote;
+	c->max_id[STREAM_UNI | local] = (c->peer_cfg.uni_streams << 2) | STREAM_UNI | local;
+	c->max_id[STREAM_UNI | remote] = (c->local_cfg->uni_streams << 2) | STREAM_UNI | remote;
+	c->tx_data_max = c->peer_cfg.max_data;
+	c->rx_data_max = c->local_cfg->max_data;
 }
 
 int q_decode_max_id(struct connection *c, qslice_t *p) {
@@ -311,13 +404,14 @@ int q_decode_max_id(struct connection *c, qslice_t *p) {
 	if (decode_varint(p, &id)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
-	int uni = (id & 1);
-	int local = (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
-	uint64_t *pmax = &c->max_id[(uni << 1) | local];
-	*pmax = MAX(*pmax, id >> 1);
-	if (c->pending_streams[uni].size) {
+	id = (id << 1) | (c->is_client ? STREAM_CLIENT : STREAM_SERVER);
+	if (id <= c->max_id[id & 3]) {
+		return 0;
+	}
+	if (q_cwnd_allow(c) && c->next_id[id & 3] == c->max_id[id & 3] && ((id & STREAM_UNI) ? c->uni_pending : c->bidi_pending)) {
 		q_async_send_data(c);
 	}
+	c->max_id[id & 3] = id;
 	return 0;
 }
 
@@ -326,13 +420,13 @@ int q_decode_max_data(struct connection *c, qslice_t *p) {
 	if (decode_varint(p, &max)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
-	if (max <= c->tx_max_data) {
+	if (max <= c->tx_data_max) {
 		return 0;
 	}
-	if (c->data_sent == c->tx_max_data && c->tx_streams.size) {
+	if (q_cwnd_allow(c) && c->data_pending) {
 		q_async_send_data(c);
 	}
-	c->tx_max_data = max;
+	c->tx_data_max = max;
 	return 0;
 }
 
@@ -351,27 +445,27 @@ size_t q_scheduler_cwnd_size(const qtx_packet_t *pkt) {
 }
 
 static uint64_t rx_max_data(struct connection *c) {
-	return c->data_received + c->local_cfg->max_data;
+	return c->rx_data + c->local_cfg->max_data;
 }
 
 static uint64_t max_id(struct connection *c, int uni) {
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
 	int type = uni | remote;
-	return c->next_id[type] + (uni ? c->local_cfg->uni_streams : c->local_cfg->bidi_streams) - c->rx_streams[type].size;
+	return c->next_id[type] + 4 * ((uni ? c->local_cfg->uni_streams : c->local_cfg->bidi_streams) - c->rx_streams[type].size);
 }
 
 bool q_pending_scheduler(struct connection *c) {
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
-	return rx_max_data(c) > c->rx_max_data
+	return rx_max_data(c) > c->rx_data_max
 		|| max_id(c, STREAM_UNI) > c->max_id[remote | STREAM_UNI]
 		|| max_id(c, STREAM_BIDI) > c->max_id[remote | STREAM_BIDI];
 }
 
-int q_encode_scheduler(struct connection *c, qslice_t *p, qtx_packet_t *pkt) {
+uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt) {
 	// MAX_DATA
-	if (rx_max_data(c) > c->rx_max_data) {
-		*(p->p++) = MAX_DATA;
-		p->p = encode_varint(p->p, rx_max_data(c));
+	if (rx_max_data(c) > c->rx_data_max) {
+		*(p++) = MAX_DATA;
+		p = encode_varint(p, rx_max_data(c));
 		pkt->flags |= QPKT_MAX_DATA;
 	}
 
@@ -380,21 +474,21 @@ int q_encode_scheduler(struct connection *c, qslice_t *p, qtx_packet_t *pkt) {
 	int uni = STREAM_UNI | remote;
 	int bidi = STREAM_BIDI | remote;
 	if (max_id(c, STREAM_UNI) > c->max_id[uni]) {
-		*(p->p++) = MAX_STREAM_ID;
-		p->p = encode_varint(p->p, ((max_id(c, STREAM_UNI) << 2) | uni) >> 1);
+		*(p++) = MAX_STREAM_ID;
+		p = encode_varint(p, (max_id(c, STREAM_UNI) << 1));
 		pkt->flags |= QPKT_MAX_ID_UNI;
 	}
 	if (max_id(c, STREAM_BIDI) > c->max_id[bidi]) {
-		*(p->p++) = MAX_STREAM_ID;
-		p->p = encode_varint(p->p, ((max_id(c, STREAM_BIDI) << 2) | bidi) >> 1);
+		*(p++) = MAX_STREAM_ID;
+		p = encode_varint(p, (max_id(c, STREAM_BIDI) << 1));
 		pkt->flags |= QPKT_MAX_ID_BIDI;
 	}
-	return 0;
+	return p;
 }
 
 void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt) {
 	if (pkt->flags & QPKT_MAX_DATA) {
-		c->rx_max_data = rx_max_data(c);
+		c->rx_data_max = rx_max_data(c);
 	}
 	int remote = (c->is_client ? STREAM_SERVER : STREAM_CLIENT);
 	if (pkt->flags & QPKT_MAX_ID_UNI) {
@@ -405,11 +499,6 @@ void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt) {
 	}
 }
 
-void q_ack_scheduler(struct connection *c, const qtx_packet_t *pkt) {
-}
-
-void q_lost_scheduler(struct connection *c, const qtx_packet_t *pkt) {
-}
 
 
 

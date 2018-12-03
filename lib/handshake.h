@@ -32,6 +32,7 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 int encode_certificates(qslice_t *s, const qsigner_class *const *signer);
 int encode_verify(qslice_t *s, const qsignature_class *type, const void *sig, size_t len);
 int encode_finished(qslice_t *s, const br_hash_class *digest, const void *verify);
+uint8_t *encode_client_finished(struct connection *c, uint8_t *p);
 
 #define QC_PARSE_ERROR -6
 #define QC_WRONG_VERSION -5
@@ -97,11 +98,9 @@ const br_hash_class **init_cipher(struct handshake *h, const qcipher_class *ciph
 void init_protected_keys(struct handshake *h, const uint8_t *msg_hash);
 int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *frame_data, tick_t rxtime);
 
-void q_ack_crypto(struct connection *c, qtx_packet_t *pkt);
-void q_lost_crypto(struct connection *c, qtx_packet_t *pkt);
-
-int q_send_client_hello(struct client_handshake *ch, tick_t *pnow);
+qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now);
 int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk, tick_t now);
+
 
 
 

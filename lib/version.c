@@ -6,7 +6,7 @@ uint32_t QUIC_VERSIONS[] = {
 	0,
 };
 
-int q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz) {
+size_t q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz) {
 	const uint32_t *ver = req->server_cfg->versions ? req->server_cfg->versions : QUIC_VERSIONS;
 	size_t num = 0;
 	while (ver[num]) {
@@ -24,7 +24,7 @@ int q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz) {
 	for (size_t i = 0; i < num; i++) {
 		p = write_big_32(p, ver[i]);
 	}
-	return p - (uint8_t*)buf;
+	return (size_t)(p - (uint8_t*)buf);
 }
 
 void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now) {
@@ -36,7 +36,7 @@ void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now) {
 			if (*our_ver == big_32(s.p + 4 * i)) {
 				ch->initial_version = c->version;
 				c->version = *our_ver;
-				q_send_client_hello(ch, &now);
+				q_send_client_hello(ch, now);
 				return;
 			}
 		}

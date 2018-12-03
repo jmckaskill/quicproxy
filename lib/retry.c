@@ -33,7 +33,7 @@ struct retry_token {
 	uint8_t tag[QUIC_TAG_SIZE];
 };
 
-int q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz) {
+size_t q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz) {
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + bufsz;
@@ -128,5 +128,5 @@ void q_process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *s
 	memset(ch->h.c.peer_id + 1 + scil, 0, QUIC_ADDRESS_SIZE - scil - 1);
 	ch->token_size = (uint8_t)(s.e - s.p);
 	memcpy(ch->token, s.p, ch->token_size);
-	q_send_client_hello(ch, &now);
+	q_send_client_hello(ch, now);
 }

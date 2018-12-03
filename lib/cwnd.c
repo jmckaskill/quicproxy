@@ -1,11 +1,7 @@
 #include "internal.h"
 
-size_t q_cwnd_allowed_bytes(struct connection *c) {
-	if (c->bytes_in_flight < c->congestion_window) {
-		return (size_t)(c->congestion_window - c->bytes_in_flight);
-	} else {
-		return 0;
-	}
+bool q_cwnd_allow(struct connection *c) {
+	return c->bytes_in_flight + DEFAULT_PACKET_SIZE / 2 < c->congestion_window;
 }
 
 /*
@@ -70,18 +66,21 @@ void q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt) {
 			congestion_window += kMaxDatagramSize * acked_packet.bytes / congestion_window
 */
 
-void q_cwnd_ack(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt) {
+void q_ack_cwnd(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt) {
+	bool before = q_cwnd_allow(c);
 	size_t bytes = packet_bytes(pkt);
 	c->bytes_in_flight -= bytes;
 	if (in_recovery(c, pktnum)) {
 		// Recovery
-		return;
 	} else if (c->congestion_window < c->slow_start_threshold) {
 		// Slow Start
 		c->congestion_window += bytes;
 	} else {
 		// Congestion Avoidance
 		c->congestion_window += (DEFAULT_PACKET_SIZE * bytes) / c->congestion_window;
+	}
+	if (!before && q_cwnd_allow(c)) {
+		q_async_send_data(c);
 	}
 }
 
@@ -138,7 +137,7 @@ void q_cwnd_ecn(struct connection *c, uint64_t pktnum, uint64_t ecn_ce) {
 		// is past the end of the previous recovery epoch.
 		CongestionEvent(largest_lost_packet.packet_number)
 */
-void q_cwnd_lost(struct connection *c, const qtx_packet_t *pkt) {
+void q_lost_cwnd(struct connection *c, const qtx_packet_t *pkt) {
 	c->bytes_in_flight -= packet_bytes(pkt);
 }
 

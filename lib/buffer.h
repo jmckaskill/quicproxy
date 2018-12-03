@@ -74,6 +74,6 @@ size_t qbuf_consume(qbuffer_t *b, uint64_t max);
 
 size_t qbuf_data(const qbuffer_t *b, uint64_t off, const void **pdata);
 size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz);
-bool qbuf_next_valid(const qbuffer_t *b, uint64_t *off);
+uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off);
 
 

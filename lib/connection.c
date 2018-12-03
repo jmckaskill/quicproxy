@@ -16,6 +16,146 @@ static void generate_id(const br_prng_class **r, uint8_t *id) {
 	memset(id + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
 }
 
+////////////////////////////////////////////////
+// ACK Generation
+
+static void receive_packet(struct connection *c, enum qcrypto_level level, uint64_t num, tick_t rxtime) {
+	qpacket_buffer_t *s = (level == QC_PROTECTED) ? &c->prot_pkts : &((struct handshake*)c)->pkts[level];
+	assert(level == QC_PROTECTED || !c->peer_verified);
+	if (level == QC_PROTECTED && !c->handshake_complete) {
+		// Until this point, the client will send the finished message in every
+		// protected packet. Once the server has acknowledged one, we know that it
+		// got the finished frame and the handshake is complete.
+		LOG(c->local_cfg->debug, "client handshake complete");
+		c->handshake_complete = true;
+	}
+	if (level == QC_PROTECTED && num > s->rx_next) {
+		// out of order or dropped packet
+		q_fast_async_ack(c, rxtime);
+	}
+	if (num >= s->rx_next) {
+		s->rx_largest = rxtime;
+	}
+	// check to see if we should move the receive window forward
+	if (num == s->rx_next) {
+		// just one step
+		s->rx_next = num + 1;
+	} else if (num >= s->rx_next + 64) {
+		// a long way
+		s->rx_mask = 0;
+		s->rx_next = num + 1;
+	} else if (num > s->rx_next) {
+		// a short way
+		size_t shift = (size_t)(s->rx_next - ALIGN_DOWN(uint64_t, s->rx_next, 64));
+		uint64_t mask = UINT64_C(1) << (num - s->rx_next);
+		mask -= 1; // create a mask of n bits
+		mask = (mask << shift) | (mask >> (64 - shift)); // and rotate left
+		s->rx_mask &= ~mask; // and turn off the new bits
+		s->rx_next = num + 1;
+	}
+
+	s->rx_mask |= UINT64_C(1) << (num & 63);
+}
+
+// clzl = count leading zeros (long)
+// These versions do not protect against a zero value
+#if defined __GNUC__
+static unsigned clzl(uint64_t v) {
+#if defined __amd64__
+	return __builtin_clzl(v);
+#else
+	uint32_t lo = (uint32_t)v;
+	uint32_t hi = (uint32_t)(v >> 32);
+	return hi ? __builtin_clz(hi) : (32 + __builtin_clz(lo));
+#endif
+}
+#elif defined _MSC_VER
+#include <intrin.h>
+#if defined _M_X64
+#pragma intrinsic(_BitScanReverse64)
+static unsigned clzl(uint64_t v) {
+	unsigned long ret;
+	_BitScanReverse64(&ret, v);
+	return 63 - ret;
+}
+#else
+#pragma intrinsic(_BitScanReverse)
+static unsigned clzl(uint64_t v) {
+	unsigned long ret;
+	if (_BitScanReverse(&ret, (uint32_t)(v >> 32))) {
+		return 31 - ret;
+	} else {
+		_BitScanReverse(&ret, (uint32_t)(v));
+		return 63 - ret;
+	}
+}
+#endif
+#else
+static unsigned clzl(uint64_t v) {
+	unsigned n = 0;
+	int64_t x = (int64_t)v;
+	while (!(x < 0)) {
+		n++;
+		x <<= 1;
+	}
+	return n;
+}
+#endif
+
+uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned exp) {
+	static const unsigned max_blocks = 4;
+	if (!pkts->rx_next) {
+		return p;
+	}
+
+	*(p++) = ACK;
+
+	// largest acknowledged
+	p = encode_varint(p, pkts->rx_next - 1);
+
+	// ack delay
+	tickdiff_t delay = (tickdiff_t)(now - pkts->rx_largest);
+	p = encode_varint(p, q_encode_ack_delay(delay, exp));
+
+	// block count - fill out later
+	uint8_t *pblock_count = p++;
+	unsigned num_blocks = 0;
+
+	// rotate left such that the latest (b.next-1) packet is in the top bit
+	unsigned shift = (unsigned)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
+	uint64_t rx = (pkts->rx_mask << shift) | (pkts->rx_mask >> (64 - shift));
+
+	// and shift the latest packet out
+	rx <<= 1;
+
+	// find the first block
+	// rx is not all ones due to the shift above. Thus clz(~rx) is not called with a 0 value.
+	unsigned first_block = clzl(~rx);
+	*(p++) = (uint8_t)first_block;
+	rx <<= first_block;
+
+	while (rx && num_blocks < max_blocks) {
+		// there is at least one 1 bit in rx
+		// clz(rx) will return the number of 0s at the top (ie the gap)
+		// clz(~(rx << gap)) will return the length of 1s section (ie the block)
+
+		// find the gap
+		unsigned gap = clzl(rx);
+		*(p++) = (uint8_t)gap;
+		rx <<= gap;
+
+		// find the block
+		unsigned block = clzl(~rx);
+		*(p++) = (uint8_t)block;
+		rx <<= block;
+
+		num_blocks++;
+	}
+
+	*pblock_count = (uint8_t)num_blocks;
+	return p;
+}
+
 
 ////////////////////////////////////////////////
 // ACK Processing
@@ -36,20 +176,14 @@ static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_
 
 		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
 		if (c->path_validated && b == &c->prot_pkts) {
-			q_cwnd_ack(c, num, pkt);
+			q_ack_cwnd(c, num, pkt);
 		}
 		if (pkt->stream) {
-			q_ack_stream(c, pkt);
+			q_ack_stream(c, pkt->stream, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & (QPKT_MAX_DATA | QPKT_MAX_ID_BIDI | QPKT_MAX_ID_UNI)) {
-			q_ack_scheduler(c, pkt);
-		}
 		if (flags & QPKT_CLOSE) {
 			q_ack_close(c);
-		}
-		if (flags & QPKT_CRYPTO) {
-			q_ack_crypto(c, pkt);
 		}
 		if (flags & QPKT_PATH_RESPONSE) {
 			q_ack_path_response(c);
@@ -79,20 +213,14 @@ static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_
 		}
 		// packet is lost
 		if (c->path_validated && b == &c->prot_pkts) {
-			q_cwnd_lost(c, pkt);
+			q_lost_cwnd(c, pkt);
 		}
 		if (pkt->stream) {
-			q_lost_stream(c, pkt);
+			q_lost_stream(c, pkt->stream, pkt);
 		}
 		unsigned flags = pkt->flags;
-		if (flags & (QPKT_MAX_DATA | QPKT_MAX_ID_BIDI | QPKT_MAX_ID_UNI)) {
-			q_lost_scheduler(c, pkt);
-		}
 		if (flags & QPKT_CLOSE) {
 			q_lost_close(c, now);
-		}
-		if (flags & QPKT_CRYPTO) {
-			q_lost_crypto(c, pkt);
 		}
 		if (flags & QPKT_PATH_CHALLENGE) {
 			q_lost_path_challenge(c);
@@ -220,7 +348,6 @@ static int process_protected_frame(struct connection *c, qslice_t *s, tick_t rxt
 			return q_decode_reset(c, s);
 		case CONNECTION_CLOSE:
 		case APPLICATION_CLOSE:
-			q_draining_ack(c, rxtime);
 			return q_decode_close(c, hdr, s, rxtime);
 		case MAX_DATA:
 			q_async_ack(c, rxtime);
@@ -373,7 +500,7 @@ static int process_packet(struct connection *c, const qcipher_class **key, enum 
 		}
 	}
 	if (!err) {
-		q_receive_packet(c, level, pktnum, rxtime);
+		receive_packet(c, level, pktnum, rxtime);
 	} else if (err != QC_ERR_DROP) {
 		q_internal_shutdown(c, err, rxtime);
 		return -1;
@@ -500,7 +627,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	return 0;
 }
 
-int qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
+size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
 	switch (err) {
 	case QC_WRONG_VERSION:
 		return q_encode_version(req, buf, bufsz);
@@ -623,6 +750,10 @@ static int init_connection(struct handshake *h, size_t csz, dispatcher_t *d, con
 	h->c.peer_cfg.ack_delay_exponent = QUIC_ACK_DELAY_SHIFT;
 	h->c.dispatcher = d;
 	h->conn_buf_end = (uint8_t*)h + csz;
+	h->c.next_id[0] = 0;
+	h->c.next_id[1] = 1;
+	h->c.next_id[2] = 2;
+	h->c.next_id[3] = 3;
 	return seed_rand(&h->rand, cfg);
 }
 
@@ -665,12 +796,11 @@ int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface
 	// generate the client random
 	h->rand.vtable->generate(&h->rand.vtable, c->client_random, sizeof(c->client_random));
 
-	tick_t now = 0;
-	if (q_send_client_hello(ch, &now)) {
+	qtx_packet_t *pkt = q_send_client_hello(ch, 0);
+	if (!pkt) {
 		return -1;
 	}
-
-	q_start_handshake(h, now);
+	q_start_handshake(h, pkt->sent);
 	return 0;
 }
 
@@ -724,7 +854,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	(*msgs)->update(msgs, req->chello, req->chello_size);
 
 	// send server hello
-	q_receive_packet(c, QC_INITIAL, req->pktnum, req->rxtime);
+	receive_packet(c, QC_INITIAL, req->pktnum, req->rxtime);
 	if (q_send_server_hello(sh, &req->key, req->rxtime)) {
 		return -1;
 	}

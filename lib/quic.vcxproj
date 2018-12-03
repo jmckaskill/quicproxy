@@ -31,7 +31,6 @@
     <ClCompile Include="handshake.c" />
     <ClCompile Include="kdf.c" />
     <ClCompile Include="migration.c" />
-    <ClCompile Include="packet.c" />
     <ClCompile Include="pem.c" />
     <ClCompile Include="quic_test.c" />
     <ClCompile Include="retry.c" />

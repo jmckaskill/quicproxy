@@ -44,7 +44,7 @@ int q_update_address(struct connection *c, uint64_t pktnum, const struct sockadd
 		c->addr_len = salen;
 		return 0;
 	}
-	if (!c->peer_verified) {
+	if (!c->handshake_complete) {
 		return QC_ERR_INVALID_MIGRATION;
 	}
 	memcpy(&c->addr, sa, salen);
@@ -92,18 +92,18 @@ bool q_pending_migration(struct connection *c) {
 		|| (c->have_path_response && !c->path_response_sent);
 }
 
-int q_encode_migration(struct connection *c, qslice_t *p, qtx_packet_t *pkt) {
+uint8_t *q_encode_migration(struct connection *c, uint8_t *p, qtx_packet_t *pkt) {
 	if (!c->path_validated) {
-		*(p->p++) = PATH_CHALLENGE;
-		p->p = encode_path_challenge(c, p->p);
+		*(p++) = PATH_CHALLENGE;
+		p = encode_path_challenge(c, p);
 		pkt->flags |= QPKT_PATH_CHALLENGE | QPKT_RETRANSMIT;
 	}
 	if (c->have_path_response) {
-		*(p->p++) = PATH_RESPONSE;
-		p->p = append(p->p, c->tx_finished, 8);
+		*(p++) = PATH_RESPONSE;
+		p = append(p, c->tx_finished, 8);
 		pkt->flags |= QPKT_PATH_RESPONSE;
 	}
-	return 0;
+	return p;
 }
 
 void q_commit_migration(struct connection *c, const qtx_packet_t *pkt) {

@@ -15,7 +15,6 @@ build $obj/quic/cwnd.o: cc lib/cwnd.c
 build $obj/quic/handshake.o: cc lib/handshake.c
 build $obj/quic/kdf.o: cc lib/kdf.c
 build $obj/quic/migration.o: cc lib/migration.c
-build $obj/quic/packet.o: cc lib/packet.c
 build $obj/quic/pem.o: cc lib/pem.c
 build $obj/quic/retry.o: cc lib/retry.c
 build $obj/quic/scheduler.o: cc lib/scheduler.c
@@ -32,7 +31,6 @@ build $obj/quic.lib: lib $
  $obj/quic/handshake.o $
  $obj/quic/kdf.o $
  $obj/quic/migration.o $
- $obj/quic/packet.o $
  $obj/quic/pem.o $
  $obj/quic/retry.o $
  $obj/quic/scheduler.o $
