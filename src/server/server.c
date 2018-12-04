@@ -5,6 +5,7 @@
 #include <cutils/timer.h>
 #include <cutils/file.h>
 #include <cutils/log.h>
+#include <cutils/hash.h>
 
 static uint32_t get_tick() {
 	uint64_t ns = monotonic_ns();
@@ -13,10 +14,23 @@ static uint32_t get_tick() {
 
 static log_t *debug;
 
+typedef struct server server;
+typedef struct server_connection server_connection;
+
 struct server {
-	const qinterface_t *vtable;
-	uint64_t id;
+	struct {
+		hash_t h;
+		uint64_t *keys;
+		server_connection **values;
+	} by_id;
+
 	int fd;
+};
+
+struct server_connection {
+	const qinterface_t *vtable;
+	struct server *server;
+	uint64_t id;
 	qconnection_t conn[1024];
 	qstream_t stream;
 	bool stream_opened;
@@ -25,17 +39,17 @@ struct server {
 };
 
 static void server_close(const qinterface_t **vt) {
-	struct server *s = (struct server*) vt;
-	s->id = 0;
-	s->stream_opened = false;
+	server_connection *s = (server_connection*) vt;
+	REMOVE_HASH(&s->server->by_id, FIND_HASH(&s->server->by_id, s->id));
+	free(s);
 }
 
 static int server_send(const qinterface_t **vt, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent) {
-	struct server *s = (struct server*) vt;
+	server_connection *s = (server_connection*) vt;
 	stack_string str;
 	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa, salen), (int)len);
 
-	if (sendto(s->fd, buf, (int)len, 0, sa, salen) != (int)len) {
+	if (sendto(s->server->fd, buf, (int)len, 0, sa, salen) != (int)len) {
 		LOG(debug, "TX failed");
 		return -1;
 	}
@@ -44,7 +58,7 @@ static int server_send(const qinterface_t **vt, const void *buf, size_t len, con
 }
 
 static qstream_t *server_open_stream(const qinterface_t **vt, bool unidirectional) {
-	struct server *s = (struct server*) vt;
+	server_connection *s = (server_connection*) vt;
 	if (s->stream_opened) {
 		return NULL;
 	}
@@ -54,12 +68,12 @@ static qstream_t *server_open_stream(const qinterface_t **vt, bool unidirectiona
 }
 
 static void server_close_stream(const qinterface_t **vt, qstream_t *stream) {
-	struct server *s = (struct server*) vt;
+	server_connection *s = (server_connection*) vt;
 	s->stream_opened = false;
 }
 
 static void server_read(const qinterface_t **vt, qstream_t *stream) {
-	struct server *s = (struct server*) vt;
+	server_connection *s = (server_connection*) vt;
 	char buf[1024];
 	size_t sz = qrx_read(stream, buf, sizeof(buf)-1);
 	buf[sz] = 0;
@@ -69,7 +83,7 @@ static void server_read(const qinterface_t **vt, qstream_t *stream) {
 	qc_flush(s->conn, stream);
 }
 
-static const qinterface_t server_interface = {
+static const qinterface_t server_vtable = {
 	&server_close,
 	NULL,
 	&server_send,
@@ -98,8 +112,9 @@ int main(int argc, const char *argv[]) {
 
 	char **args = flag_parse(&argc, argv, "[arguments]", 0);
 
-	int fd = must_open_server_socket(SOCK_DGRAM, host, port);
-	set_non_blocking(fd);
+	server s = {0};
+	s.fd = must_open_server_socket(SOCK_DGRAM, host, port);
+	set_non_blocking(s.fd);
 
 	br_skey_decoder_context skey;
 	br_x509_certificate *certs;
@@ -141,7 +156,16 @@ int main(int argc, const char *argv[]) {
 		}
 	}
 
-	qconnection_cfg_t params = {
+	br_hmac_drbg_context rand;
+	br_hmac_drbg_init(&rand, &br_sha256_vtable, "server", 6);
+	br_prng_seeder seedfn = br_prng_seeder_system(NULL);
+	seedfn(&rand.vtable);
+	uint8_t traffic[32];
+	br_hmac_drbg_generate(&rand, traffic, sizeof(traffic));
+	qcipher_aes_gcm token_key;
+	init_aes_128_gcm(&token_key, traffic);
+
+	qconnection_cfg_t cfg = {
 		.groups = TLS_DEFAULT_GROUPS,
 		.ciphers = TLS_DEFAULT_CIPHERS,
 		.signatures = TLS_DEFAULT_SIGNATURES,
@@ -150,16 +174,11 @@ int main(int argc, const char *argv[]) {
 		.stream_data_bidi_remote = 4096,
 		.debug = &stderr_log,
 		.keylog = keylog_path.len ? open_file_log(&keylogger, keylog_path.c_str) : NULL,
+		.server_key = &token_key.vtable,
 	};
 
 	dispatcher_t d;
 	init_dispatcher(&d, get_tick());
-
-	struct server s;
-	s.vtable = &server_interface;
-	s.fd = fd;
-	s.stream_opened = false;
-	s.id = 0;
 
 	stack_string str;
 	LOG(debug, "starting server");
@@ -193,29 +212,47 @@ int main(int argc, const char *argv[]) {
 			LOG(debug, "RX from %s %d bytes", sockaddr_string(&str, sa, salen), sz);
 
 			uint64_t dest = qc_get_destination(buf, sz);
-
 			if (!dest) {
 				// bogus message
-			} else if (s.id == dest) {
-				qc_recv(s.conn, buf, sz, sa, salen, rxtime);
-			} else {
-				qconnect_request_t req;
-				if (qc_decode_request(&req, &params, buf, sz, sa, salen, rxtime)) {
-					LOG(debug, "failed to decode request");
-					continue;
-				}
-				if (qc_accept(s.conn, sizeof(s.conn), &d, &s.vtable, &req, &signer.vtable)) {
-					LOG(debug, "failed to accept request");
-					continue;
-				}
-				s.id = dest;
+				continue;
 			}
 
-			LOG(debug, "");
+			bool added;
+			size_t idx = INSERT_HASH(&s.by_id, dest, &added);
+			if (!added) {
+				server_connection *c = s.by_id.values[idx];
+				qc_recv(c->conn, buf, sz, sa, salen, rxtime);
+				continue;
+			}
+
+			// Time to create a new connection
+			cfg.validate_path = s.by_id.h.size > 10;
+			qconnect_request_t req;
+			if (qc_decode_request(&req, &cfg, buf, sz, sa, salen, rxtime)) {
+				LOG(debug, "failed to decode request");
+				REMOVE_HASH(&s.by_id, idx);
+				continue;
+			}
+
+			server_connection *c = malloc(sizeof(server_connection));
+			c->id = dest;
+			c->server = &s;
+			c->vtable = &server_vtable;
+			c->stream_opened = false;
+
+			if (qc_accept(c->conn, sizeof(c->conn), &d, &c->vtable, &req, &signer.vtable)) {
+				LOG(debug, "failed to accept request");
+				free(c);
+				REMOVE_HASH(&s.by_id, idx);
+				continue;
+			}
+
+			s.by_id.values[idx] = c;
+			LOG(debug, "accepted new connection");
 		}
 	}
 
-	closesocket(fd);
+	closesocket(s.fd);
 	free(args);
 	return 0;
 }
