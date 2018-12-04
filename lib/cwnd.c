@@ -57,7 +57,7 @@ static size_t packet_bytes(const struct connection *c, const qtx_packet_t *pkt) 
 		return 0;
 	}
 	size_t ack_size = 12; // rough ballpark average as we don't keep track of the actual size
-	return ret + 1 + c->peer_id[0] + ack_size + QUIC_TAG_SIZE;
+	return ret + 1 + c->peer_len + ack_size + QUIC_TAG_SIZE;
 }
 
 static bool in_recovery(struct connection *c, uint64_t pktnum) {

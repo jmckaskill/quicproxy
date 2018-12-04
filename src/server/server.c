@@ -15,8 +15,7 @@ static log_t *debug;
 
 struct server {
 	const qinterface_t *vtable;
-	uint8_t id[QUIC_ADDRESS_SIZE];
-	bool connected;
+	uint64_t id;
 	int fd;
 	qconnection_t conn[1024];
 	qstream_t stream;
@@ -27,7 +26,7 @@ struct server {
 
 static void server_close(const qinterface_t **vt) {
 	struct server *s = (struct server*) vt;
-	s->connected = false;
+	s->id = 0;
 	s->stream_opened = false;
 }
 
@@ -160,7 +159,7 @@ int main(int argc, const char *argv[]) {
 	s.vtable = &server_interface;
 	s.fd = fd;
 	s.stream_opened = false;
-	s.connected = false;
+	s.id = 0;
 
 	stack_string str;
 	LOG(debug, "starting server");
@@ -193,14 +192,13 @@ int main(int argc, const char *argv[]) {
 			tick_t rxtime = get_tick();
 			LOG(debug, "RX from %s %d bytes", sockaddr_string(&str, sa, salen), sz);
 
-			uint8_t dest[QUIC_ADDRESS_SIZE];
-			if (qc_get_destination(buf, sz, dest)) {
-				continue;
-			}
+			uint64_t dest = qc_get_destination(buf, sz);
 
-			if (s.connected && !memcmp(dest, s.id, QUIC_ADDRESS_SIZE)) {
+			if (!dest) {
+				// bogus message
+			} else if (s.id == dest) {
 				qc_recv(s.conn, buf, sz, sa, salen, rxtime);
-			} else if (!s.connected) {
+			} else {
 				qconnect_request_t req;
 				if (qc_decode_request(&req, &params, buf, sz, sa, salen, rxtime)) {
 					LOG(debug, "failed to decode request");
@@ -210,8 +208,7 @@ int main(int argc, const char *argv[]) {
 					LOG(debug, "failed to accept request");
 					continue;
 				}
-				memcpy(s.id, req.server, QUIC_ADDRESS_SIZE);
-				s.connected = true;
+				s.id = dest;
 			}
 
 			LOG(debug, "");

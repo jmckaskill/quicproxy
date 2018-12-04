@@ -21,8 +21,8 @@ static inline uint8_t decode_id_len(uint8_t val) {return val ? (val + 3) : 0;}
 uint8_t *encode_varint(uint8_t *p, uint64_t val);
 int decode_varint(qslice_t *s, uint64_t *pval);
 size_t packet_number_length(uint64_t val);
-uint8_t *encode_packet_number(uint8_t *p, uint64_t val);
-int decode_packet_number(qslice_t *s, uint64_t *pval);
+uint8_t *encode_packet_number(uint8_t *p, uint64_t base, uint64_t val);
+uint8_t *decode_packet_number(uint8_t *p, uint64_t base, uint64_t *pval);
 
 int encode_client_hello(const struct client_handshake *ch, qslice_t *ps);
 int encode_server_hello(const struct server_handshake *sh, qslice_t *ps);
@@ -98,8 +98,8 @@ const br_hash_class **init_cipher(struct handshake *h, const qcipher_class *ciph
 void init_protected_keys(struct handshake *h, const uint8_t *msg_hash);
 int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *frame_data, tick_t rxtime);
 
-qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now);
-int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk, tick_t now);
+qtx_packet_t *q_send_client_hello(struct client_handshake *ch, const br_prng_class **rand, tick_t now);
+int q_send_server_hello(struct server_handshake *sh, const br_prng_class **rand, const br_ec_public_key *pk, tick_t now);
 
 
 

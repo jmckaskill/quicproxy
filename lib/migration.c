@@ -39,7 +39,8 @@ int q_update_address(struct connection *c, uint64_t pktnum, const struct sockadd
 	if (salen == c->addr_len && sockaddr_equals(sa, (struct sockaddr*)&c->addr)) {
 		return 0;
 	}
-	if (c->is_client && !c->peer_verified && !c->addr_len) {
+	if (!c->is_server && !c->peer_verified && !c->addr_len) {
+		// Happy eyeballs returned the first address
 		memcpy(&c->addr, sa, salen);
 		c->addr_len = salen;
 		return 0;

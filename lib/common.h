@@ -70,7 +70,7 @@ static inline void *append(void *to, const void *from, size_t sz) {
 #define QUIC_MAX_ALGORITHMS 32
 #define QUIC_CRYPTO_BUF_SIZE 4096
 
-#define QUIC_ADDRESS_SIZE 19 // + 1 for size
+#define QUIC_MAX_ADDRESS_SIZE 18
 
 #define QUIC_MAX_KEYSHARE 2
 #define QUIC_VERSION UINT32_C(0xFF00000F)

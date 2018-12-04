@@ -12,15 +12,15 @@ size_t q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz) {
 	while (ver[num]) {
 		num++;
 	}
-	if (1 + 4 + 1 + req->server[0] + req->client[0] + num * 4 > bufsz) {
+	if (1 + 4 + 1 + req->client_len + req->server_len + num * 4 > bufsz) {
 		return 0;
 	}
 	uint8_t *p = buf;
 	*(p++) = 0xE3;
 	p = write_big_32(p, 0);
-	*(p++) = (encode_id_len(req->client[0]) << 4) | encode_id_len(req->server[0]);
-	p = append(p, req->client + 1, req->client[0]);
-	p = append(p, req->server + 1, req->server[0]);
+	*(p++) = (encode_id_len(req->client_len) << 4) | encode_id_len(req->server_len);
+	p = append(p, req->client, req->client_len);
+	p = append(p, req->server, req->server_len);
 	for (size_t i = 0; i < num; i++) {
 		p = write_big_32(p, ver[i]);
 	}
@@ -36,7 +36,7 @@ void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now) {
 			if (*our_ver == big_32(s.p + 4 * i)) {
 				ch->initial_version = c->version;
 				c->version = *our_ver;
-				q_send_client_hello(ch, now);
+				q_send_client_hello(ch, NULL, now);
 				return;
 			}
 		}

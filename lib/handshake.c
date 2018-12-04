@@ -124,36 +124,59 @@ size_t packet_number_length(uint64_t val) {
 	return 4;
 }
 
-uint8_t *encode_packet_number(uint8_t *p, uint64_t val) {
-	// TODO use base correctly
-	return write_big_32(p, (uint32_t)val | UINT32_C(0xC0000000));
+uint8_t *encode_packet_number(uint8_t *p, uint64_t base, uint64_t val) {
+	assert(val >= base);
+	uint32_t diff = (uint32_t)(val - base);
+	if (diff < 0x40) {
+		*p++ = (uint8_t)(val & 0x7F);
+	} else if (diff < 0x2000) {
+		*p++ = ((uint8_t)(val >> 8) & 0x3F) | 0x80;
+		*p++ = (uint8_t)(val);
+	} else {
+		*p++ = ((uint8_t)(val >> 24) & 0x3F) | 0xC0;
+		*p++ = (uint8_t)(val >> 16);
+		*p++ = (uint8_t)(val >> 8);
+		*p++ = (uint8_t)val;
+	}
+	return p;
 }
 
-int decode_packet_number(qslice_t *s, uint64_t *pval) {
-	// TODO use base correctly
-	if (s->p == s->e) {
-		return -1;
-	}
-	uint8_t *p = s->p++;
-	uint8_t hdr = *p;
-	switch (hdr >> 6) {
+uint8_t *decode_packet_number(uint8_t *p, uint64_t base, uint64_t *pval) {
+	unsigned shift;
+	uint32_t raw = *p++;
+
+	switch (raw >> 6) {
 	default:
-		*pval = (hdr & 0x7F);
-		return 0;
+		raw &= 0x7F;
+		shift = 32 - 7;
+		break;
 	case 2:
-		if (s->p == s->e) {
-			return -1;
-		}
-		*pval = (((uint16_t)hdr & 0x3F) << 8) | *(s->p++);
-		return 0;
+		raw = (raw & 0x3F) << 8;
+		raw |= (uint32_t)*(p++);
+		shift = 32 - 14;
+		break;
 	case 3:
-		if (s->p + 3 > s->e) {
-			return -1;
-		}
-		s->p += 3;
-		*pval = (big_32(p) & UINT32_C(0x3FFFFFFF));
-		return 0;
+		raw = (raw & 0x3F) << 24;
+		raw |= (uint32_t)*(p++) << 16;
+		raw |= (uint32_t)*(p++) << 8;
+		raw |= (uint32_t)*(p++);
+		shift = 32 - 30;
+		break;
 	}
+
+	// raw = (original - base) mod n
+	// if n is chosen such that
+	// (original - base) mod n = original - base
+	// then
+	// diff = (raw - base) mod n = original - base
+	// original = base + diff
+
+	raw <<= shift;
+	uint32_t base_shifted = (uint32_t)base << shift;
+	int32_t diff = (int32_t)(raw - base_shifted);
+	diff >>= shift;
+	*pval = base + diff;
+	return p;
 }
 
 static int append_slice_16(qslice_t *s, qslice_t data) {
@@ -204,7 +227,7 @@ static int encode_transport(qslice_t *s, uint16_t parameter, uint32_t value, siz
 	return 0;
 }
 
-static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, const uint8_t *orig_dst) {
+static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, uint64_t orig_server_id) {
 	if (s->p + 2 + 2 + 2 + 3 > s->e) {
 		return -1;
 	}
@@ -246,13 +269,13 @@ static int encode_transport_params(qslice_t *s, const qconnection_cfg_t *p, cons
 	if (p->max_ack_delay && encode_transport(s, TP_max_ack_delay, p->max_ack_delay / 1000, 1)) {
 		return -1;
 	}
-	if (orig_dst && orig_dst[0]) {
-		if (s->p + 2 + 2 + orig_dst[0] > s->e) {
+	if (orig_server_id) {
+		if (s->p + 2 + 2 + 8 > s->e) {
 			return -1;
 		}
 		s->p = write_big_16(s->p, TP_original_connection_id);
-		s->p = write_big_16(s->p, orig_dst[0]);
-		s->p = append(s->p, orig_dst + 1, orig_dst[0]);
+		s->p = write_big_16(s->p, 8);
+		s->p = write_little_64(s->p, orig_server_id);
 	}
 	write_big_16(params_start - 2, (uint16_t)(s->p - params_start));
 	return 0;
@@ -280,7 +303,7 @@ int encode_server_hello(const struct server_handshake *sh, qslice_t *ps) {
 	*(s.p++) = 0;
 
 	// cipher
-	s.p = write_big_16(s.p, sh->h.c.prot_tx.vtable->cipher);
+	s.p = write_big_16(s.p, sh->h.cipher->code);
 
 	// compression method
 	*(s.p++) = TLS_COMPRESSION_NULL;
@@ -357,7 +380,7 @@ int encode_encrypted_extensions(const struct server_handshake *sh, qslice_t *ps)
 		ver++;
 	}
 	versions_start[-1] = (uint8_t)(s.p - versions_start);
-	if (encode_transport_params(&s, cfg, sh->h.original_destination)) {
+	if (encode_transport_params(&s, cfg, sh->h.orig_server_id)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -400,7 +423,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 		if (s.p + 2 > s.e) {
 			return -1;
 		}
-		s.p = write_big_16(s.p, cfg->ciphers[i]->cipher);
+		s.p = write_big_16(s.p, cfg->ciphers[i]->code);
 	}
 	write_big_16(cipher_begin - 2, (uint16_t)(s.p - cipher_begin));
 
@@ -516,7 +539,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 	s.p += 2;
 	uint8_t *transport_start = s.p;
 	s.p = write_big_32(s.p, ch->initial_version ? ch->initial_version : ch->h.c.version);
-	if (encode_transport_params(&s, cfg, NULL)) {
+	if (encode_transport_params(&s, cfg, 0)) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
@@ -770,6 +793,10 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 					return -1;
 				}
 				switch (key) {
+				case TP_original_connection_id:
+				case TP_stateless_reset_token:
+				case TP_preferred_address:
+					return -1;
 				case TP_stream_data_bidi_local:
 					if (value.e - value.p < 4) {
 						return -1;
@@ -848,18 +875,15 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 }
 
 const br_hash_class **init_cipher(struct handshake *h, const qcipher_class *cipher) {
-	const br_hash_class **msgs;
-	h->c.prot_tx.vtable = cipher;
-	h->c.prot_rx.vtable = cipher;
-	if (!cipher) {
-		msgs = NULL;
-	} else if (cipher->hash == &br_sha256_vtable) {
-		msgs = &h->msg_sha256.vtable;
-	} else if (cipher->hash == &br_sha384_vtable) {
-		msgs = &h->msg_sha384.vtable;
-	} else {
-		msgs = NULL;
+	const br_hash_class **msgs = NULL;
+	if (cipher) {
+		if (cipher->hash == &br_sha256_vtable) {
+			msgs = &h->msg_sha256.vtable;
+		} else if (cipher->hash == &br_sha384_vtable) {
+			msgs = &h->msg_sha384.vtable;
+		}
 	}
+	h->cipher = cipher;
 	h->msgs = msgs;
 	return msgs;
 }
@@ -901,10 +925,9 @@ void init_protected_keys(struct handshake *h, const uint8_t *msg_hash) {
 	calc_master_secret(master, *msgs, h->hs_secret);
 	derive_secret(client, *msgs, master, PROT_CLIENT, msg_hash);
 	derive_secret(server, *msgs, master, PROT_SERVER, msg_hash);
-	c->prot_rx.vtable->init(&c->prot_rx.vtable, c->is_client ? server : client);
-	c->prot_tx.vtable->init(&c->prot_tx.vtable, c->is_client ? client : server);
+	h->cipher->init(&c->prot_rx.vtable, c->is_server ? client : server);
+	h->cipher->init(&c->prot_tx.vtable, c->is_server ? server : client);
 	log_protected(c->local_cfg->keylog, *msgs, client, server, c->client_random);
-	c->have_prot_keys = true;
 }
 
 static int check_signature(struct client_handshake *ch, uint16_t algorithm, const void *sig, size_t slen, const uint8_t *msg_hash) {
@@ -997,6 +1020,7 @@ static void update_msg_hash(const br_hash_class **h, struct crypto_run *r, uint8
 #define GET_2(STATE) case STATE: if ((err = getword(h,&r,2)) != 0) {h->state = STATE; goto end;} else do{}while(0)
 #define GET_3(STATE) case STATE: if ((err = getword(h,&r,3)) != 0) {h->state = STATE; goto end;} else do{}while(0)
 #define GET_4(STATE) case STATE: if ((err = getword(h,&r,4)) != 0) {h->state = STATE; goto end;} else do{}while(0)
+#define GET_8(STATE) case STATE: if ((err = getword(h,&r,8)) != 0) {h->state = STATE; goto end;} else do{}while(0)
 #define GOTO_END(STATE) case STATE: if (r.have < h->end) {h->state = STATE; goto end;} else r.off = h->end
 #define GOTO_LEVEL(LEVEL,STATE) if (level != (LEVEL)) {h->state = STATE; h->next = 0; h->level = (LEVEL); goto end;} case STATE: do{}while(0)
 #define GET_BYTES(P,SZ,STATE) h->state = STATE; case STATE: if ((err = getbytes(h,&r,(P),(SZ))) != 0) {h->state = STATE; goto end;} else do{}while(0)
@@ -1170,7 +1194,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		goto next_encrypted_extension;
 	finish_encrypted_extensions:
 		GOTO_END(EXTENSIONS_FINISH);
-		if (memcmp(ch->u.ee.orig_dest, h->original_destination, QUIC_ADDRESS_SIZE)) {
+		if (ch->u.ee.orig_server_id != h->orig_server_id) {
 			return QC_ERR_TRANSPORT_PARAMETER;
 		}
 		goto start_certificates;
@@ -1266,11 +1290,8 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		c->peer_cfg.max_ack_delay = 1000 * (tickdiff_t)big_16(r.p);
 		goto finish_tp;
 	original_connection_id:
-		if (h->end - r.off > QUIC_ADDRESS_SIZE - 1) {
-			return QC_ERR_PROTOCOL_VIOLATION;
-		}
-		ch->u.ee.orig_dest[0] = (uint8_t)(h->end - r.off);
-		GET_BYTES(ch->u.ee.orig_dest + 1, ch->u.ee.orig_dest[0], EXTENSIONS_TP_original_connection_id);
+		GET_8(EXTENSIONS_TP_original_connection_id);
+		ch->u.ee.orig_server_id = little_64(r.p);
 		goto finish_tp;
 
 
@@ -1385,7 +1406,10 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		if (err) {
 			return err;
 		}
-		if (c->is_client) {
+		if (c->is_server) {
+			c->handshake_complete = true;
+			LOG(c->local_cfg->debug, "server handshake complete");
+		} else {
 			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
 			update_msg_hash(msgs, &r, msg_hash);
 			init_protected_keys(h, msg_hash);
@@ -1402,9 +1426,6 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 			// handshake is not complete until the server acks a packet containing the finished frame
 			c->handshake_complete = false;
 			LOG(c->local_cfg->debug, "generated client finished");
-		} else {
-			c->handshake_complete = true;
-			LOG(c->local_cfg->debug, "server handshake complete");
 		}
 		q_start_runtime_timers(h, rxtime);
 		// Once we start the runtime, we no longer want to track handshake packets.
@@ -1434,13 +1455,14 @@ end:
 
 static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const qcipher_class **key, enum qcrypto_level level, uint64_t off, const void *crypto, size_t len, tick_t now) {
 	struct connection *c = &h->c;
+	struct server_handshake *sh = (struct server_handshake*)h;
 	assert(!c->peer_verified);
 	assert(level <= QC_HANDSHAKE);
 	qpacket_buffer_t *pkts = &h->pkts[level];
 
 	if (c->closing || pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
 		return NULL;
-	} else if (s->p + 1 + 4 + 2 * QUIC_ADDRESS_SIZE + 1 + 2 + 4 + QUIC_TAG_SIZE > s->e) {
+	} else if (s->p + 1 + 4 + 1 + 2 * QUIC_MAX_ADDRESS_SIZE + 1 + 2 + 4 + QUIC_TAG_SIZE > s->e) {
 		return NULL;
 	}
 
@@ -1453,18 +1475,21 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 	s->p = write_big_32(s->p, c->version);
 
 	// connection IDs
-	*(s->p++) = (encode_id_len(c->peer_id[0]) << 4) | encode_id_len(c->local_id[0]);
-	s->p = append(s->p, c->peer_id + 1, c->peer_id[0]);
-	s->p = append(s->p, c->local_id + 1, c->local_id[0]);
+	*(s->p++) = (encode_id_len(c->peer_len) << 4);
+	s->p = append(s->p, c->peer_id, c->peer_len);
+	if (c->is_server) {
+		pkt_begin[5] |= encode_id_len(DEFAULT_SERVER_ID_LEN);
+		s->p = append(s->p, sh->server_id, DEFAULT_SERVER_ID_LEN);
+	}
 
 	// token
 	if (level == QC_INITIAL) {
-		if (c->is_client) {
+		if (c->is_server) {
+			*(s->p++) = 0;
+		} else {
 			struct client_handshake *ch = (struct client_handshake*)h;
 			s->p = encode_varint(s->p, ch->token_size);
 			s->p = append(s->p, ch->token, ch->token_size);
-		} else {
-			*(s->p++) = 0;
 		}
 	}
 
@@ -1473,7 +1498,7 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 
 	// packet number
 	uint8_t *packet_number = s->p;
-	s->p = encode_packet_number(s->p, pkts->tx_next);
+	s->p = encode_packet_number(s->p, pkts->tx_largest_acked, pkts->tx_next);
 	uint8_t *enc_begin = s->p;
 
 	// ack frame
@@ -1495,7 +1520,7 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 	}
 
 	// padding
-	if (level == QC_INITIAL && c->is_client) {
+	if (level == QC_INITIAL && !c->is_server) {
 		size_t pad = (size_t)(s->e - s->p) - QUIC_TAG_SIZE;
 		memset(s->p, PADDING, pad);
 		s->p += pad;
@@ -1514,9 +1539,13 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 }
 
 
-qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now) {
+qtx_packet_t *q_send_client_hello(struct client_handshake *ch, const br_prng_class **rand, tick_t now) {
 	struct handshake *h = &ch->h;
 	struct connection *c = &h->c;
+
+	if (rand) {
+		(*rand)->generate(rand, c->client_random, sizeof(c->client_random));
+	}
 
 	// encode the TLS record
 	uint8_t tlsbuf[1024];
@@ -1525,16 +1554,15 @@ qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now) {
 		return NULL;
 	}
 
-	if (!ch->hashed_hello) {
+	if (rand) {
 		br_sha256_init(&h->msg_sha256);
 		br_sha256_update(&h->msg_sha256, tlsbuf, tls.p - tlsbuf);
 		br_sha384_init(&h->msg_sha384);
 		br_sha384_update(&h->msg_sha384, tlsbuf, tls.p - tlsbuf);
-		ch->hashed_hello = true;
 	}
 
 	qcipher_aes_gcm key;
-	init_initial_cipher(&key, true, c->peer_id);
+	init_initial_cipher(&key, STREAM_CLIENT, c->peer_id, c->peer_len);
 
 	// encode the UDP packet
 	uint8_t udpbuf[DEFAULT_PACKET_SIZE];
@@ -1554,13 +1582,13 @@ qtx_packet_t *q_send_client_hello(struct client_handshake *ch, tick_t now) {
 	return pkt;
 }
 
-int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk, tick_t now) {
+int q_send_server_hello(struct server_handshake *sh, const br_prng_class **rand, const br_ec_public_key *pk, tick_t now) {
 	struct handshake *h = &sh->h;
 	struct connection *c = &h->c;
 
-	bool first_time = pk != NULL;
+	bool first_time = rand != NULL;
 	if (first_time) {
-		h->rand.vtable->generate(&h->rand.vtable, sh->server_random, sizeof(sh->server_random));
+		(*rand)->generate(rand, sh->server_random, sizeof(sh->server_random));
 	}
 
 	// server hello
@@ -1636,8 +1664,8 @@ int q_send_server_hello(struct server_handshake *sh, const br_ec_public_key *pk,
 
 	qcipher_aes_gcm ik;
 	qcipher_compat hk;
-	init_initial_cipher(&ik, false, c->local_id);
-	c->prot_tx.vtable->init(&hk.vtable, h->hs_tx);
+	init_initial_cipher(&ik, STREAM_SERVER, sh->server_id, DEFAULT_SERVER_ID_LEN);
+	h->cipher->init(&hk.vtable, h->hs_tx);
 
 	// try and combine both initial and handshake into the same udp packet and send them
 	size_t hs_len = (size_t)(s.p - ext_begin);

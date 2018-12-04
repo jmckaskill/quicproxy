@@ -52,11 +52,11 @@ static const uint8_t initial_salt[] = {
 	0xe0, 0x6d, 0x6c, 0x38,
 };
 
-void init_initial_cipher(qcipher_aes_gcm *k, bool client, const uint8_t *server_id) {
+void init_initial_cipher(qcipher_aes_gcm *k, int is_server, const void *server_id, size_t id_len) {
 	uint8_t secret[br_sha256_SIZE];
 	uint8_t traffic[br_sha256_SIZE];
-	hkdf_extract(secret, &br_sha256_vtable, initial_salt, sizeof(initial_salt), server_id+1, server_id[0]);
-	derive_secret(traffic, &br_sha256_vtable, secret, client ? "quic client in" : "quic server in", NULL);
+	hkdf_extract(secret, &br_sha256_vtable, initial_salt, sizeof(initial_salt), server_id, id_len);
+	derive_secret(traffic, &br_sha256_vtable, secret, is_server ? "quic server in" : "quic client in", NULL);
 	init_aes_128_gcm(k, traffic);
 }
 

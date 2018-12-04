@@ -195,6 +195,7 @@ struct qpacket_buffer {
 	tick_t rx_largest;
 	uint64_t rx_next;
 	uint64_t rx_mask;
+	uint64_t tx_largest_acked;
 };
 
 struct connection {
@@ -202,13 +203,12 @@ struct connection {
 	const qinterface_t **iface;
 
 	// send/recv
-	uint8_t local_id[QUIC_ADDRESS_SIZE];
-	uint8_t peer_id[QUIC_ADDRESS_SIZE];
+	uint8_t peer_len;
+	uint8_t peer_id[QUIC_MAX_ADDRESS_SIZE];
 	uint32_t version;
 	struct sockaddr_storage addr;
 	socklen_t addr_len;
-	bool is_client;
-	bool have_prot_keys;
+	uint8_t is_server;
 	bool peer_verified;
 	bool path_validated;
 	bool challenge_sent;
@@ -273,11 +273,11 @@ struct handshake {
 	uint32_t end;
 	uint32_t stack[4];
 	uint32_t have_bytes;
-	uint8_t buf[3];
+	uint8_t buf[7];
 	uint8_t bufsz;
 	uint8_t depth;
 
-	br_hmac_drbg_context rand;
+	uint64_t orig_server_id;
 	qpacket_buffer_t pkts[2];
 	uint8_t hs_secret[QUIC_MAX_HASH_SIZE];
 	uint8_t hs_rx[QUIC_MAX_HASH_SIZE];
@@ -285,8 +285,8 @@ struct handshake {
 	uint8_t server_random[QUIC_RANDOM_SIZE];
 	uint8_t rx_finished[QUIC_MAX_HASH_SIZE];
 	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
-	uint8_t original_destination[QUIC_ADDRESS_SIZE];
-
+	
+	const qcipher_class *cipher;
 	const br_hash_class **msgs;
 	br_sha256_context msg_sha256;
 	br_sha384_context msg_sha384;
@@ -312,7 +312,7 @@ struct client_handshake {
 		} sh;
 
 		struct {
-			uint8_t orig_dest[QUIC_ADDRESS_SIZE];
+			uint64_t orig_server_id;
 		} ee;
 
 		struct {
@@ -327,7 +327,6 @@ struct client_handshake {
 		} f;
 	} u;
 	uint32_t initial_version;
-	bool hashed_hello;
 
 	size_t key_num;
 	uint8_t keys[1];
@@ -343,7 +342,10 @@ struct server_handshake {
 	uint8_t server_random[QUIC_RANDOM_SIZE];
 	const qsignature_class *signature;
 	const qsigner_class *const *signer;
+	uint8_t server_id[DEFAULT_SERVER_ID_LEN];
 };
+
+uint64_t q_generate_local_id(const qconnection_cfg_t *cfg, const br_prng_class **r);
 
 // Packet sending
 

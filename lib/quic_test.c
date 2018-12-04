@@ -208,6 +208,25 @@ static qconnection_cfg_t server_cfg = {
 
 int main(int argc, const char *argv[]) {
 	client_cfg.debug = server_cfg.debug = start_test(argc, argv);
+	uint8_t buf[64];
+
+	uint64_t pktnum;
+	buf[0] = 0x89;
+	buf[1] = 0xB3;
+	EXPECT_PTREQ(buf + 2, decode_packet_number(buf, 0xaa82f30e, &pktnum));
+	EXPECT_EQ(0xaa8309b3, pktnum);
+	EXPECT_PTREQ(buf + 1, encode_packet_number(buf, 0x6afa2f, 0x6AFA6D));
+	EXPECT_PTREQ(buf + 1, decode_packet_number(buf, 0x6afa7f, &pktnum));
+	EXPECT_EQ(0x6AFA6D, pktnum);
+	EXPECT_PTREQ(buf + 2, encode_packet_number(buf, 0x6afa2f, 0x6AFA74));
+	EXPECT_PTREQ(buf + 2, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_EQ(0x6AFA74, pktnum);
+	EXPECT_PTREQ(buf + 4, encode_packet_number(buf, 0x6afa2f, 0x6b2d79));
+	EXPECT_PTREQ(buf + 4, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_EQ(0x6b2d79, pktnum);
+	EXPECT_PTREQ(buf + 4, encode_packet_number(buf, 0x6afa2f, 0x6bc107));
+	EXPECT_PTREQ(buf + 4, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_EQ(0x6bc107, pktnum);
 
 	static const uint8_t token_key[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
 	qcipher_aes_gcm token_cipher;
@@ -225,7 +244,6 @@ int main(int argc, const char *argv[]) {
 
 	struct client_handshake *ch = (struct client_handshake*)c.c;
 	struct server_handshake *sh = (struct server_handshake*)s.c;
-	uint8_t addr[QUIC_ADDRESS_SIZE];
 	qconnect_request_t req;
 
 	struct sockaddr_in c4 = { 0 }, s4 = { 0 };
@@ -237,6 +255,7 @@ int main(int argc, const char *argv[]) {
 	s4.sin_family = AF_INET;
 	s4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	s4.sin_port = htons(443);
+
 
 	br_x509_knownkey_context x509;
 	br_x509_knownkey_init_ec(&x509, &test_pkey, BR_KEYTYPE_KEYX);
@@ -251,13 +270,15 @@ int main(int argc, const char *argv[]) {
 
 	// Verify that get destination works with a dummy version
 	NOW += 10 * MS;
-	EXPECT_EQ(0, qc_get_destination(c.msgv[0].buf, c.msgv[0].sz, addr));
-	EXPECT_BYTES_EQ(ch->h.c.peer_id, QUIC_ADDRESS_SIZE, addr, QUIC_ADDRESS_SIZE);
+	uint64_t addr = qc_get_destination(c.msgv[0].buf, c.msgv[0].sz);
+	EXPECT_TRUE(addr != 0);
+	write_little_64(buf, addr);
+	EXPECT_BYTES_EQ(ch->h.c.peer_id, ch->h.c.peer_len, buf, 8);
 	// Receive the client hello & return a version negotiation
 	EXPECT_EQ(QC_WRONG_VERSION, qc_decode_request(&req, &server_cfg, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW));
 	c.msgn = 0;
 	s.msgv[0].sz = qc_reject(&req, QC_WRONG_VERSION, s.msgv[0].buf, sizeof(s.msgv[0].buf));
-	EXPECT_EQ(1 + 4 + 1 + 8 + 8 + 4 + 4, s.msgv[0].sz);
+	EXPECT_EQ(1 + 4 + 1 + 8 + 4 + 4, s.msgv[0].sz);
 
 	// Receive the version negotiation & send another client hello
 	NOW += 10 * MS;
@@ -280,8 +301,7 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, c.msgn);
 	EXPECT_EQ(3, ch->h.pkts[0].tx_next);
-	EXPECT_EQ(8, ch->h.original_destination[0]);
-	EXPECT_TRUE(memcmp(ch->h.original_destination, ch->h.c.peer_id, QUIC_ADDRESS_SIZE) != 0);
+	EXPECT_EQ(addr, ch->h.orig_server_id);
 
 	// Receive the client hello & send the server hello
 	NOW += 10 * MS;
@@ -340,7 +360,6 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_TRUE(s.stream_open);
-	char buf[64];
 	size_t sz = qrx_read(&s.s, buf, sizeof(buf));
 	EXPECT_BYTES_EQ("hello", 5, buf, sz);
 	EXPECT_EQ(0, qrx_read(&s.s, buf, sizeof(buf)));

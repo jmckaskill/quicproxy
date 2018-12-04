@@ -10,7 +10,7 @@
 void hkdf_expand_label(void *out, size_t outsz, const br_hash_class *digest, const void *secret, const char *label, const void *msg_hash);
 void derive_secret(void *derived, const br_hash_class *digest, const void *secret, const char *label, const void *msg_hash);
 
-void init_initial_cipher(qcipher_aes_gcm *k, bool client, const uint8_t *server_id);
+void init_initial_cipher(qcipher_aes_gcm *k, int is_server, const void *server_id, size_t id_len);
 int calc_handshake_secret(void *secret, const br_hash_class *digest, const void *msg_hash, const br_ec_public_key *pk, const br_ec_private_key *sk);
 void calc_master_secret(void *master, const br_hash_class *digest, const void *handshake);
 

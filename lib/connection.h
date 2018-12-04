@@ -47,6 +47,7 @@ struct qconnection_cfg {
 	const qcipher_class **server_key;
 	log_t *debug;
 	log_t *keylog;
+	uint64_t(*generate_local_id)(const qconnection_cfg_t *cfg);
 };
 
 extern uint32_t QUIC_VERSIONS[];
@@ -65,9 +66,11 @@ int qc_connect(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t
 typedef struct qconnect_request qconnect_request_t;
 struct qconnect_request {
 	tick_t rxtime;
-	uint8_t server[QUIC_ADDRESS_SIZE];
-	uint8_t client[QUIC_ADDRESS_SIZE];
-	uint8_t orig_server[QUIC_ADDRESS_SIZE];
+	uint8_t client_len;
+	uint8_t server_len;
+	const uint8_t *client;
+	const uint8_t *server;
+	uint64_t orig_server_id;
 
 	const uint8_t *client_random;
 
@@ -89,7 +92,7 @@ struct qconnect_request {
 	socklen_t salen;
 };
 
-int qc_get_destination(void *buf, size_t len, uint8_t *out);
+uint64_t qc_get_destination(void *buf, size_t len);
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *params, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
 int qc_accept(qconnection_t *c, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnect_request_t *req, const qsigner_class *const *s);
 size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz);

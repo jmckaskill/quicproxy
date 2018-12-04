@@ -16,7 +16,7 @@ static void expand_data_iv(const br_hash_class *digest, const void *traffic, voi
 
 const qcipher_class *find_cipher(const qcipher_class *const *s, uint16_t code) {
 	while (*s) {
-		if ((*s)->cipher == code) {
+		if ((*s)->code == code) {
 			return *s;
 		}
 		s++;

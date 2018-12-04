@@ -7,7 +7,7 @@
 
 typedef struct qcipher_class qcipher_class;
 struct qcipher_class {
-	uint16_t cipher;
+	uint16_t code;
 	const br_hash_class *hash;
 	void(*init)(const qcipher_class **vt, const void *traffic);
 	void(*protect)(const qcipher_class **vt, void *pktnum, size_t num_sz, size_t pay_sz);

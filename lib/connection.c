@@ -10,10 +10,36 @@ static int seed_rand(br_hmac_drbg_context *c, const qconnection_cfg_t *cfg) {
 	return !seedfn || !seedfn(&c->vtable);
 }
 
-static void generate_id(const br_prng_class **r, uint8_t *id) {
-	id[0] = DEFAULT_SERVER_ID_LEN;
-	(*r)->generate(r, id + 1, DEFAULT_SERVER_ID_LEN);
-	memset(id + 1 + DEFAULT_SERVER_ID_LEN, 0, QUIC_ADDRESS_SIZE - DEFAULT_SERVER_ID_LEN - 1);
+struct raw_prng {
+	const br_prng_class *vtable;
+	void *p;
+	size_t sz;
+};
+static void update_raw(const br_prng_class **vt, const void *seed, size_t len) {
+	struct raw_prng *r = (struct raw_prng*)vt;
+	len = MIN(len, r->sz);
+	r->p = append(r->p, seed, len);
+	r->sz -= len;
+}
+static const br_prng_class raw_vtable = {
+	.update = &update_raw,
+};
+
+uint64_t q_generate_local_id(const qconnection_cfg_t *cfg, const br_prng_class **r) {
+	if (cfg->generate_local_id) {
+		return cfg->generate_local_id(cfg);
+	}
+	uint64_t ret;
+	if (r) {
+		(*r)->generate(r, &ret, sizeof(ret));
+	} else {
+		struct raw_prng raw = { &raw_vtable,&ret,sizeof(ret) };
+		br_prng_seeder seedfn = cfg->seeder ? cfg->seeder : br_prng_seeder_system(NULL);
+		if (!seedfn || !seedfn(&raw.vtable) || raw.sz) {
+			return 0;
+		}
+	}
+	return ret;
 }
 
 ////////////////////////////////////////////////
@@ -292,6 +318,10 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 		return QC_ERR_FRAME_ENCODING;
 	}
 
+	if (largest > b->tx_largest_acked) {
+		b->tx_largest_acked = largest;
+	}
+
 	tickdiff_t delay = q_decode_ack_delay(raw_delay, (level == QC_PROTECTED ? c->peer_cfg.ack_delay_exponent : 0));
 	update_rtt(c, b, largest, rxtime, delay);
 
@@ -510,24 +540,22 @@ static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcryp
 	}
 }
 
-static int decrypt_packet(const qcipher_class **k, uint8_t *pkt_begin, qslice_t *s, uint64_t *pktnum) {
+static int decrypt_packet(uint64_t base, const qcipher_class **k, uint8_t *pkt_begin, qslice_t *s, uint64_t *pktnum) {
 	// copy the encoded packet number data out so that if it is less
 	// than 4 bytes, we can copy it back after
 	uint8_t tmp[4];
 	memcpy(tmp, s->p, 4);
 	(*k)->protect(k, s->p, 4, s->e - s->p);
 	uint8_t *begin = s->p;
-	if (decode_packet_number(s, pktnum)) {
-		return -1;
-	}
+	s->p = decode_packet_number(s->p, base, pktnum);
 	memcpy(s->p, tmp + (s->p - begin), 4 - (s->p - begin));
 	s->e -= QUIC_TAG_SIZE;
 	return s->p > s->e || (*k)->decrypt(k, *pktnum, pkt_begin, (size_t)(s->p - pkt_begin), s->p, s->e);
 }
 
-static int process_packet(struct connection *c, const qcipher_class **key, enum qcrypto_level level, uint8_t *pkt_begin, qslice_t s, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+static int process_packet(struct connection *c, uint64_t base, const qcipher_class **key, enum qcrypto_level level, uint8_t *pkt_begin, qslice_t s, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	uint64_t pktnum;
-	if (decrypt_packet(key, pkt_begin, &s, &pktnum)) {
+	if (decrypt_packet(base, key, pkt_begin, &s, &pktnum)) {
 		return 0;
 	}
 	int err = q_update_address(c, pktnum, sa, salen, rxtime);
@@ -548,24 +576,21 @@ static int process_packet(struct connection *c, const qcipher_class **key, enum 
 	return 0;
 }
 
-int qc_get_destination(void *buf, size_t len, uint8_t *out) {
-	// this should only rely on the invariants as we don't check the version yet
+uint64_t qc_get_destination(void *buf, size_t len) {
+	// This does not support an ID of 8 0s. Oh well.
+	// This should only rely on the invariants as we don't check the version yet
 	uint8_t *u = buf;
 	if (len < 1 + DEFAULT_SERVER_ID_LEN) {
-		return QC_PARSE_ERROR;
+		return 0;
 	}
-	memset(out, 0, QUIC_ADDRESS_SIZE);
-	if (u[0] & LONG_HEADER_FLAG) {
-		out[0] = decode_id_len(u[5] >> 4);
-		if (len < (size_t)(6 + out[0])) {
-			return QC_PARSE_ERROR;
+	if (*(u++) & LONG_HEADER_FLAG) {
+		u += 4; // skip over version
+		uint8_t dcil = decode_id_len(*(u++) >> 4);
+		if (dcil != DEFAULT_SERVER_ID_LEN || len < 6 + DEFAULT_SERVER_ID_LEN) {
+			return 0;
 		}
-		memcpy(out + 1, u + 6, out[0]);
-	} else {
-		out[0] = DEFAULT_SERVER_ID_LEN;
-		memcpy(out + 1, u + 1, DEFAULT_SERVER_ID_LEN);
 	}
-	return 0;
+	return little_64(u);
 }
 
 int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, void *buf, size_t buflen, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
@@ -584,28 +609,28 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	}
 	uint32_t version = big_32(s.p);
 	s.p += 4;
-	req->server[0] = decode_id_len(*s.p >> 4);
-	req->client[0] = decode_id_len(*s.p & 0xF);
+	req->server_len = decode_id_len(*s.p >> 4);
+	req->client_len = decode_id_len(*s.p & 0xF);
 	s.p++;
-	if (s.p + req->server[0] + req->client[0] > s.e) {
+	if (s.p + req->server_len + req->client_len > s.e) {
 		return QC_PARSE_ERROR;
 	}
 
-	// destination
-	memcpy(req->server + 1, s.p, req->server[0]);
-	s.p += req->server[0];
+	req->server = s.p;
+	s.p += req->server_len;
 
-	// source
-	memcpy(req->client + 1, s.p, req->client[0]);
-	s.p += req->client[0];
+	req->client = s.p;
+	s.p += req->client_len;
 
-	// check version
+	// check version, up to this point we must only depend on the QUIC invariants
 	if (version != QUIC_VERSION) {
 		return QC_WRONG_VERSION;
 	}
 	req->version = version;
 
-	if (req->server[0] != DEFAULT_SERVER_ID_LEN) {
+	// Note this must be done after the version check as the
+	// default ID length may vary with the version.
+	if (req->server_len != DEFAULT_SERVER_ID_LEN || little_64(req->server) == 0) {
 		return QC_PARSE_ERROR;
 	}
 
@@ -627,8 +652,8 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 
 	// decrypt
 	qcipher_aes_gcm key;
-	init_initial_cipher(&key, true, req->server);
-	if (decrypt_packet(&key.vtable, (uint8_t*)buf, &s, &req->pktnum)) {
+	init_initial_cipher(&key, STREAM_CLIENT, req->server, DEFAULT_SERVER_ID_LEN);
+	if (decrypt_packet(0, &key.vtable, (uint8_t*)buf, &s, &req->pktnum)) {
 		return QC_PARSE_ERROR;
 	}
 
@@ -679,6 +704,9 @@ size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
 void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	assert(sa != NULL);
 	struct connection *c = (struct connection*)cin;
+	struct handshake *h = (struct handshake*)c;
+	struct client_handshake *ch = (struct client_handshake*)c;
+	struct server_handshake *sh = (struct server_handshake*)c;
 	qslice_t s;
 	s.p = buf;
 	s.e = s.p + len;
@@ -708,8 +736,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			}
 
 			// check the version
-			struct client_handshake *ch = (struct client_handshake*)c;
-			if (c->is_client && !c->peer_verified && !ch->initial_version && !version) {
+			if (!c->is_server && !c->peer_verified && !ch->initial_version && !version) {
 				q_process_version(ch, s, rxtime);
 				return;
 			} else if (version != QUIC_VERSION) {
@@ -729,7 +756,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			case PROTECTED_PACKET:
 				break;
 			case RETRY_PACKET:
-				if (c->is_client && !c->peer_verified && !ch->h.original_destination[0]) {
+				if (!c->is_server && !c->peer_verified && !h->orig_server_id) {
 					q_process_retry(ch, scil, source, s, rxtime);
 				}
 				return;
@@ -738,7 +765,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			}
 
 			uint64_t paysz;
-			if (decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p)) {
+			if (decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p) || paysz < QUIC_TAG_SIZE + 1) {
 				return;
 			}
 			qslice_t pkt = { s.p, s.p + (size_t)paysz };
@@ -750,25 +777,28 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			if (c->peer_verified) {
 				continue;
 			} else if (hdr == INITIAL_PACKET) {
-				init_initial_cipher(&key.aes_gcm, !c->is_client, c->is_client ? c->peer_id : c->local_id);
+				if (c->is_server) {
+					init_initial_cipher(&key.aes_gcm, STREAM_CLIENT, sh->server_id, DEFAULT_SERVER_ID_LEN);
+				} else {
+					init_initial_cipher(&key.aes_gcm, STREAM_SERVER, c->peer_id, c->peer_len);
+				}
 				level = QC_INITIAL;
-			} else if (hdr == HANDSHAKE_PACKET && c->prot_rx.vtable) {
-				struct handshake *h = (struct handshake*)c;
-				c->prot_rx.vtable->init(&key.vtable, h->hs_rx);
+			} else if (hdr == HANDSHAKE_PACKET && h->cipher) {
+				h->cipher->init(&key.vtable, h->hs_rx);
 				level = QC_HANDSHAKE;
 			} else {
 				continue;
 			}
 
-			if (process_packet(c, &key.vtable, level, pkt_begin, pkt, sa, salen, rxtime)) {
+			if (process_packet(c, h->pkts[level].rx_next, &key.vtable, level, pkt_begin, pkt, sa, salen, rxtime)) {
 				return;
 			}
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
-			s.p += DEFAULT_SERVER_ID_LEN;
-			if (s.p <= s.e && c->have_prot_keys) {
-				process_packet(c, &c->prot_rx.vtable, QC_PROTECTED, pkt_begin, s, sa, salen, rxtime);
+			s.p += c->is_server ? DEFAULT_SERVER_ID_LEN : 0;
+			if (s.p + 1 + QUIC_TAG_SIZE <= s.e && c->prot_rx.vtable) {
+				process_packet(c, c->prot_pkts.rx_next, &c->prot_rx.vtable, QC_PROTECTED, pkt_begin, s, sa, salen, rxtime);
 			}
 			return;
 		}
@@ -781,37 +811,33 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 //////////////////////////////
 // Initialization
 
-static int init_connection(struct handshake *h, size_t csz, dispatcher_t *d, const qconnection_cfg_t *cfg) {
+static void init_connection(struct handshake *h, size_t csz) {
 	h->c.peer_cfg.ack_delay_exponent = QUIC_ACK_DELAY_SHIFT;
-	h->c.dispatcher = d;
 	h->conn_buf_end = (uint8_t*)h + csz;
 	h->c.next_id[0] = 0;
 	h->c.next_id[1] = 1;
 	h->c.next_id[2] = 2;
 	h->c.next_id[3] = 3;
 	q_reset_cwnd(&h->c, 0);
-	return seed_rand(&h->rand, cfg);
 }
 
 int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_t **vt, const qconnection_cfg_t *cfg, const char *server_name, const br_x509_class **x) {
 	struct connection *c = (struct connection*)cin;
 	struct handshake *h = (struct handshake*)cin;
 	struct client_handshake *ch = (struct client_handshake*)cin;
-	if (csz < sizeof(*ch) + BR_EC_KBUF_PRIV_MAX_SIZE) {
+	br_hmac_drbg_context rand;
+	if (csz < sizeof(*ch) + BR_EC_KBUF_PRIV_MAX_SIZE || seed_rand(&rand, cfg)) {
 		return -1;
 	}
 	memset(ch, 0, sizeof(*ch));
-	if (init_connection(h, csz, d, cfg)) {
-		return -1;
-	}
+	init_connection(h, csz);
 	c->version = cfg->versions ? cfg->versions[0] : QUIC_VERSION;
-	c->is_client = true;
+	c->is_server = STREAM_CLIENT;
 	c->iface = vt;
 	c->local_cfg = cfg;
+	c->dispatcher = d;
 	ch->server_name = server_name;
 	ch->x509 = x;
-	generate_id(&h->rand.vtable, c->peer_id);
-	generate_id(&h->rand.vtable, c->local_id);
 	h->level = QC_INITIAL;
 	h->state = SHELLO_START;
 	h->pkts[QC_INITIAL].sent = ch->init_pkts;
@@ -819,21 +845,25 @@ int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface
 	h->pkts[QC_HANDSHAKE].sent = ch->hs_pkts;
 	h->pkts[QC_HANDSHAKE].sent_len = ARRAYSZ(ch->hs_pkts);
 
+	c->peer_len = DEFAULT_SERVER_ID_LEN;
+	br_hmac_drbg_generate(&rand, c->peer_id, DEFAULT_SERVER_ID_LEN);
+	if (little_64(c->peer_id) == 0) {
+		return -1;
+	}
+
+
 	// generate a private key for the high priority groups
 	const br_ec_impl *ec = br_ec_get_default();
 	size_t n = 0;
 	while (cfg->groups[n] != 0 && &ch->keys[(n+1) * BR_EC_KBUF_PRIV_MAX_SIZE] <= h->conn_buf_end) {
-		if (!br_ec_keygen(&h->rand.vtable, ec, NULL, &ch->keys[n * BR_EC_KBUF_PRIV_MAX_SIZE], cfg->groups[n])) {
+		if (!br_ec_keygen(&rand.vtable, ec, NULL, &ch->keys[n * BR_EC_KBUF_PRIV_MAX_SIZE], cfg->groups[n])) {
 			return -1;
 		}
 		n++;
 	}
 	ch->key_num = n;
 
-	// generate the client random
-	h->rand.vtable->generate(&h->rand.vtable, c->client_random, sizeof(c->client_random));
-
-	qtx_packet_t *pkt = q_send_client_hello(ch, 0);
+	qtx_packet_t *pkt = q_send_client_hello(ch, &rand.vtable, 0);
 	if (!pkt) {
 		return -1;
 	}
@@ -845,23 +875,24 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	struct connection *c = (struct connection*)cin;
 	struct handshake *h = (struct handshake*)cin;
 	struct server_handshake *sh = (struct server_handshake*)cin;
-	if (csz < sizeof(*sh)) {
+	br_hmac_drbg_context rand;
+	if (csz < sizeof(*sh) || seed_rand(&rand, req->server_cfg)) {
 		return -1;
 	}
 	memset(sh, 0, sizeof(*sh));
-	if (init_connection(h, csz, d, req->server_cfg)) {
-		return -1;
-	}
+	init_connection(h, csz);
 	c->version = req->version;
-	c->is_client = false;
+	c->is_server = STREAM_SERVER;
 	c->iface = vt;
 	c->local_cfg = req->server_cfg;
 	c->peer_cfg = req->client_cfg;
+	c->dispatcher = d;
 	sh->signer = signer;
-	memcpy(c->peer_id, req->client, QUIC_ADDRESS_SIZE);
-	memcpy(c->local_id, req->server, QUIC_ADDRESS_SIZE);
+	h->orig_server_id = req->orig_server_id;
+	c->peer_len = req->client_len;
+	memcpy(sh->server_id, req->server, DEFAULT_SERVER_ID_LEN);
+	memcpy(c->peer_id, req->client, req->client_len);
 	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
-	memcpy(h->original_destination, req->orig_server, QUIC_ADDRESS_SIZE);
 	memcpy(&c->addr, req->sa, req->salen);
 	c->addr_len = req->salen;
 	h->level = QC_PROTECTED;
@@ -872,7 +903,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	h->pkts[QC_HANDSHAKE].sent_len = ARRAYSZ(sh->hs_pkts);
 
 	// key group
-	if (!req->key.curve || !br_ec_keygen(&h->rand.vtable, br_ec_get_default(), &sh->sk, sh->key_data, req->key.curve)) {
+	if (!req->key.curve || !br_ec_keygen(&rand.vtable, br_ec_get_default(), &sh->sk, sh->key_data, req->key.curve)) {
 		return -1;
 	}
 
@@ -892,7 +923,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 
 	// send server hello
 	receive_packet(c, QC_INITIAL, req->pktnum, req->rxtime);
-	if (q_send_server_hello(sh, &req->key, req->rxtime)) {
+	if (q_send_server_hello(sh, &rand.vtable, &req->key, req->rxtime)) {
 		return -1;
 	}
 

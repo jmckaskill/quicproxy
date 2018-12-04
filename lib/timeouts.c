@@ -55,10 +55,10 @@ static void on_handshake_timeout(apc_t *a, tick_t now) {
 	// ignore the error if the send fails, we'll try again next timeout
 	LOG(c->local_cfg->debug, "HS timeout %d", c->rx_timer_count);
 	assert(!c->peer_verified);
-	if (c->is_client) {
-		q_send_client_hello((struct client_handshake*)c, now);
+	if (c->is_server) {
+		q_send_server_hello((struct server_handshake*)c, NULL, NULL, now);
 	} else {
-		q_send_server_hello((struct server_handshake*)c, NULL, now);
+		q_send_client_hello((struct client_handshake*)c, NULL, now);
 	}
 	add_timed_apc(c->dispatcher, a, now + crypto_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
 	LOG(c->local_cfg->debug, "");
@@ -211,7 +211,7 @@ void q_start_handshake_timers(struct handshake *h, tick_t now) {
 
 void q_start_runtime_timers(struct handshake *h, tick_t now) {
 	struct connection *c = &h->c;
-	if (!c->is_client && !c->srtt) {
+	if (c->is_server && !c->srtt) {
 		// Client may not send any acks on initial & handshake as the client
 		// is finished with those levels. Use the handshake response time
 		// to initialize srtt.
