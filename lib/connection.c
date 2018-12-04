@@ -273,7 +273,7 @@ static void update_rtt(struct connection *c, qpacket_buffer_t *b, uint64_t pktnu
 		tickdiff_t latest_rtt = (tickdiff_t)(now - pkt->sent);
 		c->min_rtt = MIN(c->min_rtt, latest_rtt);
 
-		if (delay < latest_rtt) {
+		if (delay < c->min_rtt) {
 			latest_rtt -= delay;
 		}
 		if (c->srtt) {
@@ -702,7 +702,6 @@ size_t qc_reject(qconnect_request_t *req, int err, void *buf, size_t bufsz) {
 
 
 void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
-	assert(sa != NULL);
 	struct connection *c = (struct connection*)cin;
 	struct handshake *h = (struct handshake*)c;
 	struct client_handshake *ch = (struct client_handshake*)c;

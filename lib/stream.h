@@ -47,7 +47,7 @@ static inline uint64_t qtx_max(qstream_t *s) {return qbuf_max(&s->tx);}
 static inline size_t qtx_size(qstream_t *s) {return (size_t)(qtx_max(s) - qtx_offset(s));}
 void qtx_finish(qstream_t *s);
 void qtx_cancel(qstream_t *s, int errnum);
-void qtx_write(qstream_t *s, const void *data, size_t len);
+size_t qtx_write(qstream_t *s, const void *data, size_t len);
 
 
 

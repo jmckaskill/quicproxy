@@ -34,8 +34,8 @@ struct server_connection {
 	qconnection_t conn[1024];
 	qstream_t stream;
 	bool stream_opened;
-	uint8_t txbuf[4096];
-	uint8_t rxbuf[4096];
+	uint8_t txbuf[8192];
+	uint8_t rxbuf[8192];
 };
 
 static void server_close(const qinterface_t **vt) {
@@ -72,15 +72,35 @@ static void server_close_stream(const qinterface_t **vt, qstream_t *stream) {
 	s->stream_opened = false;
 }
 
-static void server_read(const qinterface_t **vt, qstream_t *stream) {
-	server_connection *s = (server_connection*) vt;
-	char buf[1024];
-	size_t sz = qrx_read(stream, buf, sizeof(buf)-1);
-	buf[sz] = 0;
-	LOG(debug, "received '%s'", buf);
-	qtx_write(stream, "reply ", strlen("reply "));
-	qtx_write(stream, buf, sz);
-	qc_flush(s->conn, stream);
+static void echo_stream(server_connection *c, qstream_t *s) {
+	size_t flushed = 0;
+	size_t have;
+	const void *ptr;
+	uint64_t off = qrx_offset(s);
+	uint64_t end = qrx_max(s);
+	if (off < end) {
+		while ((have = qbuf_data(&s->rx, off + flushed, end, &ptr)) > 0) {
+			size_t written = qtx_write(s, ptr, have);
+			flushed += written;
+			if (written < have) {
+				break;
+			}
+		}
+		if (flushed) {
+			qbuf_consume(&s->rx, flushed);
+			qc_flush(c->conn, s);
+		}
+	}
+}
+
+static void server_received(const qinterface_t **vt, qstream_t *stream) {
+	server_connection *c = (server_connection*) vt;
+	echo_stream(c, stream);
+}
+
+static void server_sent(const qinterface_t **vt, qstream_t *stream) {
+	server_connection *c = (server_connection*)vt;
+	echo_stream(c, stream);
 }
 
 static const qinterface_t server_vtable = {
@@ -89,8 +109,8 @@ static const qinterface_t server_vtable = {
 	&server_send,
 	&server_open_stream,
 	&server_close_stream,
-	&server_read,
-	NULL,
+	&server_received,
+	&server_sent,
 };
 
 int main(int argc, const char *argv[]) {
@@ -175,6 +195,7 @@ int main(int argc, const char *argv[]) {
 		.debug = &stderr_log,
 		.keylog = keylog_path.len ? open_file_log(&keylogger, keylog_path.c_str) : NULL,
 		.server_key = &token_key.vtable,
+		.idle_timeout = 600 * 1000 * 1000,
 	};
 
 	dispatcher_t d;

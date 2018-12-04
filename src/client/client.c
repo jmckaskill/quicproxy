@@ -17,8 +17,8 @@ struct client {
 	qconnection_t conn[1024];
 	int fd;
 	qstream_t stream;
-	uint8_t txbuf[4096];
-	uint8_t rxbuf[4096];
+	uint8_t txbuf[8192];
+	uint8_t rxbuf[8192];
 	log_t *debug;
 	br_x509_minimal_context x509;
 	uint32_t counter;
@@ -40,11 +40,7 @@ static int client_send(const qinterface_t **vt, const void *buf, size_t len, con
 }
 
 static void client_received(const qinterface_t **vt, qstream_t *stream) {
-	struct client *c = (struct client*) vt;
-	char buf[1024];
-	size_t sz = qrx_read(stream, buf, sizeof(buf) - 1);
-	buf[sz] = 0;
-	LOG(c->debug, "received '%s'", buf);
+	qbuf_consume(&stream->rx, qrx_size(stream));
 }
 
 static void client_sent(const qinterface_t **vt, qstream_t *stream) {
@@ -54,9 +50,9 @@ static void client_sent(const qinterface_t **vt, qstream_t *stream) {
 			qtx_finish(stream);
 			break;
 		}
-		char buf[9];
-		sprintf(buf, "%08x", c->counter++);
-		qtx_write(stream, buf, 8);
+		char buf[10];
+		sprintf(buf, "%08x\n", c->counter++);
+		qtx_write(stream, buf, 9);
 	}
 	qc_flush(c->conn, stream);
 }
@@ -75,6 +71,7 @@ int main(int argc, const char *argv[]) {
 	struct client c;
 	c.vtable = &client_interface;
 	c.debug = &stderr_log;
+	c.counter = 0;
 
 	str_t keylog_path = STR_INIT;
 	struct file_logger keylog_file;
@@ -112,9 +109,11 @@ int main(int argc, const char *argv[]) {
 		.signatures = TLS_DEFAULT_SIGNATURES,
 		.max_data = 4096,
 		.stream_data_bidi_local = 4096,
-		.ping_timeout = 20 * 1000 * 1000,
 		.debug = &stderr_log,
 		.keylog = keylog_path.len ? open_file_log(&keylog_file, keylog_path.c_str) : NULL,
+		.disable_migration = true,
+		.ping_timeout = 180 * 1000 * 1000,
+		.idle_timeout = 600 * 1000 * 1000,
 	};
 
 	LOG(c.debug, "client start");
@@ -130,8 +129,7 @@ int main(int argc, const char *argv[]) {
 	LOG(c.debug, "");
 
 	qinit_stream(&c.stream, c.txbuf, sizeof(c.txbuf), c.rxbuf, sizeof(c.rxbuf));
-	qtx_write(&c.stream, "hello world", 11);
-	qc_flush(c.conn, &c.stream);
+	client_sent(&c.vtable, &c.stream);
 
 	for (;;) {
 		int timeoutms = dispatch_apcs(&d, get_tick(), 1000);
@@ -151,7 +149,8 @@ int main(int argc, const char *argv[]) {
 				} else if (call_again()) {
 					continue;
 				} else {
-					FATAL(c.debug, "recv failed: %s", syserr_string(&str));
+					LOG(c.debug, "recv failed: %s", syserr_string(&str));
+					break;
 				}
 			}
 			tick_t rxtime = get_tick();

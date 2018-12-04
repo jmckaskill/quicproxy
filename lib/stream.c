@@ -65,8 +65,7 @@ size_t qrx_read(qstream_t *s, void *data, size_t len) {
 	} else {
 		uint64_t off = s->rx.head;
 		len = qbuf_copy(&s->rx, off, data, len);
-		qbuf_mark_invalid(&s->rx, off, len);
-		qbuf_consume(&s->rx, off + len);
+		qbuf_consume(&s->rx, len);
 		return len;
 	}
 }
@@ -85,9 +84,12 @@ void qtx_finish(qstream_t *s) {
 	}
 }
 
-void qtx_write(qstream_t *s, const void *data, size_t len) {
+size_t qtx_write(qstream_t *s, const void *data, size_t len) {
+	uint64_t end = MIN(s->tx.tail + len, qtx_max(s));
+	len = (size_t)(end - s->tx.tail);
 	qbuf_insert(&s->tx, s->tx.tail, data, len);
 	qbuf_fold(&s->tx);
+	return len;
 }
 
 static void remove_stream_if_complete(struct connection *c, qstream_t *s) {
@@ -192,7 +194,7 @@ static void insert_stream_packet(qstream_t *s, qtx_packet_t *pkt, uint64_t off) 
 	rbdirection dir = RB_LEFT;
 	while (p) {
 		qtx_packet_t *pp = container_of(p, qtx_packet_t, rb);
-		dir = (pp->off < off) ? RB_LEFT : RB_RIGHT;
+		dir = (off < pp->off) ? RB_LEFT : RB_RIGHT;
 		if (!rb_child(p, dir)) {
 			break;
 		}
@@ -285,11 +287,14 @@ void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 	}
 	if (pkt->len) {
 		qbuf_mark_invalid(&s->tx, pkt->off, pkt->len);
-		s->tx_next = qbuf_next_valid(&s->tx, pkt->off + pkt->len);
-		if (s->tx_next > s->tx_max_sent) {
+		uint64_t pktend = pkt->off + pkt->len;
+		if (pktend > s->tx_max_sent) {
 			uint64_t new_data = s->tx_next - s->tx_max_sent;
 			c->tx_data += new_data;
-			s->tx_max_sent = s->tx_next;
+			s->tx_max_sent = pktend;
+			s->tx_next = pktend;
+		} else {
+			s->tx_next = qbuf_next_valid(&s->tx, pktend, s->tx.tail);
 		}
 	}
 	insert_stream_packet(s, pkt, pkt->off);
@@ -297,7 +302,6 @@ void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 }
 
 void q_ack_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
-	rb_remove(&s->packets, &pkt->rb);
 	pkt->stream = NULL;
 
 	if (pkt->flags & QPKT_STOP) {
@@ -309,22 +313,26 @@ void q_ack_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 	if (pkt->flags & QPKT_FIN) {
 		s->flags |= QS_RX_FIN_ACK;
 	}
-	if (!(s->flags & QS_TX_RST) && pkt->off == s->tx.head && pkt->len) {
-		rbnode *n = rb_next(&pkt->rb, RB_RIGHT);
-		size_t len = qbuf_consume(&s->tx, n ? container_of(n, qtx_packet_t, rb)->off : s->tx.tail);
-		if (len && (*c->iface)->data_sent) {
-			(*c->iface)->data_sent(c->iface, s);
+	bool sent = !(s->flags & QS_TX_RST) && pkt->off == s->tx.head && pkt->len;
+	if (sent) {
+		qbuf_consume(&s->tx, pkt->len);
+		if (s->tx.head < s->tx_max_sent) {
+			rbnode *n = rb_next(&pkt->rb, RB_RIGHT);
+			s->tx.head = qbuf_next_valid(&s->tx, s->tx.head, n ? container_of(n, qtx_packet_t, rb)->off : s->tx_max_sent);
 		}
 	}
 	if (((s->flags & QS_RX_FIN_ACK) && (s->tx.head == s->tx.tail)) || (s->flags & QS_RX_RST_ACK)) {
 		s->flags |= QS_TX_COMPLETE;
 	}
 	s->flags |= QS_STARTED;
+	rb_remove(&s->packets, &pkt->rb);
+	if (sent && (*c->iface)->data_sent) {
+		(*c->iface)->data_sent(c->iface, s);
+	}
 	remove_stream_if_complete(c, s);
 }
 
 void q_lost_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
-	rb_remove(&s->packets, &pkt->rb);
 	pkt->stream = NULL;
 
 	if ((pkt->flags & QPKT_STOP) && !(s->flags & QS_RX_STOP_ACK)) {
@@ -345,6 +353,7 @@ void q_lost_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {
 			s->tx_next = pkt->off;
 		}
 	}
+	rb_remove(&s->packets, &pkt->rb);
 	qc_flush((qconnection_t*)c, s);
 }
 

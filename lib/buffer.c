@@ -165,14 +165,17 @@ void qbuf_fold(qbuffer_t *b) {
 		// The most common use case is a received packet that was contiguously
 		// consumed from the front. So restrict the start point, but don't
 		// bother with the rear or holes in between.
-		size_t shift = iterate_bits(b, 0, start, end);
-		start = (start + shift) % b->size;
+		size_t consumed = 0;
+		if (b->head > b->ext_off) {
+			consumed = MIN((size_t)(b->head - b->ext_off), b->ext_len);
+			start = (start + consumed) % b->size;
+		}
 
 		if (end < start) {
-			memcpy(b->data + start, b->ext_data + shift, b->size - start);
+			memcpy(b->data + start, b->ext_data + consumed, b->size - start);
 			memcpy(b->data, b->ext_data + b->ext_len - end, end);
 		} else if (end > start) {
-			memcpy(b->data + start, b->ext_data + shift, b->ext_len - shift);
+			memcpy(b->data + start, b->ext_data + consumed, b->ext_len - consumed);
 		}
 
 		b->ext_off = 0;
@@ -212,13 +215,9 @@ size_t qbuf_insert(qbuffer_t *b, uint64_t off, const void *data, size_t len) {
 	}
 }
 
-size_t qbuf_consume(qbuffer_t *b, uint64_t max) {
-	assert(max <= b->tail);
-	size_t start = (size_t)(b->head % b->size);
-	size_t end = (size_t)(max % b->size);
-	size_t len = iterate_bits(b, 0, start, end);
-	b->head += len;
-	return len;
+void qbuf_consume(qbuffer_t *b, size_t consume) {
+	qbuf_mark_invalid(b, b->head, consume);
+	b->head += consume;
 }
 
 void qbuf_mark_invalid(qbuffer_t *b, uint64_t off, size_t len) {
@@ -247,10 +246,13 @@ static size_t get_internal_data(const qbuffer_t *b, size_t start, size_t len, co
 	}
 }
 
-size_t qbuf_data(const qbuffer_t *b, uint64_t off, const void **pdata) {
-	assert(qbuf_min(b) <= off && off <= qbuf_max(b));
+size_t qbuf_data(const qbuffer_t *b, uint64_t off, uint64_t max, const void **pdata) {
+	assert(b->head <= off && off <= max && max <= b->tail);
+	if (off == max) {
+		return 0;
+	}
 	size_t start = (size_t)(off % b->size);
-	size_t end = (size_t)(b->tail % b->size);
+	size_t end = (size_t)(max % b->size);
 	size_t len = iterate_bits(b, ~UINT32_C(0), start, end);
 
 	if (!len) {
@@ -278,17 +280,21 @@ size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz) {
 	size_t ret = 0;
 	size_t have;
 	const void *src;
-	while (ret < sz && (have = qbuf_data(b, off + ret, &src)) != 0) {
-		have = MIN(have, sz - ret);
+	uint64_t end = MIN(off + sz, b->tail);
+	while (ret < sz && (have = qbuf_data(b, off + ret, end, &src)) > 0) {
+		assert(ret + have <= sz);
 		memcpy((char*)buf + ret, src, have);
 		ret += have;
 	}
 	return ret;
 }
 
-uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off) {
-	assert(b->head <= off && off <= b->tail && b->size);
-	size_t start = (size_t)(off % b->size);
-	size_t end = (size_t)(b->tail % b->size);
-	return off + iterate_bits(b, 0, start, end);
+uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off, uint64_t max) {
+	assert(b->head <= off && off <= max && max <= b->tail);
+	if (off < max) {
+		size_t start = (size_t)(off % b->size);
+		size_t end = (size_t)(max % b->size);
+		off += iterate_bits(b, 0, start, end);
+	}
+	return off;
 }

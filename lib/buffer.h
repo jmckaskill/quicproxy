@@ -70,10 +70,10 @@ void qbuf_fold(qbuffer_t *b);
 
 void qbuf_mark_invalid(qbuffer_t *b, uint64_t off, size_t len);
 void qbuf_mark_valid(qbuffer_t *b, uint64_t off, size_t len);
-size_t qbuf_consume(qbuffer_t *b, uint64_t max);
+void qbuf_consume(qbuffer_t *b, size_t consume);
 
-size_t qbuf_data(const qbuffer_t *b, uint64_t off, const void **pdata);
+size_t qbuf_data(const qbuffer_t *b, uint64_t off, uint64_t max, const void **pdata);
 size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz);
-uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off);
+uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off, uint64_t max);
 
 

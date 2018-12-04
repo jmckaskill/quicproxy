@@ -61,7 +61,8 @@ void qc_flush(qconnection_t *cin, qstream_t *s) {
 			if (q_cwnd_allow(c)) {
 				q_async_send_data(c);
 			}
-		} else if (has_data(s) && !s->data.next) {
+		} 
+		if (has_data(s) && !s->data.next) {
 			enqueue(&c->data_pending, &s->data);
 			if (q_cwnd_allow(c) && c->tx_data < c->tx_data_max) {
 				q_async_send_data(c);
@@ -190,6 +191,11 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	p = q_encode_ack(pkts, p, now, c->local_cfg->ack_delay_exponent);
 	p = q_encode_scheduler(c, p, pkt);
 	p = q_encode_migration(c, p, pkt);
+
+	// Debugging congestion window
+	*(p++) = STREAM_BLOCKED;
+	p = encode_varint(p, c->bytes_in_flight);
+	p = encode_varint(p, c->congestion_window);
 
 	if ((flags & SEND_FORCE) || !pkts->tx_next) {
 		pkt->flags |= QPKT_SEND;

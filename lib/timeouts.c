@@ -132,7 +132,7 @@ static void on_ack_timeout(apc_t *a, tick_t now) {
 }
 
 static void async_ack(struct connection *c, tick_t wakeup) {
-	if (!is_apc_active(&c->ack_timer) || (tickdiff_t)(wakeup - c->ack_timer.wakeup) < 0) {
+	if (!is_apc_active(&c->ack_timer) || (tickdiff_t)(c->ack_timer.wakeup - wakeup) > 0) {
 		add_timed_apc(c->dispatcher, &c->ack_timer, wakeup, &on_ack_timeout);
 	}
 }
@@ -155,7 +155,7 @@ static void on_async_send_data(apc_t *a, tick_t now) {
 }
 
 void q_async_send_data(struct connection *c) {
-	if (!c->draining) {
+	if (!is_apc_active(&c->flush_apc)) {
 		add_apc(c->dispatcher, &c->flush_apc, &on_async_send_data);
 	}
 }

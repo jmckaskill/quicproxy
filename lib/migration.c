@@ -33,6 +33,9 @@ static uint8_t *encode_path_challenge(struct connection *c, uint8_t *p) {
 }
 
 int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+	if (!salen) {
+		return 0;
+	}
 	if (pktnum < c->prot_pkts.rx_next) {
 		return 0;
 	}
