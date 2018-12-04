@@ -33,7 +33,7 @@ static void server_close(const qinterface_t **vt) {
 static int server_send(const qinterface_t **vt, const void *buf, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *sent) {
 	struct server *s = (struct server*) vt;
 	stack_string str;
-	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa, salen));
+	LOG(debug, "TX to %s %d bytes", sockaddr_string(&str, sa, salen), (int)len);
 
 	if (sendto(s->fd, buf, (int)len, 0, sa, salen) != (int)len) {
 		LOG(debug, "TX failed");

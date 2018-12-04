@@ -164,11 +164,11 @@ uint8_t *decode_packet_number(uint8_t *p, uint64_t base, uint64_t *pval) {
 		break;
 	}
 
-	// raw = (original - base) mod n
+	// raw = original mod n
 	// if n is chosen such that
-	// (original - base) mod n = original - base
+	// (original - base) signed mod n = original - base
 	// then
-	// diff = (raw - base) mod n = original - base
+	// diff = (raw - base) signed mod n = original - base
 	// original = base + diff
 
 	raw <<= shift;
