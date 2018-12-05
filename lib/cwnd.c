@@ -17,12 +17,13 @@ void q_reset_cwnd(struct connection *c, uint64_t first_after_reset) {
 	c->rttvar = 0;
 }
 
-static size_t packet_bytes(const struct connection *c, const qtx_packet_t *pkt) {
+// This function must not use any data outside of the packet as
+// the connection state may have changed between the sending and ack/lost
+// In order for counting to be accurate it must return the same value
+// at each stage.
+static size_t packet_bytes(const qtx_packet_t *pkt) {
 	size_t ret = 0;
 	unsigned flags = pkt->flags;
-	if (!c->handshake_complete) {
-		ret += 3 + 4 + digest_size(c->prot_tx.vtable->hash);
-	}
 	if (flags & QPKT_MAX_DATA) {
 		ret += 1 + 4;
 	}
@@ -56,8 +57,8 @@ static size_t packet_bytes(const struct connection *c, const qtx_packet_t *pkt) 
 	if (!ret) {
 		return 0;
 	}
-	size_t ack_size = 12; // rough ballpark average as we don't keep track of the actual size
-	return ret + 1 + c->peer_len + ack_size + QUIC_TAG_SIZE;
+	// rough ballpark average as we don't keep track of the actual size
+	return ret + 15 + QUIC_TAG_SIZE;
 }
 
 static bool in_recovery(struct connection *c, uint64_t pktnum) {
@@ -65,13 +66,13 @@ static bool in_recovery(struct connection *c, uint64_t pktnum) {
 }
 
 size_t q_cwnd_sent(struct connection *c, const qtx_packet_t *pkt) {
-	size_t bytes = packet_bytes(c, pkt);
+	size_t bytes = packet_bytes(pkt);
 	c->bytes_in_flight += bytes;
 	return bytes;
 }
 
 void q_ack_cwnd(struct connection *c, uint64_t pktnum, const qtx_packet_t *pkt) {
-	size_t bytes = packet_bytes(c, pkt);
+	size_t bytes = packet_bytes(pkt);
 	c->bytes_in_flight -= bytes;
 	if (in_recovery(c, pktnum)) {
 		// Recovery
@@ -100,7 +101,7 @@ void q_cwnd_ecn(struct connection *c, uint64_t pktnum, uint64_t ecn_ce) {
 }
 
 void q_lost_cwnd(struct connection *c, const qtx_packet_t *pkt) {
-	c->bytes_in_flight -= packet_bytes(c, pkt);
+	c->bytes_in_flight -= packet_bytes(pkt);
 }
 
 void q_cwnd_largest_lost(struct connection *c, uint64_t pktnum) {
