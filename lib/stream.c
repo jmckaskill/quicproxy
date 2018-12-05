@@ -100,7 +100,7 @@ static void remove_stream_if_complete(struct connection *c, qstream_t *s) {
 }
 
 static int update_recv_flow(struct connection *c, qstream_t *s, uint64_t end) {
-	assert(end <= qbuf_max(&s->rx));
+	assert(s->rx_max_allowed <= qbuf_max(&s->rx));
 	if (end > s->rx_max_allowed) {
 		return -1;
 	}
@@ -227,38 +227,44 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		pkt->flags |= QPKT_RST;
 	}
 
+	uint64_t off = s->tx_next;
 	uint64_t sflow = s->tx_max_allowed;
 	uint64_t cflow = s->tx_max_sent + c->tx_data_max - c->tx_data;
-	size_t flowsz = (size_t)(MIN(cflow, sflow) - s->tx_next);
+	uint64_t end = MIN(MIN(cflow, sflow), s->tx.tail);
 	bool not_started = (s->flags & QS_NOT_STARTED);
 
-	if (not_started || (s->flags & QS_TX_FIN_SEND) || (flowsz && s->tx_next < s->tx.tail)) {
+	if (not_started || (off < end) || ((s->flags & QS_TX_FIN_SEND) && off == s->tx.tail)) {
 		uint8_t *hdr = p;
 		*p++ = STREAM;
 		p = encode_varint(p, s->id);
 
-		if (s->tx_next > 0) {
+		if (off > 0) {
+			pkt->off = off;
 			*hdr |= STREAM_OFF_FLAG;
-			p = encode_varint(p, s->tx_next);
+			p = encode_varint(p, off);
 		}
 
-		size_t pktsz = (size_t)(e - p - 2);
-		uint16_t sz = (uint16_t)qbuf_copy(&s->tx, s->tx_next, p, MIN(flowsz, pktsz));
-		if (!c->handshake_complete) {
-			*hdr |= STREAM_LEN_FLAG;
-			p = encode_varint(p, sz);
+		if (off < end) {
+			if (!c->handshake_complete) {
+				// add a length so that we can append padding
+				*hdr |= STREAM_LEN_FLAG;
+				p += 2;
+			}
+			size_t pktsz = (size_t)(e - p);
+			uint16_t sz = (uint16_t)qbuf_copy(&s->tx, s->tx_next, p, MIN(pktsz, (size_t)(end - s->tx_next)));
+			if (!c->handshake_complete) {
+				write_big_16(p-2, VARINT_16 | sz);
+			}
+			p += sz;
+			off += sz;
+			pkt->len = sz;
 		}
-		p += sz;
 
-		if ((s->flags & QS_TX_FIN) && (s->tx_next + sz) == s->tx.tail) {
+		if ((s->flags & QS_TX_FIN) && off == s->tx.tail) {
 			*hdr |= STREAM_FIN_FLAG;
 			pkt->flags |= QPKT_FIN;
-		} else {
-			assert(sz || not_started);
 		}
 
-		pkt->off = s->tx_next;
-		pkt->len = sz;
 		LOG(c->local_cfg->debug, "TX STREAM %"PRIu64", off %"PRIu64", len %d", s->id, pkt->off, pkt->len);
 	}
 

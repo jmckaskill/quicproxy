@@ -418,7 +418,6 @@ int q_decode_max_data(struct connection *c, qslice_t *p) {
 	if (decode_varint(p, &max)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
-	c->tx_data_max = MAX(c->tx_data_max, max);
 	if (max <= c->tx_data_max) {
 		return 0;
 	}
