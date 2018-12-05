@@ -258,6 +258,12 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 			p += sz;
 			off += sz;
 			pkt->len = sz;
+
+			if (off > s->tx_max_sent) {
+				uint64_t new_data = off - s->tx_max_sent;
+				c->tx_data += new_data;
+				s->tx_max_sent = off;
+			}
 		}
 
 		if ((s->flags & QS_TX_FIN) && off == s->tx.tail) {
