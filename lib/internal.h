@@ -377,7 +377,6 @@ int q_decode_stream_data(struct connection *c, qslice_t *s);
 int q_decode_max_data(struct connection *c, qslice_t *s);
 int q_decode_max_id(struct connection *c, qslice_t *p);
 
-bool q_pending_scheduler(struct connection *c);
 uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt);
 

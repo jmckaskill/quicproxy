@@ -284,10 +284,8 @@ void q_remove_stream(struct connection *c, qstream_t *s) {
 		(*c->iface)->free_stream(c->iface, s);
 	}
 
-	// flush the new max id through
-	if (q_cwnd_allow(c) && q_pending_scheduler(c)) {
-		q_async_send_data(c);
-	}
+	// Don't force a new flush to send the max ID through.
+	// Instead wait for already sent data or the ack timer.
 }
 
 static inline bool is_send_only(struct connection *c, uint64_t id) {
@@ -420,6 +418,7 @@ int q_decode_max_data(struct connection *c, qslice_t *p) {
 	if (decode_varint(p, &max)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
+	c->tx_data_max = MAX(c->tx_data_max, max);
 	if (max <= c->tx_data_max) {
 		return 0;
 	}
@@ -437,14 +436,6 @@ static uint64_t rx_max_data(struct connection *c) {
 static uint64_t max_id(struct connection *c, int type) {
 	uint64_t max_concurrent = (type & STREAM_UNI_MASK) ? c->local_cfg->uni_streams : c->local_cfg->bidi_streams;
 	return c->next_id[type] + 4 * (max_concurrent - c->rx_streams[type].size);
-}
-
-bool q_pending_scheduler(struct connection *c) {
-	int uni = STREAM_UNI | !c->is_server;
-	int bidi = STREAM_BIDI | !c->is_server;
-	return rx_max_data(c) > c->rx_data_max
-		|| max_id(c, uni) > c->max_id[uni]
-		|| max_id(c, bidi) > c->max_id[bidi];
 }
 
 uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt) {

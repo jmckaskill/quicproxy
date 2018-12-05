@@ -111,10 +111,8 @@ static int update_recv_flow(struct connection *c, qstream_t *s, uint64_t end) {
 		}
 		c->rx_data += new_data;
 		s->rx_max_received = end;
-		// schedule a send to update connection max data
-		if (q_cwnd_allow(c) && q_pending_scheduler(c)) {
-			q_async_send_data(c);
-		}
+		// Don't kick off a send data per se. Instead rely on the ack timer or
+		// already planned data being sent to update max data.
 	}
 	return 0;
 }
