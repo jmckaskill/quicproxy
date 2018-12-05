@@ -37,10 +37,6 @@ static tickdiff_t crypto_timeout(const struct connection *c, int count) {
 	return (2 << count) * rtt(c);
 }
 
-static tickdiff_t close_timeout(const struct connection *c, int count) {
-	return crypto_timeout(c, count);
-}
-
 
 // RX timer - used for retransmissions to detect lost packets
 // The timers don't directly decide on loss. A packet must be sent when this timer fires.
@@ -95,22 +91,12 @@ static void on_ping_timeout(apc_t *a, tick_t now) {
 	LOG(c->local_cfg->debug, "");
 }
 
-static void on_close_timeout(apc_t *a, tick_t now) {
-	struct connection *c = container_of(a, struct connection, rx_timer);
-	if (!c->draining) {
-		q_send_packet(c, now, SEND_FORCE | SEND_PING);
-		add_timed_apc(c->dispatcher, a, now + close_timeout(c, c->rx_timer_count++), &on_close_timeout);
-	}
-}
-
 // called after receiving a new ack or sending a non-ack packet
 void q_reset_rx_timer(struct connection *c, tick_t now) {
 	c->rto_next = 0;
 	c->rx_timer_count = 0;
-	if (c->draining) {
+	if (c->closing) {
 		cancel_apc(c->dispatcher, &c->rx_timer);
-	} else if (c->closing) {
-		add_timed_apc(c->dispatcher, &c->rx_timer, now + close_timeout(c, c->rx_timer_count++), &on_close_timeout);
 	} else if (!c->peer_verified) {
 		add_timed_apc(c->dispatcher, &c->rx_timer, now + crypto_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
 	} else if (c->bytes_in_flight) {
@@ -132,7 +118,9 @@ static void on_ack_timeout(apc_t *a, tick_t now) {
 }
 
 static void async_ack(struct connection *c, tick_t wakeup) {
-	if (!is_apc_active(&c->ack_timer) || (tickdiff_t)(c->ack_timer.wakeup - wakeup) > 0) {
+	// This is allowed to be called during closing. It is used to resend close frames
+	// when receiving incoming messages.
+	if (!c->draining && (!is_apc_active(&c->ack_timer) || (tickdiff_t)(c->ack_timer.wakeup - wakeup) > 0)) {
 		add_timed_apc(c->dispatcher, &c->ack_timer, wakeup, &on_ack_timeout);
 	}
 }
@@ -155,6 +143,7 @@ static void on_async_send_data(apc_t *a, tick_t now) {
 }
 
 void q_async_send_data(struct connection *c) {
+	assert(!c->closing);
 	if (!is_apc_active(&c->flush_apc)) {
 		add_apc(c->dispatcher, &c->flush_apc, &on_async_send_data);
 	}
@@ -168,13 +157,13 @@ void q_async_send_data(struct connection *c) {
 static void on_idle_timeout(apc_t *w, tick_t now) {
 	struct connection *c = container_of(w, struct connection, idle_timer);
 	LOG(c->local_cfg->debug, "idle timeout");
-	q_internal_shutdown(c, QC_ERR_IDLE_TIMEOUT);
+	q_shutdown_from_idle(c);
 }
 
 static void on_path_timeout(apc_t *w, tick_t now) {
 	struct connection *c = container_of(w, struct connection, idle_timer);
 	LOG(c->local_cfg->debug, "path timeout");
-	q_internal_shutdown(c, QC_ERR_INVALID_MIGRATION);
+	q_shutdown_from_library(c, QC_ERR_INVALID_MIGRATION);
 }
 
 static void on_drained_timeout(apc_t *a, tick_t now) {
@@ -187,7 +176,7 @@ static void on_drained_timeout(apc_t *a, tick_t now) {
 // called after receiving a new packet
 void q_reset_idle_timer(struct connection *c, tick_t now) {
 	if (!c->closing && c->peer_verified && c->path_validated) {
-		add_timed_apc(c->dispatcher, &c->idle_timer, now + idle_timeout(c), &on_path_timeout);
+		add_timed_apc(c->dispatcher, &c->idle_timer, now + idle_timeout(c), &on_idle_timeout);
 	}
 }
 
@@ -195,12 +184,14 @@ void q_start_migration(struct connection *c, tick_t now) {
 	add_timed_apc(c->dispatcher, &c->idle_timer, now + path_migration_timeout(c), &on_path_timeout);
 }
 
-void q_start_shutdown(struct connection *c) {
+void q_start_shutdown(struct connection *c, int errnum) {
 	tick_t now = c->dispatcher->last_tick;
+	c->closing = true;
+	c->close_errnum = errnum;
 	add_timed_apc(c->dispatcher, &c->idle_timer, now + drain_timeout(c), &on_drained_timeout);
-	if (!c->close_sent) {
-		q_async_send_data(c);
-	}
+	cancel_apc(c->dispatcher, &c->rx_timer);
+	cancel_apc(c->dispatcher, &c->flush_apc);
+	cancel_apc(c->dispatcher, &c->ack_timer);
 }
 
 void q_start_handshake_timers(struct handshake *h, tick_t now) {

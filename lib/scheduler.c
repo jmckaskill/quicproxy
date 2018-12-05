@@ -165,9 +165,17 @@ void q_free_streams(struct connection *c) {
 	}
 }
 
+void q_send_close(struct connection *c) {
+	if (c->peer_verified) {
+		q_send_packet(c, 0, SEND_FORCE | SEND_CLOSE);
+	} else {
+		q_send_handshake_close(c);
+	}
+}
+
 qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	qpacket_buffer_t *pkts = &c->prot_pkts;
-	if (!c->peer_verified || pkts->tx_next == pkts->tx_oldest + pkts->sent_len || c->draining) {
+	if (!c->peer_verified && pkts->tx_next == pkts->tx_oldest + pkts->sent_len || c->draining) {
 		return NULL;
 	}
 
@@ -183,19 +191,22 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	uint8_t *pktnum = p;
 	p = encode_packet_number(p, pkts->tx_largest_acked, pkts->tx_next);
 	uint8_t *enc = p;
+	bool closing = (flags & SEND_CLOSE) || c->closing;
 
 	// Connection level frames
-	if (!c->handshake_complete) {
-		p = encode_client_finished(c, p);
-	}
-	p = q_encode_ack(pkts, p, now, c->local_cfg->ack_delay_exponent);
-	p = q_encode_scheduler(c, p, pkt);
-	p = q_encode_migration(c, p, pkt);
+	if (!closing) {
+		if (!c->handshake_complete) {
+			p = encode_client_finished(c, p);
+		}
+		p = q_encode_ack(pkts, p, now, c->local_cfg->ack_delay_exponent);
+		p = q_encode_scheduler(c, p, pkt);
+		p = q_encode_migration(c, p, pkt);
 
-	// Debugging congestion window
-	*(p++) = STREAM_BLOCKED;
-	p = encode_varint(p, c->bytes_in_flight);
-	p = encode_varint(p, c->congestion_window);
+		// Debugging congestion window
+		*(p++) = STREAM_BLOCKED;
+		p = encode_varint(p, c->bytes_in_flight);
+		p = encode_varint(p, c->congestion_window);
+	}
 
 	if ((flags & SEND_FORCE) || !pkts->tx_next) {
 		pkt->flags |= QPKT_SEND;
@@ -208,8 +219,8 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	int local_uni = c->is_server | STREAM_UNI;
 	bool pad = !c->handshake_complete;
 
-	if (c->closing) {
-		p = q_encode_close(c, p, pkt);
+	if (closing) {
+		p = q_encode_close(c, p);
 
 	} else if (c->bidi_pending && c->next_id[local_bidi] < c->max_id[local_bidi]) {
 		qstream_t *s = container_of(c->bidi_pending, qstream_t, ctrl);
@@ -246,16 +257,18 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 		return NULL;
 	}
 	if (q_cwnd_sent(c, pkt)) {
-		// this has non ack content
 		pkt->flags |= QPKT_CWND;
 		q_reset_rx_timer(c, pkt->sent);
 	}
 	if (pkt->stream) {
 		commit_stream(c, pkt->stream, pkt);
 	}
-	q_commit_scheduler(c, pkt);
-	q_commit_migration(c, pkt);
-	q_commit_close(c, pkt);
+	if (pkt->flags & (QPKT_MAX_DATA | QPKT_MAX_ID_BIDI | QPKT_MAX_ID_UNI)) {
+		q_commit_scheduler(c, pkt);
+	}
+	if (pkt->flags & (QPKT_PATH_CHALLENGE | QPKT_PATH_RESPONSE)) {
+		q_commit_migration(c, pkt);
+	}
 	cancel_apc(c->dispatcher, &c->ack_timer);
 	pkts->tx_next++;
 	return pkt;

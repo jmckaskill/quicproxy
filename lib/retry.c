@@ -115,7 +115,7 @@ void q_process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *s
 	}
 	s.p += odcil;
 	if ((size_t)(s.e - s.p) > sizeof(ch->token)) {
-		q_internal_shutdown(&ch->h.c, QC_ERR_INTERNAL);
+		q_shutdown_from_library(&ch->h.c, QC_ERR_INTERNAL);
 		return;
 	}
 	h->orig_server_id = little_64(c->peer_id);

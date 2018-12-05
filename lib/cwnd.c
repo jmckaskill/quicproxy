@@ -39,9 +39,6 @@ static size_t packet_bytes(const qtx_packet_t *pkt) {
 	if (flags & QPKT_PATH_RESPONSE) {
 		ret += 9;
 	}
-	if (flags & QPKT_CLOSE) {
-		ret += 5;
-	}
 	if (flags & QPKT_STREAM_DATA) {
 		ret += 1 + 4 + 4;
 	}

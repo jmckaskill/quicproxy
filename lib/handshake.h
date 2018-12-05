@@ -94,7 +94,7 @@ uint8_t *encode_client_finished(struct connection *c, uint8_t *p);
 #define QC_ERR_IDLE_TIMEOUT 0x30000
 
 
-const br_hash_class **init_cipher(struct handshake *h, const qcipher_class *cipher);
+const br_hash_class **init_message_hash(struct handshake *h, const br_hash_class *hash);
 void init_protected_keys(struct handshake *h, const uint8_t *msg_hash);
 int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *frame_data, tick_t rxtime);
 

@@ -23,7 +23,6 @@
 #define QPKT_MAX_ID_BIDI		(1 << 9)
 #define QPKT_NEW_TOKEN		(1 << 10)
 #define QPKT_CWND            (1 << 11)
-#define QPKT_CLOSE			(1 << 12)
 #define QPKT_NEW_ID			(1 << 13)
 #define QPKT_RETIRE_ID		(1 << 14)
 
@@ -291,6 +290,7 @@ struct handshake {
 	br_sha384_context msg_sha384;
 
 	uint8_t *conn_buf_end;
+	bool received_hs_packet;
 };
 
 struct client_handshake {
@@ -305,6 +305,7 @@ struct client_handshake {
 
 	union {
 		struct {
+			uint16_t cipher;
 			uint16_t tls_version;
 			br_ec_public_key k;
 			uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
@@ -350,6 +351,9 @@ uint64_t q_generate_local_id(const qconnection_cfg_t *cfg, const br_prng_class *
 
 #define SEND_FORCE 1
 #define SEND_PING 2
+#define SEND_CLOSE 4
+void q_send_handshake_close(struct connection *c);
+void q_send_close(struct connection *c);
 qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags);
 uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned exp);
 
@@ -384,12 +388,10 @@ void q_remove_stream(struct connection *c, qstream_t *s);
 
 // Shutdown
 
-void q_internal_shutdown(struct connection *c, int errnum);
+void q_shutdown_from_idle(struct connection *c);
+void q_shutdown_from_library(struct connection *c, int errnum);
 int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t now);
-uint8_t *q_encode_close(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
-void q_commit_close(struct connection *c, qtx_packet_t *pkt);
-void q_ack_close(struct connection *c);
-void q_lost_close(struct connection *c);
+uint8_t *q_encode_close(struct connection *c, uint8_t *p);
 
 // Timers
 
@@ -403,7 +405,7 @@ void q_reset_idle_timer(struct connection *c, tick_t now);
 void q_start_migration(struct connection *c, tick_t now);
 void q_start_handshake_timers(struct handshake *h, tick_t now);
 void q_start_runtime_timers(struct handshake *h, tick_t now);
-void q_start_shutdown(struct connection *c);
+void q_start_shutdown(struct connection *c, int errnum);
 
 // Congestion
 void q_reset_cwnd(struct connection *c, uint64_t first_after_reset);

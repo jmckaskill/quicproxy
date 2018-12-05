@@ -198,7 +198,7 @@ int main(int argc, const char *argv[]) {
 		.debug = &stderr_log,
 		.keylog = keylog_path.len ? open_file_log(&keylogger, keylog_path.c_str) : NULL,
 		.server_key = &token_key.vtable,
-		.idle_timeout = 600 * 1000 * 1000,
+		.idle_timeout = 1000 * 1000 * 1000,
 	};
 
 	dispatcher_t d;

@@ -198,32 +198,26 @@ static void ack_packet(struct connection *c, uint64_t num, qtx_packet_t *pkt) {
 	if (flags & QPKT_CWND) {
 		q_ack_cwnd(c, num, pkt);
 	}
-	if (pkt->stream) {
-		q_ack_stream(c, pkt->stream, pkt);
-	}
-	if (flags & QPKT_CLOSE) {
-		q_ack_close(c);
-	}
 	if (flags & QPKT_PATH_RESPONSE) {
 		q_ack_path_response(c);
+	}
+	if (pkt->stream) {
+		q_ack_stream(c, pkt->stream, pkt);
 	}
 	pkt->off = UINT64_MAX;
 }
 
 static void lost_packet(struct connection *c, qtx_packet_t *pkt) {
 	assert(pkt->off != UINT64_MAX);
-	if (pkt->stream) {
-		q_lost_stream(c, pkt->stream, pkt);
-	}
 	unsigned flags = pkt->flags;
-	if (flags & QPKT_CLOSE) {
-		q_lost_close(c);
+	if (flags & QPKT_CWND) {
+		q_lost_cwnd(c, pkt);
 	}
 	if (flags & QPKT_PATH_CHALLENGE) {
 		q_lost_path_challenge(c);
 	}
-	if (flags & QPKT_CWND) {
-		q_lost_cwnd(c, pkt);
+	if (pkt->stream) {
+		q_lost_stream(c, pkt->stream, pkt);
 	}
 	pkt->off = UINT64_MAX;
 }
@@ -434,7 +428,7 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 	return p;
 }
 
-static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t pktnum, tick_t rxtime) {
+static int process_protected_frame(struct connection *c, qslice_t *s, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	if ((hdr & STREAM_MASK) == STREAM) {
 		q_async_ack(c, rxtime);
@@ -451,7 +445,6 @@ static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t p
 			return q_decode_reset(c, s);
 		case CONNECTION_CLOSE:
 		case APPLICATION_CLOSE:
-			receive_packet(c, QC_PROTECTED, pktnum, rxtime);
 			return q_decode_close(c, hdr, s, rxtime);
 		case MAX_DATA:
 			q_async_ack(c, rxtime);
@@ -544,7 +537,7 @@ static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t p
 	}
 }
 
-static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcrypto_level level, uint64_t pktnum, tick_t rxtime) {
+static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcrypto_level level, tick_t rxtime) {
 	uint8_t hdr = *(s->p++);
 	switch (hdr) {
 	default:
@@ -554,7 +547,6 @@ static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcryp
 		return 0;
 	case CONNECTION_CLOSE:
 	case APPLICATION_CLOSE:
-		receive_packet(c, level, pktnum, rxtime);
 		return q_decode_close(c, hdr, s, rxtime);
 	case ACK | ACK_ECN_FLAG:
 	case ACK:
@@ -585,19 +577,22 @@ static int process_packet(struct connection *c, uint64_t base, const qcipher_cla
 	if (decrypt_packet(base, key, pkt_begin, &s, &pktnum)) {
 		return 0;
 	}
+	if (level == QC_HANDSHAKE) {
+		((struct handshake*)c)->received_hs_packet = true;
+	}
 	int err = q_update_address(c, pktnum, sa, salen, rxtime);
 	while (!err && s.p < s.e) {
 		if (!c->peer_verified) {
-			err = process_handshake_frame(c, &s, level, pktnum, rxtime);
+			err = process_handshake_frame(c, &s, level, rxtime);
 		} else {
 			assert(level == QC_PROTECTED);
-			err = process_protected_frame(c, &s, pktnum, rxtime);
+			err = process_protected_frame(c, &s, rxtime);
 		}
 	}
 	if (!err) {
 		receive_packet(c, level, pktnum, rxtime);
 	} else if (err != QC_ERR_DROP) {
-		q_internal_shutdown(c, err);
+		q_shutdown_from_library(c, err);
 		return -1;
 	}
 	return 0;
@@ -940,10 +935,11 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	}
 
 	// cipher & transcript
-	const br_hash_class **msgs = init_cipher(h, req->cipher);
-	if (msgs == NULL) {
+	if (!req->cipher) {
 		return -1;
 	}
+	h->cipher = req->cipher;
+	const br_hash_class **msgs = init_message_hash(h, req->cipher->hash);
 	req->cipher->hash->init(msgs);
 	(*msgs)->update(msgs, req->chello, req->chello_size);
 

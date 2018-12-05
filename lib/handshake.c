@@ -863,18 +863,14 @@ int decode_client_hello(void *data, size_t len, qconnect_request_t *req, const q
 	return 0;
 }
 
-const br_hash_class **init_cipher(struct handshake *h, const qcipher_class *cipher) {
-	const br_hash_class **msgs = NULL;
-	if (cipher) {
-		if (cipher->hash == &br_sha256_vtable) {
-			msgs = &h->msg_sha256.vtable;
-		} else if (cipher->hash == &br_sha384_vtable) {
-			msgs = &h->msg_sha384.vtable;
-		}
+const br_hash_class **init_message_hash(struct handshake *h, const br_hash_class *hash) {
+	if (hash == &br_sha384_vtable) {
+		h->msgs = &h->msg_sha384.vtable;
+	} else {
+		assert(hash == &br_sha256_vtable);
+		h->msgs = &h->msg_sha256.vtable;
 	}
-	h->cipher = cipher;
-	h->msgs = msgs;
-	return msgs;
+	return h->msgs;
 }
 
 static int find_private_key(const char *curves, const uint8_t *keys, size_t key_num, int curve, br_ec_private_key *sk) {
@@ -890,21 +886,30 @@ static int find_private_key(const char *curves, const uint8_t *keys, size_t key_
 	return -1;
 }
 
-static int set_server_key(struct client_handshake *ch, const br_ec_public_key *pk, const void *msg_hash) {
+static const br_hash_class **init_handshake_keys(struct client_handshake *ch, uint16_t cipher_code, const br_ec_public_key *pk) {
 	struct handshake *h = &ch->h;
+	struct connection *c = &h->c;
+
+	const qcipher_class *cipher = find_cipher(c->local_cfg->ciphers, cipher_code);
+	if (!cipher) {
+		return NULL;
+	}
 	br_ec_private_key sk;
 	if (find_private_key(h->c.local_cfg->groups, ch->keys, ch->key_num, pk->curve, &sk)) {
-		return QC_ERR_TLS_HANDSHAKE_FAILURE;
+		return NULL;
 	}
 
-	const br_hash_class **msgs = h->msgs;
+	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	const br_hash_class **msgs = init_message_hash(h, cipher->hash);
+	(*msgs)->out(msgs, msg_hash);
 	if (calc_handshake_secret(h->hs_secret, *msgs, msg_hash, pk, &sk)) {
-		return QC_ERR_TLS_INTERNAL_ERROR;
+		return NULL;
 	}
 	derive_secret(h->hs_tx, *msgs, h->hs_secret, HANDSHAKE_CLIENT, msg_hash);
 	derive_secret(h->hs_rx, *msgs, h->hs_secret, HANDSHAKE_SERVER, msg_hash);
 	log_handshake(h->c.local_cfg->keylog, *msgs, h->hs_tx, h->hs_rx, h->c.client_random);
-	return 0;
+	h->cipher = cipher;
+	return msgs;
 }
 
 void init_protected_keys(struct handshake *h, const uint8_t *msg_hash) {
@@ -996,10 +1001,16 @@ static int getbytes(struct handshake *h, struct crypto_run *r, void *dst, size_t
 	}
 }
 
-static void update_msg_hash(const br_hash_class **h, struct crypto_run *r, uint8_t *hash) {
-	(*h)->update(h, r->base + r->start, r->off - r->start);
-	(*h)->out(h, hash);
-	r->start = r->off;
+static void update_msg_hash(struct handshake *h, struct crypto_run *r) {
+	if (r->start < r->off) {
+		if (h->msgs) {
+			(*h->msgs)->update(h->msgs, r->base + r->start, r->off - r->start);
+		} else {
+			br_sha256_update(&h->msg_sha256, r->base + r->start, r->off - r->start);
+			br_sha384_update(&h->msg_sha384, r->base + r->start, r->off - r->start);
+		}
+		r->start = r->off;
+	}
 }
 
 #define PUSH_END h->stack[h->depth++] = h->end; h->end
@@ -1084,10 +1095,7 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 			return CRYPTO_ERROR;
 		}
 		GET_2(SHELLO_CIPHER);
-		msgs = init_cipher(h, find_cipher(c->local_cfg->ciphers, big_16(r.p)));
-		if (msgs == NULL) {
-			return CRYPTO_ERROR;
-		}
+		ch->u.sh.cipher = big_16(r.p);
 		GET_1(SHELLO_COMPRESSION);
 		if (*r.p != TLS_COMPRESSION_NULL) {
 			// only null compression is supported in TLS 1.3
@@ -1119,9 +1127,10 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 			return CRYPTO_ERROR;
 		}
 		GOTO_END(SHELLO_FINISH);
-		update_msg_hash(msgs, &r, h->msg_hash);
-		if (set_server_key(ch, &ch->u.sh.k, h->msg_hash)) {
-			return CRYPTO_ERROR;
+		update_msg_hash(h, &r);
+		msgs = init_handshake_keys(ch, ch->u.sh.cipher, &ch->u.sh.k);
+		if (!msgs) {
+			return QC_ERR_TLS_HANDSHAKE_FAILURE;
 		}
 		goto start_encrypted_extensions;
 
@@ -1331,7 +1340,6 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		GOTO_END(CERTIFICATES_FINISH);
 		switch ((*ch->x509)->end_chain(ch->x509)) {
 		case 0:
-			break;
 		case BR_ERR_X509_CRITICAL_EXTENSION:
 		case BR_ERR_X509_UNSUPPORTED:
 			return QC_ERR_TLS_UNSUPPORTED_CERTIFICATE;
@@ -1351,7 +1359,8 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 		// CERTIFICATE_VERIFY
 
 	start_verify:
-		update_msg_hash(msgs, &r, h->msg_hash);
+		update_msg_hash(h, &r);
+		(*msgs)->out(msgs, h->msg_hash);
 		assert(!h->depth);
 		h->end = UINT32_MAX;
 		GET_4(VERIFY_HEADER);
@@ -1379,7 +1388,8 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 
 	start_finish:
 	case FINISHED_START:
-		update_msg_hash(msgs, &r, h->msg_hash);
+		update_msg_hash(h, &r);
+		(*msgs)->out(msgs, h->msg_hash);
 		assert(!h->depth);
 		h->end = UINT32_MAX;
 		GET_4(FINISHED_HEADER);
@@ -1400,7 +1410,8 @@ int q_decode_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd
 			LOG(c->local_cfg->debug, "server handshake complete");
 		} else {
 			uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
-			update_msg_hash(msgs, &r, msg_hash);
+			update_msg_hash(h, &r);
+			(*msgs)->out(msgs, msg_hash);
 			init_protected_keys(h, msg_hash);
 
 			// add the client finished message to the message transcript
@@ -1425,14 +1436,7 @@ end:
 	if (err > 0) {
 		return err;
 	}
-
-	if (msgs) {
-		(*msgs)->update(msgs, r.base + r.start, r.off - r.start);
-	} else {
-		br_sha256_update(&h->msg_sha256, r.base + r.start, r.off - r.start);
-		br_sha384_update(&h->msg_sha384, r.base + r.start, r.off - r.start);
-	}
-
+	update_msg_hash(h, &r);
 	return 0;
 }
 
@@ -1449,7 +1453,7 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 	assert(level <= QC_HANDSHAKE);
 	qpacket_buffer_t *pkts = &h->pkts[level];
 
-	if (c->closing || pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
+	if (c->draining || pkts->tx_next >= pkts->tx_oldest + pkts->sent_len) {
 		return NULL;
 	} else if (s->p + 1 + 4 + 1 + 2 * QUIC_MAX_ADDRESS_SIZE + 1 + 2 + 4 + QUIC_TAG_SIZE > s->e) {
 		return NULL;
@@ -1490,29 +1494,33 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 	s->p = encode_packet_number(s->p, pkts->tx_largest_acked, pkts->tx_next);
 	uint8_t *enc_begin = s->p;
 
-	// ack frame
-	s->p = q_encode_ack(pkts, s->p, now, QUIC_ACK_DELAY_SHIFT);
+	if (c->closing) {
+		s->p = q_encode_close(c, s->p);
+	} else {
+		// ack frame
+		s->p = q_encode_ack(pkts, s->p, now, QUIC_ACK_DELAY_SHIFT);
 
-	// crypto frame
-	if (len) {
-		uint16_t chdr = 1 + 4 + 4;
-		if (s->p + chdr + QUIC_TAG_SIZE > s->e) {
-			return NULL;
+		// crypto frame
+		if (len) {
+			uint16_t chdr = 1 + 4 + 4;
+			if (s->p + chdr + QUIC_TAG_SIZE > s->e) {
+				return NULL;
+			}
+			uint16_t sz = (uint16_t)MIN(len, (size_t)(s->e - s->p) - chdr);
+			*(s->p++) = CRYPTO;
+			s->p = encode_varint(s->p, off);
+			s->p = encode_varint(s->p, sz);
+			s->p = append(s->p, crypto, sz);
+			pkt->off = off;
+			pkt->len = sz;
 		}
-		uint16_t sz = (uint16_t)MIN(len, (size_t)(s->e - s->p) - chdr);
-		*(s->p++) = CRYPTO;
-		s->p = encode_varint(s->p, off);
-		s->p = encode_varint(s->p, sz);
-		s->p = append(s->p, crypto, sz);
-		pkt->off = off;
-		pkt->len = sz;
-	}
 
-	// padding
-	if (level == QC_INITIAL && !c->is_server) {
-		size_t pad = (size_t)(s->e - s->p) - QUIC_TAG_SIZE;
-		memset(s->p, PADDING, pad);
-		s->p += pad;
+		// padding
+		if (level == QC_INITIAL && !c->is_server) {
+			size_t pad = (size_t)(s->e - s->p) - QUIC_TAG_SIZE;
+			memset(s->p, PADDING, pad);
+			s->p += pad;
+		}
 	}
 
 	// tag
@@ -1527,6 +1535,31 @@ static qtx_packet_t *encode_long_packet(struct handshake *h, qslice_t *s, const 
 	return pkt;
 }
 
+void q_send_handshake_close(struct connection *c) {
+	struct handshake *h = (struct handshake*)c;
+	// If we are shutting down during the handshake it's one of the following cases
+	// 1. Server doesn't like the client hello - handled by qc_reject (no connection created)
+	// 2. Client doesn't like the server hello - only has initial
+	// 3. Client doesn't like the encrypted extensions - has handshake
+	// 4. Server doesn't like the client finished (or doesn't receive it). Server has protected, but
+	//    not sure if the client has handshake or protected keys. Use initial.
+	assert(c->closing);
+	uint8_t buf[DEFAULT_PACKET_SIZE];
+	qslice_t s = { buf, buf + sizeof(buf) };
+	qtx_packet_t *pkt;
+	if (h->received_hs_packet) {
+		qcipher_compat hk;
+		h->cipher->init(&hk.vtable, h->hs_tx);
+		pkt = encode_long_packet(h, &s, &hk.vtable, QC_HANDSHAKE, 0, NULL, 0, 0);
+	} else {
+		qcipher_aes_gcm key;
+		init_initial_cipher(&key, c->is_server, c->peer_id, c->peer_len);
+		pkt = encode_long_packet(h, &s, &key.vtable, QC_INITIAL, 0, NULL, 0, 0);
+	}
+	if (pkt) {
+		(*c->iface)->send(c->iface, buf, (size_t)(s.p - buf), (struct sockaddr*)&c->addr, c->addr_len, &pkt->sent);
+	}
+}
 
 qtx_packet_t *q_send_client_hello(struct client_handshake *ch, const br_prng_class **rand, tick_t now) {
 	struct handshake *h = &ch->h;
