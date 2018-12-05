@@ -6,6 +6,8 @@ LIB = bin/libarm/armv7
 
 include $TOOLCHAIN_DIR/host-cc.ninja
 subninja $TOOLCHAIN_DIR/target-cc-debug.ninja
+subninja $TOOLCHAIN_DIR/target-cc-release.ninja
 
-default cc-debug
+default cc-debug cc-release
+
 

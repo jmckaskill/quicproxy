@@ -179,17 +179,6 @@ uint8_t *decode_packet_number(uint8_t *p, uint64_t base, uint64_t *pval) {
 	return p;
 }
 
-static int append_slice_16(qslice_t *s, qslice_t data) {
-	size_t len = data.e - data.p;
-	size_t have = s->e - s->p;
-	if (len + 2 > have) {
-		return -1;
-	}
-	s->p = write_big_16(s->p, (uint16_t)len);
-	s->p = append(s->p, data.p, len);
-	return 0;
-}
-
 static int decode_slice_16(qslice_t *s, qslice_t *data) {
 	uint8_t *p = s->p + 2;
 	if (p > s->e) {
@@ -335,7 +324,7 @@ int encode_server_hello(const struct server_handshake *sh, qslice_t *ps) {
 
 	write_big_16(key_start - 2, (uint16_t)(s.p - key_start));
 	write_big_16(ext_start - 2, (uint16_t)(s.p - ext_start));
-	
+
 	write_big_16(list_start-2, (uint16_t)(s.p - list_start));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
 	ps->p = s.p;
@@ -543,7 +532,7 @@ int encode_client_hello(const struct client_handshake *ch, qslice_t *ps) {
 		return -1;
 	}
 	write_big_16(transport_start - 2, (uint16_t)(s.p - transport_start));
-	
+
 	write_big_16(ext_start-2, (uint16_t)(s.p - ext_start));
 	write_big_24(record_begin - 3, (uint32_t)(s.p - record_begin));
 	ps->p = s.p;
