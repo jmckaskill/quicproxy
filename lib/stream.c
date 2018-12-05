@@ -201,7 +201,7 @@ static void insert_stream_packet(qstream_t *s, qtx_packet_t *pkt, uint64_t off) 
 	rb_insert(&s->packets, p, &pkt->rb, dir);
 }
 
-uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt) {
+uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt, bool pad) {
 	uint8_t *begin = p;
 
 	uint64_t new_max = qbuf_max(&s->rx);
@@ -245,14 +245,14 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		}
 
 		if (off < end) {
-			if (!c->handshake_complete) {
+			if (pad) {
 				// add a length so that we can append padding
 				*hdr |= STREAM_LEN_FLAG;
 				p += 2;
 			}
 			size_t pktsz = (size_t)(e - p);
-			uint16_t sz = (uint16_t)qbuf_copy(&s->tx, s->tx_next, p, MIN(pktsz, (size_t)(end - s->tx_next)));
-			if (!c->handshake_complete) {
+			uint16_t sz = (uint16_t)qbuf_copy(&s->tx, off, p, MIN(pktsz, (size_t)(end - off)));
+			if (pad) {
 				write_big_16(p-2, VARINT_16 | sz);
 			}
 			p += sz;
@@ -273,7 +273,12 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		pkt->flags |= QPKT_SEND;
 	}
 
-	return p;
+	if (pad) {
+		memset(p, 0, (size_t)(e - p));
+		return e;
+	} else {
+		return p;
+	}
 }
 
 void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {

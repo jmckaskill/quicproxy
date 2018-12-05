@@ -206,6 +206,7 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	// Main body of the packet - Stream level data
 	int local_bidi = c->is_server | STREAM_BIDI;
 	int local_uni = c->is_server | STREAM_UNI;
+	bool pad = !c->handshake_complete;
 
 	if (c->closing) {
 		p = q_encode_close(c, p, pkt);
@@ -213,20 +214,20 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	} else if (c->bidi_pending && c->next_id[local_bidi] < c->max_id[local_bidi]) {
 		qstream_t *s = container_of(c->bidi_pending, qstream_t, ctrl);
 		q_setup_local_stream(c, s, c->next_id[local_bidi]);
-		p = q_encode_stream(c, s, p, e, pkt);
+		p = q_encode_stream(c, s, p, e, pkt, pad);
 
 	} else if (c->uni_pending && c->next_id[local_uni] < c->max_id[local_uni]) {
 		qstream_t *s = container_of(c->uni_pending, qstream_t, ctrl);
 		q_setup_local_stream(c, s, c->next_id[local_uni]);
-		p = q_encode_stream(c, s, p, e, pkt);
+		p = q_encode_stream(c, s, p, e, pkt, pad);
 
 	} else if (c->data_pending && c->tx_data < c->tx_data_max) {
 		qstream_t *s = container_of(c->data_pending, qstream_t, data);
-		p = q_encode_stream(c, s, p, e, pkt);
+		p = q_encode_stream(c, s, p, e, pkt, pad);
 
 	} else if (c->ctrl_pending) {
 		qstream_t *s = container_of(c->ctrl_pending, qstream_t, ctrl);
-		p = q_encode_stream(c, s, p, e, pkt);
+		p = q_encode_stream(c, s, p, e, pkt, pad);
 
 	} else if (flags & SEND_PING) {
 		*(p++) = PING;
@@ -235,11 +236,6 @@ qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags) {
 	if (!(pkt->flags & QPKT_SEND)) {
 		// No reason to send
 		return NULL;
-	}
-
-	if (!c->handshake_complete) {
-		memset(p, PADDING, (size_t)(e - p));
-		p = e;
 	}
 
 	c->prot_tx.vtable->encrypt(&c->prot_tx.vtable, pkts->tx_next, buf, (size_t)(enc - buf), enc, p);

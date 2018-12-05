@@ -360,7 +360,7 @@ int q_recv_stream(struct connection *c, qstream_t *s, bool fin, uint64_t off, co
 int q_recv_max_stream(struct connection *c, qstream_t *s, uint64_t off);
 int q_recv_stop(struct connection *c, qstream_t *s, int errnum);
 int q_recv_reset(struct connection *c, qstream_t *s, int errnum, uint64_t off);
-uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt);
+uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t *e, qtx_packet_t *pkt, bool pad);
 void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
 void q_ack_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
 void q_lost_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt);
