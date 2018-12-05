@@ -414,6 +414,11 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_TRUE(!s.stream_open);
+	// the new max id may get coalesced with the ack
+	if (!s.msgn) {
+		NOW += 25 * MS;
+		dispatch_apcs(&d, NOW, 1000);
+	}
 	EXPECT_EQ(1, s.msgn);
 
 	NOW += 10 * MS;
@@ -474,6 +479,11 @@ int main(int argc, const char *argv[]) {
 	}
 
 	EXPECT_TRUE(!s.stream_open);
+	// the max id may get coalesced with the ack
+	if (!s.msgn) {
+		NOW += 25 * MS;
+		dispatch_apcs(&d, NOW, 1000);
+	}
 	EXPECT_EQ(1, s.msgn); // ack and max id for uni streams
 
 	// Finish the stream on the client side

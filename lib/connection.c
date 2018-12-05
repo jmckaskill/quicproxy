@@ -168,12 +168,12 @@ uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned e
 
 		// find the gap
 		unsigned gap = clzl(rx);
-		*(p++) = (uint8_t)gap;
+		*(p++) = (uint8_t)gap-1;
 		rx <<= gap;
 
 		// find the block
 		unsigned block = clzl(~rx);
-		*(p++) = (uint8_t)block;
+		*(p++) = (uint8_t)block-1;
 		rx <<= block;
 
 		num_blocks++;
@@ -193,37 +193,21 @@ static void update_oldest_packet(qpacket_buffer_t *b) {
 	} while (b->tx_oldest < b->tx_next && b->sent[b->tx_oldest % b->sent_len].off == UINT64_MAX);
 }
 
-// from & to form a closed range
-static void process_ack_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to, uint64_t *psmallest) {
-	assert(to < b->tx_next);
-	for (uint64_t num = from; num <= to; num++) {
-		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		if (num < b->tx_oldest || pkt->off == UINT64_MAX) {
-			continue;
-		}
-		if (num < *psmallest) {
-			*psmallest = num;
-		}
-
-		unsigned flags = pkt->flags;
-		if (flags & QPKT_CWND) {
-			q_ack_cwnd(c, num, pkt);
-		}
-		if (pkt->stream) {
-			q_ack_stream(c, pkt->stream, pkt);
-		}
-		if (flags & QPKT_CLOSE) {
-			q_ack_close(c);
-		}
-		if (flags & QPKT_PATH_RESPONSE) {
-			q_ack_path_response(c);
-		}
-		pkt->off = UINT64_MAX;
-
-		if (num == b->tx_oldest) {
-			update_oldest_packet(b);
-		}
+static void ack_packet(struct connection *c, uint64_t num, qtx_packet_t *pkt) {
+	unsigned flags = pkt->flags;
+	if (flags & QPKT_CWND) {
+		q_ack_cwnd(c, num, pkt);
 	}
+	if (pkt->stream) {
+		q_ack_stream(c, pkt->stream, pkt);
+	}
+	if (flags & QPKT_CLOSE) {
+		q_ack_close(c);
+	}
+	if (flags & QPKT_PATH_RESPONSE) {
+		q_ack_path_response(c);
+	}
+	pkt->off = UINT64_MAX;
 }
 
 static void lost_packet(struct connection *c, qtx_packet_t *pkt) {
@@ -244,25 +228,22 @@ static void lost_packet(struct connection *c, qtx_packet_t *pkt) {
 	pkt->off = UINT64_MAX;
 }
 
-static void process_gap_range(struct connection *c, qpacket_buffer_t *b, uint64_t from, uint64_t to, uint64_t largest, tick_t now, int64_t *plargest) {
-	assert(to < b->tx_next);
-	for (uint64_t num = from; num <= to; num++) {
-		qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-		if (num < b->tx_oldest || pkt->off == UINT64_MAX) {
-			continue;
-		}
-		tick_t lost = pkt->sent + (c->srtt * 9 / 8);
-		if (num + 3 > largest && (tickdiff_t)(lost - now) > 0) {
-			// the packet is too new to be lost yet by either fast retransmit or early retransmit
-			continue;
-		}
-		if ((pkt->flags & QPKT_CWND) && (int64_t)num > *plargest) {
-			*plargest = (int64_t)num;
-		}
-		lost_packet(c, pkt);
-		if (num == b->tx_oldest) {
-			update_oldest_packet(b);
-		}
+static void process_gap(struct connection *c, qpacket_buffer_t *b, uint64_t num, uint64_t largest, tick_t now, int64_t *plargest) {
+	qtx_packet_t *pkt = &b->sent[num % b->sent_len];
+	if (num < b->tx_oldest || pkt->off == UINT64_MAX) {
+		return;
+	}
+	tick_t lost = pkt->sent + (c->srtt * 9 / 8);
+	if (num + 3 > largest && (tickdiff_t)(lost - now) > 0) {
+		// the packet is too new to be lost yet by either fast retransmit or early retransmit
+		return;
+	}
+	if ((pkt->flags & QPKT_CWND) && (int64_t)num > *plargest) {
+		*plargest = (int64_t)num;
+	}
+	lost_packet(c, pkt);
+	if (num == b->tx_oldest) {
+		update_oldest_packet(b);
 	}
 }
 
@@ -287,26 +268,21 @@ static void update_rtt(struct connection *c, qpacket_buffer_t *b, uint64_t pktnu
 	}
 }
 
+static int decode_varint_plus_one(qslice_t *s, uint64_t *pval) {
+	int ret = decode_varint(s, pval);
+	*pval++;
+	return ret;
+}
+
 static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hdr, qslice_t *s, tick_t rxtime) {
-	uint64_t largest, raw_delay, count, first;
+	uint64_t largest, raw_delay, num_blocks, first_block;
 	if (decode_varint(s, &largest)
 		|| decode_varint(s, &raw_delay)
-		|| decode_varint(s, &count)
-		|| decode_varint(s, &first)
-		|| first > largest) {
+		|| decode_varint(s, &num_blocks)
+		|| decode_varint(s, &first_block)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
 
-	uint64_t ect0 = 0;
-	uint64_t ect1 = 0;
-	uint64_t ce = 0;
-	if (hdr & ACK_ECN_FLAG) {
-		if (decode_varint(s, &ect0)
-			|| decode_varint(s, &ect1)
-			|| decode_varint(s, &ce)) {
-			return QC_ERR_FRAME_ENCODING;
-		}
-	}
 	uint8_t *block_start = s->p;
 	bool before = q_cwnd_allow(c);
 
@@ -324,71 +300,125 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 
 	tickdiff_t delay = q_decode_ack_delay(raw_delay, (level == QC_PROTECTED ? c->peer_cfg.ack_delay_exponent : 0));
 	update_rtt(c, b, largest, rxtime, delay);
-
-
+	
 	// Process ACKs first
-	uint64_t smallest_ack = UINT64_MAX;
-	uint64_t next = largest - first;
-	process_ack_range(c, b, next, largest, &smallest_ack);
-	for (uint64_t i = 0; i < count; i++) {
+	uint64_t smallest_new_ack = 0;
+	bool have_new_ack = false;
+	uint64_t num = largest + 1;
+	uint64_t blocks_left = num_blocks;
+	uint64_t pkts_left = first_block + 1;
+	for (;;) {
+		do {
+			qtx_packet_t *pkt = &b->sent[(--num) % b->sent_len];
+			if (num < b->tx_oldest) {
+				break;
+			} else if (pkt->off == UINT64_MAX) {
+				continue;
+			}
+			smallest_new_ack = num;
+			have_new_ack = true;
+			ack_packet(c, num, pkt);
+			if (num == b->tx_oldest) {
+				update_oldest_packet(b);
+				break;
+			}
+		} while (--pkts_left);
+
+		if (blocks_left-- == 0) {
+			break;
+		}
+
+		// num is now the smallest in the block
 		uint64_t gap, block;
-		if (decode_varint(s, &gap) || decode_varint(s, &block) || gap + 2 + block > next) {
+		if (decode_varint(s, &gap) || decode_varint(s, &block) || gap + block + 2 > num) {
 			return QC_ERR_FRAME_ENCODING;
 		}
-		uint64_t to = next - gap - 2;
-		uint64_t from = to - block;
-		process_ack_range(c, b, from, to, &smallest_ack);
-		next = from;
+		num -= gap + 1;
+		pkts_left = block + 1;
 	}
 
-	if (smallest_ack == UINT64_MAX) {
-		// Retransmission of an existing ACK
-		return 0;
-	}
-
-	// Then check for RTO verification
-	if (c->rto_next && smallest_ack >= c->rto_next) {
-		for (uint64_t num = b->tx_oldest; num < smallest_ack; num++) {
-			qtx_packet_t *pkt = &b->sent[num % b->sent_len];
-			if (pkt->off != UINT64_MAX) {
-				lost_packet(c, pkt);
+	if (have_new_ack) {
+		// Then check for RTO verification
+		if (c->rto_next && smallest_new_ack >= c->rto_next) {
+			uint64_t lost_pkts = smallest_new_ack - b->tx_oldest;
+			if (lost_pkts) {
+				num = smallest_new_ack;
+				do {
+					qtx_packet_t *pkt = &b->sent[(--num) % b->sent_len];
+					if (pkt->off != UINT64_MAX) {
+						lost_packet(c, pkt);
+					}
+				} while (--lost_pkts);
 			}
+			q_reset_cwnd(c, smallest_new_ack);
+			b->tx_oldest = smallest_new_ack;
+			update_oldest_packet(b);
 		}
-		q_reset_cwnd(c, smallest_ack);
-		b->tx_oldest = smallest_ack;
-		update_oldest_packet(b);
-	}
 
-	// Then process gaps
-	int64_t largest_lost = -1;
-	s->p = block_start;
-	next = largest - first;
-	for (uint64_t i = 0; i < count; i++) {
-		uint64_t gap, block;
-		decode_varint(s, &gap);
-		decode_varint(s, &block);
-		uint64_t to = next - gap - 2;
-		uint64_t from = to - block;
-		process_gap_range(c, b, to, next - 1, largest, rxtime, &largest_lost);
-		next = from;
-	}
-	if (b->tx_oldest < next) {
-		process_gap_range(c, b, b->tx_oldest, next - 1, largest, rxtime, &largest_lost);
-	}
-	if (largest_lost >= 0) {
-		q_cwnd_largest_lost(c, largest_lost);
+		// Then process gaps
+		bool have_cwnd_lost = false;
+		tick_t lost_threshold = rxtime - (c->srtt * 9 / 8);
+		s->p = block_start;
+		num = largest - first_block;
+		blocks_left = num_blocks;
+		for (;;) {
+			uint64_t gap_pkts;
+			uint64_t ack_pkts;
+
+			if (blocks_left) {
+				uint64_t gap, ack;
+				decode_varint(s, &gap);
+				decode_varint(s, &ack);
+				gap_pkts = gap + 1;
+				ack_pkts = ack + 1;
+				blocks_left--;
+			} else if (num > b->tx_oldest) {
+				gap_pkts = num - b->tx_oldest;
+				ack_pkts = 0;
+			} else {
+				break;
+			}
+
+			do {
+				qtx_packet_t *pkt = &b->sent[(--num) % b->sent_len];
+				if (num < b->tx_oldest) {
+					break;
+				} else if (pkt->off == UINT64_MAX) {
+					continue;
+				} else if (num + 3 > largest && (tickdiff_t)(lost_threshold - pkt->sent) > 0) {
+					continue;
+				}
+				if (!have_cwnd_lost && (pkt->flags & QPKT_CWND)) {
+					have_cwnd_lost = true;
+					q_cwnd_largest_lost(c, num);
+				}
+				lost_packet(c, pkt);
+				if (num == b->tx_oldest) {
+					update_oldest_packet(b);
+					break;
+				}
+			} while (--gap_pkts);
+
+			num -= ack_pkts;
+		}
+
+		q_reset_rx_timer(c, rxtime);
 	}
 
 	// Then ECN
 	if (hdr & ACK_ECN_FLAG) {
+		uint64_t ect0, ect1, ce;
+		if (decode_varint(s, &ect0)
+			|| decode_varint(s, &ect1)
+			|| decode_varint(s, &ce)) {
+			return QC_ERR_FRAME_ENCODING;
+		}
 		q_cwnd_ecn(c, largest, ce);
 	}
 
-	// Send new data
 	if (c->peer_verified && !before && q_cwnd_allow(c)) {
 		q_async_send_data(c);
 	}
-	q_reset_rx_timer(c, rxtime);
 
 	return 0;
 }

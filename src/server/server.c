@@ -81,13 +81,16 @@ static void echo_stream(server_connection *c, qstream_t *s) {
 	if (off < end) {
 		while ((have = qbuf_data(&s->rx, off + flushed, end, &ptr)) > 0) {
 			size_t written = qtx_write(s, ptr, have);
+			qbuf_consume(&s->rx, written);
 			flushed += written;
 			if (written < have) {
 				break;
 			}
 		}
+		if (qrx_eof(s)) {
+			qtx_finish(s);
+		}
 		if (flushed) {
-			qbuf_consume(&s->rx, flushed);
 			qc_flush(c->conn, s);
 		}
 	}
