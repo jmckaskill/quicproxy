@@ -441,7 +441,6 @@ static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t p
 			if (decode_varint(s, &off)) {
 				return QC_ERR_FRAME_ENCODING;
 			}
-			q_async_ack(c, rxtime);
 			LOG(c->local_cfg->debug, "RX BLOCKED Off %"PRIu64, off);
 			return 0;
 		}
@@ -450,7 +449,6 @@ static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t p
 			if (decode_varint(s, &id) || decode_varint(s, &off)) {
 				return QC_ERR_FRAME_ENCODING;
 			}
-			q_async_ack(c, rxtime);
 			LOG(c->local_cfg->debug, "RX STREAM BLOCKED ID %"PRIu64" Off %"PRIu64, id, off);
 			return 0;
 		}
@@ -459,7 +457,6 @@ static int process_protected_frame(struct connection *c, qslice_t *s, uint64_t p
 			if (decode_varint(s, &id)) {
 				return QC_ERR_FRAME_ENCODING;
 			}
-			q_async_ack(c, rxtime);
 			LOG(c->local_cfg->debug, "RX STREAM ID BLOCKED MAX ID %"PRIu64, id);
 			return 0;
 		}
