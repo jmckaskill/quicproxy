@@ -1,0 +1,170 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Arm-Release|x64">
+      <Configuration>Arm-Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="buffer.c" />
+    <ClCompile Include="buffer_test.c" />
+    <ClCompile Include="cipher.c" />
+    <ClCompile Include="connection.c" />
+    <ClCompile Include="cwnd.c" />
+    <ClCompile Include="handshake.c" />
+    <ClCompile Include="kdf.c" />
+    <ClCompile Include="migration.c" />
+    <ClCompile Include="pem.c" />
+    <ClCompile Include="quic_test.c" />
+    <ClCompile Include="retry.c" />
+    <ClCompile Include="scheduler.c" />
+    <ClCompile Include="shutdown.c" />
+    <ClCompile Include="signature.c" />
+    <ClCompile Include="stream.c" />
+    <ClCompile Include="timeouts.c" />
+    <ClCompile Include="version.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="buffer.h" />
+    <ClInclude Include="cipher.h" />
+    <ClInclude Include="common.h" />
+    <ClInclude Include="connection.h" />
+    <ClInclude Include="handshake.h" />
+    <ClInclude Include="internal.h" />
+    <ClInclude Include="kdf.h" />
+    <ClInclude Include="pem.h" />
+    <ClInclude Include="signature.h" />
+    <ClInclude Include="stream.h" />
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{CB25F05A-E64D-56C4-8096-D18D471CC23E}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <ProjectName>lib - quic</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v140</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\win32-debug\quic.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-debug/quic.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-debug/quic.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-debug/quic.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-debug/quic.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\win32-release\quic.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-release/quic.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-release/quic.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-release/quic.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-release/quic.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\win64-debug\quic.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-debug/quic.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-debug/quic.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-debug/quic.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-debug/quic.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\win64-release\quic.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-release/quic.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-release/quic.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-release/quic.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-release/quic.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
+    <NMakeOutput>$(SolutionDir)\bin\obj\armv7-release\quic.lib</NMakeOutput>
+    <NMakePreprocessorDefinitions>__linux__;NDEBUG</NMakePreprocessorDefinitions>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/quic.lib</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/quic.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/quic.lib</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/quic.lib</NMakeCleanCommandLine>
+    <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src;$(SolutionDir)\bin\libarm\armv7\include;$(SolutionDir)\bin\clang\lib\clang\5.0.1\include</NMakeIncludeSearchPath>
+    <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
+    <SourcePath />
+    <ExcludePath />
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

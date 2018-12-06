@@ -8,21 +8,21 @@ rule run-test
  command = $in -o $out
  description = TEST $in -o $out
 
-build $obj/quic/buffer.o: cc lib/buffer.c
-build $obj/quic/cipher.o: cc lib/cipher.c
-build $obj/quic/connection.o: cc lib/connection.c
-build $obj/quic/cwnd.o: cc lib/cwnd.c
-build $obj/quic/handshake.o: cc lib/handshake.c
-build $obj/quic/kdf.o: cc lib/kdf.c
-build $obj/quic/migration.o: cc lib/migration.c
-build $obj/quic/pem.o: cc lib/pem.c
-build $obj/quic/retry.o: cc lib/retry.c
-build $obj/quic/scheduler.o: cc lib/scheduler.c
-build $obj/quic/shutdown.o: cc lib/shutdown.c
-build $obj/quic/signature.o: cc lib/signature.c
-build $obj/quic/stream.o: cc lib/stream.c
-build $obj/quic/timeouts.o: cc lib/timeouts.c
-build $obj/quic/version.o: cc lib/version.c
+build $obj/quic/buffer.o: cc lib/quic/buffer.c
+build $obj/quic/cipher.o: cc lib/quic/cipher.c
+build $obj/quic/connection.o: cc lib/quic/connection.c
+build $obj/quic/cwnd.o: cc lib/quic/cwnd.c
+build $obj/quic/handshake.o: cc lib/quic/handshake.c
+build $obj/quic/kdf.o: cc lib/quic/kdf.c
+build $obj/quic/migration.o: cc lib/quic/migration.c
+build $obj/quic/pem.o: cc lib/quic/pem.c
+build $obj/quic/retry.o: cc lib/quic/retry.c
+build $obj/quic/scheduler.o: cc lib/quic/scheduler.c
+build $obj/quic/shutdown.o: cc lib/quic/shutdown.c
+build $obj/quic/signature.o: cc lib/quic/signature.c
+build $obj/quic/stream.o: cc lib/quic/stream.c
+build $obj/quic/timeouts.o: cc lib/quic/timeouts.c
+build $obj/quic/version.o: cc lib/quic/version.c
 build $obj/quic.lib: lib $
  $obj/quic/buffer.o $
  $obj/quic/cipher.o $
@@ -40,7 +40,8 @@ build $obj/quic.lib: lib $
  $obj/quic/timeouts.o $
  $obj/quic/version.o $
 
-build $obj/quic/test_buffer.o: cc lib/buffer_test.c
+
+build $obj/quic/test_buffer.o: cc lib/quic/buffer_test.c
 build $bin/test_buffer.log: run-test $bin/test_buffer.exe
 build $bin/test_buffer.exe: clink $
  $obj/quic/test_buffer.o $
@@ -61,12 +62,23 @@ build $bin/qproxy-client.exe: clink $
  $obj/bearssl.lib $
  $obj/quic.lib $
 
-build $obj/quic/quic_test.o: cc lib/quic_test.c
+build $obj/quic/quic_test.o: cc lib/quic/quic_test.c
 build $bin/test_quic.exe: clink $
  $obj/quic/quic_test.o $
  $obj/cutils.lib $
  $obj/bearssl.lib $
  $obj/quic.lib $
+
+
+build $obj/hq/qpack.o: cc lib/hq/qpack.c
+build $obj/hq.lib: lib $
+ $obj/hq/qpack.o $
+
+build $obj/hq/qpack_test.o: cc lib/hq/qpack_test.c
+build $bin/test_qpack.exe: clink $
+ $obj/hq/qpack_test.o $
+ $obj/hq/qpack.o $
+ $obj/cutils.lib $
 
 build $TGT: phony $
  $bin/qproxy-server.exe $

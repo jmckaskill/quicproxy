@@ -1,5 +1,5 @@
-#include "lib/connection.h"
-#include "lib/pem.h"
+#include "lib/quic/connection.h"
+#include "lib/quic/pem.h"
 #include <cutils/flag.h>
 #include <cutils/socket.h>
 #include <cutils/timer.h>

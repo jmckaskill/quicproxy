@@ -74,16 +74,29 @@ dirs = [
 
 [[project]]
 name =  "lib - quic"
-file = "lib/quic.vcxproj"
+file = "lib/quic/quic.vcxproj"
 target = "bin/obj/{TGT}/quic.lib"
 dirs = [
-	"lib"
+	"lib/quic"
 ]
 
 [[project]]
 name =  "test - quic"
-file = "lib/test.vcxproj"
+file = "lib/quic/quic_test.vcxproj"
 target = "bin/{TGT}/test_quic.exe"
+
+[[project]]
+name =  "lib - hq"
+file = "lib/hq/hq.vcxproj"
+target = "bin/obj/{TGT}/hq.lib"
+dirs = [
+	"lib/hq"
+]
+
+[[project]]
+name =  "test - qpack"
+file = "lib/hq/qpack_test.vcxproj"
+target = "bin/{TGT}/test_qpack.exe"
 
 [[project]]
 name =  "bin - qproxy-server"
