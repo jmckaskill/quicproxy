@@ -1,10 +1,11 @@
 #include "qpack.h"
+#include <cutils/endian.h>
 #include <stdint.h>
 
 
 struct huffman_encoding {
-	uint32_t value;
-	uint8_t bits;
+	uint32_t value : 24;
+	uint32_t bits : 8;
 };
 
 static struct huffman_encoding huffman[] = {
@@ -106,7 +107,7 @@ static struct huffman_encoding huffman[] = {
 };
 
 ssize_t hq_huffman_encode(qslice_t *s, const char *data, size_t len) {
-	uint8_t bits = 0;
+	uint32_t bits = 0;
 	uint8_t *start = s->p;
 	uint32_t u = 0;
 	for (size_t i = 0; i < len; i++) {
@@ -137,8 +138,89 @@ ssize_t hq_huffman_encode(qslice_t *s, const char *data, size_t len) {
 	return (int)(s->p - start);
 }
 
-ssize_t hq_huffman_decode(qslice_t *s, const uint8_t *data, size_t len) {
+static uint16_t read_bits(uint8_t *p, uint16_t off, unsigned bitsz) {
+	uint16_t mask = (1 << bitsz) - 1;
+	uint32_t bit = (uint32_t)off * bitsz;
+	uint16_t u = little_16(p + (bit >> 3));
+	uint8_t shift = (uint8_t)(bit & 7);
+	return (u >> shift) & mask;
+}
 
+static void write_bits(uint8_t *p, uint16_t off, uint16_t value, unsigned bitsz) {
+	uint16_t mask = (1 << bitsz) - 1;
+	uint32_t bit = (uint32_t)off * bitsz;
+	assert((value & ~mask) == 0);
+	uint16_t u = little_16(p + (bit >> 3));
+	uint8_t shift = (uint8_t)(bit & 7);
+	u &= ~(mask << shift);
+	u |= value << shift;
+	write_little_16(p + (bit >> 3), u);
+}
+
+struct node {
+	struct node *child[2];
+	uint8_t value;
+};
+
+static uint16_t write_node(uint8_t *p, uint16_t off, const struct node *n, unsigned bitsz) {
+	uint16_t flag = 1 << (bitsz - 1);
+	assert(off < UINT16_MAX);
+	if (!n) {
+		write_bits(p, off, 0, bitsz);
+		return off + 1;
+	} else if (n->value) {
+		write_bits(p, off, n->value | flag, bitsz);
+		return off + 1;
+	} else {
+		uint16_t right = write_node(p, off + 1, n->child[0], bitsz);
+		assert(right - off < flag);
+		write_bits(p, off, right - off, bitsz);
+		return write_node(p, right, n->child[1], bitsz);
+	}
+}
+
+size_t hq_generate_decoder(uint8_t *buf) {
+	struct node nodes[1024], *next = nodes;
+	struct node *root = next++;
+	memset(nodes, 0, sizeof(nodes));
+
+	for (size_t i = 0; i < sizeof(huffman) / sizeof(huffman[0]); i++) {
+		uint32_t bits = huffman[i].bits;
+		uint32_t value = huffman[i].value;
+		struct node *p = root;
+		while (bits) {
+			int bit = (value >> (--bits)) & 1;
+			struct node **c = &p->child[bit];
+			if (!*c) {
+				assert(next < nodes + 1024);
+				*c = next++;
+			}
+			p = *c;
+			assert(!p->value);
+		}
+		p->value = (uint8_t)(i + ' ');
+	}
+
+	return write_node(buf, 0, root, 8);
+}
+
+ssize_t hq_huffman_decode(qslice_t *s, const uint8_t *data, size_t len) {
+	uint8_t buf[256];
+	hq_generate_decoder(buf);
+	size_t i = 0;
+	while (i < len * 8) {
+		uint8_t *p = buf;
+		while (i < len * 8 && !(*p & 0x80)) {
+			if (data[len >> 3] & (1 << (len & 7))) {
+				p += *p;
+			} else {
+				p++;
+			}
+			
+		}
+		*(s->p++) = *p;
+	}
+	return -1;
 }
 
 static const uint8_t HUF[] = {

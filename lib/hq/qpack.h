@@ -35,6 +35,7 @@ struct hq_dictionary {
 
 ssize_t hq_huffman_encode(qslice_t *s, const char *data, size_t len);
 ssize_t hq_huffman_decode(qslice_t *s, const uint8_t *data, size_t len);
+size_t hq_generate_decoder(uint8_t *p);
 
 static inline bool hq_header_name_equals(const uint8_t *a, const uint8_t *b) {
 	return a[0] == b[0] && !memcmp(a + 1, b + 1, a[0]);
