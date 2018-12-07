@@ -6,7 +6,7 @@ struct hq_header {
 	int static_index;
 	uint16_t key_len;
 	uint16_t value_len;
-	bool never_compress;
+	bool secure;
 	const uint8_t *key, *value;
 };
 
@@ -35,13 +35,17 @@ struct hq_dictionary {
 
 ssize_t hq_huffman_encode(qslice_t *s, const char *data, size_t len);
 ssize_t hq_huffman_decode(qslice_t *s, const uint8_t *data, size_t len);
-size_t hq_generate_decoder(uint8_t *p);
+size_t hq_generate_decoder(int8_t *p);
 
 static inline bool hq_header_name_equals(const uint8_t *a, const uint8_t *b) {
 	return a[0] == b[0] && !memcmp(a + 1, b + 1, a[0]);
 }
 
 int hq_decode_header(qslice_t *s, qslice_t *buf, const hq_dictionary_t *dict, hq_header_t *hdr);
+
+#define HQ_SECURE 1
+#define HQ_PLAINTEXT 2
+int hq_encode_header(qslice_t *s, const hq_header_t *hdr, const void *value, size_t len, int flags);
 
 extern const hq_dictionary_t HQ_STATIC_DICT;
 

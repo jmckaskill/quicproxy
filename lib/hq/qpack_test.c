@@ -111,9 +111,9 @@ static void print_headers(log_t *log, bool declare) {
 		if (declare) {
 			LOG(log, "extern const hq_header_t HQ%s%s;", k->c.c_str, v ? v->c.c_str : "");
 		} else if (v) {
-			LOG(log, "const hq_header_t HQ%s%s = { %d, %u, %u, HUF+%u, HUF+%u };", k->c.c_str, v->c.c_str, h->index, k->sz, v->sz, k->off, v->off);
+			LOG(log, "const hq_header_t HQ%s%s = { %d, %u, %u, false, HUF+%u, HUF+%u };", k->c.c_str, v->c.c_str, h->index, k->sz, v->sz, k->off, v->off);
 		} else {
-			LOG(log, "const hq_header_t HQ%s = { %d, %u, 0, HUF+%u, NULL };", k->c.c_str, h->index, k->sz, k->off);
+			LOG(log, "const hq_header_t HQ%s = { %d, %u, 0, false, HUF+%u, NULL };", k->c.c_str, h->index, k->sz, k->off);
 		}
 	}
 }
@@ -239,7 +239,21 @@ int main(int argc, const char *argv[]) {
 	print_headers(log, true);
 
 	uint8_t bigbuf[4096];
-	hq_generate_decoder(bigbuf);
+	size_t decsz = hq_generate_decoder((int8_t*)bigbuf);
+	LOG(log, "");
+	LOG(log, "static const int8_t huf_decoder[] = {");
+	for (size_t i = 0; i < decsz; i += 8) {
+		struct {
+			size_t len;
+			char c_str[256];
+		} s;
+		s.len = 0;
+		for (size_t j = i; j < i + 8 && j < decsz; j++) {
+			ca_addf(&s, "%c%d,", (j & 7) ? ' ' : '\t', ((int8_t*)bigbuf)[j]);
+		}
+		LOG(log, "%s", s.c_str);
+	}
+	LOG(log, "};");
 
 	static const uint8_t unpack_test[] = {
 		0xD1, 0xD7,
@@ -260,13 +274,32 @@ int main(int argc, const char *argv[]) {
 		0x7B, 0xFC, 0xC5, 0x83, 0x76, 0x4A, 0x31, 0x6C, 0xD8, 0xB9, 0x10, 0x8F
 	};
 
+	size_t total = 0;
 	qslice_t s = { (uint8_t*)unpack_test, (uint8_t*)unpack_test + sizeof(unpack_test) };
 	while (s.p < s.e) {
-		sbuf.p = buf;
-		sbuf.e = buf + sizeof(buf);
+		sbuf.p = bigbuf;
+		sbuf.e = bigbuf + sizeof(bigbuf);
 		hq_header_t h;
 		EXPECT_EQ(0, hq_decode_header(&s, &sbuf, NULL, &h));
+		char *key = (char*)sbuf.p;
+		ssize_t ksz = hq_huffman_decode(&sbuf, h.key, h.key_len);
+		EXPECT_GE(ksz, 0);
+		char *val = (char*)sbuf.p;
+		ssize_t vsz = hq_huffman_decode(&sbuf, h.value, h.value_len);
+		EXPECT_GE(vsz, 0);
+		LOG(log, "%d %.*s: %.*s", h.static_index, (int)ksz, key, (int)vsz, val);
+		total += ksz + 1 + vsz + 2;
 	}
+	LOG(log, "%d vs %d", (int)total, (int)sizeof(unpack_test));
+
+	static const hq_header_t static_medium = { .static_index = 80 };
+	static const hq_header_t static_large = { .static_index = INT_MAX };
+	sbuf.p = bigbuf;
+	sbuf.e = bigbuf + sizeof(bigbuf);
+	EXPECT_EQ(0, hq_encode_header(&sbuf, &HQ_METHOD_GET, NULL, 0, 0));
+	EXPECT_EQ(0, hq_encode_header(&sbuf, &static_medium, NULL, 0, 0));
+	EXPECT_EQ(0, hq_encode_header(&sbuf, &static_large, NULL, 0, 0));
+	EXPECT_EQ(0, hq_encode_header(&sbuf, &HQ_LOCATION, "/index.html", strlen("/index.html"), HQ_PLAINTEXT | HQ_SECURE));
 
 	return finish_test();
 }
