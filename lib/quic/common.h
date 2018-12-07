@@ -25,7 +25,6 @@ typedef ptrdiff_t ssize_t;
 typedef struct logger log_t;
 typedef struct qconnection_cfg qconnection_cfg_t;
 typedef struct qconnect_request qconnect_request_t;
-typedef struct qslice qslice_t;
 typedef struct qstream qstream_t;
 typedef struct qtx_packet qtx_packet_t;
 
@@ -36,6 +35,12 @@ struct connection;
 struct handshake;
 struct client_handshake;
 struct server_handshake;
+
+typedef struct qslice qslice_t;
+struct qslice {
+	uint8_t *p;
+	uint8_t *e;
+};
 
 static inline size_t digest_size(const br_hash_class *digest_class) {
 	return (size_t)(digest_class->desc >> BR_HASHDESC_OUT_OFF)

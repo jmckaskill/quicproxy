@@ -10,12 +10,6 @@ enum qcrypto_level {
 	QC_PROTECTED,
 };
 
-typedef struct qslice qslice_t;
-struct qslice {
-	uint8_t *p;
-	uint8_t *e;
-};
-
 static inline uint8_t encode_id_len(uint8_t len) {return len ? (len - 3) : 0;}
 static inline uint8_t decode_id_len(uint8_t val) {return val ? (val + 3) : 0;}
 uint8_t *encode_varint(uint8_t *p, uint64_t val);

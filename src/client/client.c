@@ -66,7 +66,6 @@ static const qinterface_t client_interface = {
 	&client_received,
 	&client_sent,
 };
-
 int main(int argc, const char *argv[]) {
 	struct client c;
 	c.vtable = &client_interface;
