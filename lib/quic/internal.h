@@ -2,13 +2,13 @@
 #include "common.h"
 #include "stream.h"
 #include "connection.h"
-#include "handshake.h"
 #include "cipher.h"
 #include "kdf.h"
 #include "signature.h"
 #include <cutils/endian.h>
 #include <cutils/log.h>
 #include <inttypes.h>
+#include <limits.h>
 
 // packet flags
 #define QPKT_SEND          (1 << 0)
@@ -45,6 +45,19 @@
 #define QS_TX_DATA     (1 << 17)
 #define QS_STARTED      (1 << 18)
 #define QS_NOT_STARTED      (1 << 19)
+
+// connection flags
+#define QC_IS_SERVER           (1 << 0)
+#define QC_INIT_COMPLETE       (1 << 1)
+#define QC_HS_RECEIVED         (1 << 2)
+#define QC_HS_COMPLETE         (1 << 3)
+#define QC_FIN_ACKNOWLEDGED    (1 << 4)
+#define QC_MIGRATING           (1 << 5)
+#define QC_CLOSING             (1 << 6)
+#define QC_DRAINING            (1 << 7)
+#define QC_PATH_CHALLENGE_SEND (1 << 8)
+#define QC_HAVE_PATH_CHALLENGE (1 << 9)
+#define QC_PATH_RESPONSE_SEND  (1 << 10)
 
 #define QRST_STOPPING 0
 #define QRX_STREAM_MAX UINT64_C(0x4000000000000000)
@@ -113,8 +126,60 @@
 #define INITIAL_WINDOW MIN(10*DEFAULT_PACKET_SIZE, MAX(2*DEFAULT_PACKET_SIZE, 14600))
 #define MIN_WINDOW (2*DEFAULT_PACKET_SIZE)
 
-enum decoder_state {
-	SHELLO_START,
+enum qcrypto_level {
+	QC_INITIAL,
+	QC_HANDSHAKE,
+	QC_PROTECTED,
+};
+
+enum request_crypto_state {
+	REQUEST_START,
+	CHELLO_HEADER,
+	CHELLO_LEGACY_VERSION,
+	CHELLO_RANDOM,
+	CHELLO_LEGACY_SESSION,
+	CHELLO_CIPHER_LIST_SIZE,
+	CHELLO_CIPHER,
+	CHELLO_CIPHER_LIST,
+	CHELLO_COMPRESSION,
+	CHELLO_EXT_LIST_SIZE,
+	CHELLO_EXT_HEADER,
+	CHELLO_EXT,
+	CHELLO_NAME_LIST_SIZE,
+	CHELLO_NAME_HEADER,
+	CHELLO_NAME,
+	CHELLO_NAME_IGNORE,
+	CHELLO_VERSIONS_LIST_SIZE,
+	CHELLO_VERSION,
+	CHELLO_KEY_LIST_SIZE,
+	CHELLO_KEY_GROUP,
+	CHELLO_KEY_SIZE,
+	CHELLO_KEY_TYPE,
+	CHELLO_KEY_DATA,
+	CHELLO_KEY,
+	CHELLO_KEY_IGNORE,
+	CHELLO_KEY_LIST,
+	CHELLO_ALGORITHMS_LIST_SIZE,
+	CHELLO_ALGORITHM,
+	CHELLO_TP_INITIAL_VERSION,
+	CHELLO_TP_LIST_SIZE,
+	CHELLO_TP_HEADER,
+	CHELLO_TP_stream_data_bidi_local,
+	CHELLO_TP_stream_data_bidi_remote,
+	CHELLO_TP_stream_data_uni,
+	CHELLO_TP_max_data,
+	CHELLO_TP_bidi_streams,
+	CHELLO_TP_uni_streams,
+	CHELLO_TP_idle_timeout,
+	CHELLO_TP_max_packet_size,
+	CHELLO_TP_ack_delay_exponent,
+	CHELLO_TP_max_ack_delay,
+	CHELLO_TP,
+	CHELLO,
+};
+
+enum handshake_crypto_state {
+	CLIENT_START,
 	SHELLO_HEADER,
 	SHELLO_LEGACY_VERSION,
 	SHELLO_RANDOM,
@@ -129,20 +194,20 @@ enum decoder_state {
 	SHELLO_KEY_TYPE,
 	SHELLO_KEY_DATA,
 	SHELLO_FINISH_EXTENSION,
-	SHELLO_FINISH,
+	SHELLO,
 
 	EXTENSIONS_LEVEL,
 	EXTENSIONS_HEADER,
 	EXTENSIONS_LIST_SIZE,
 	EXTENSIONS_EXT_HEADER,
-	EXTENSIONS_FINISH_EXTENSION,
-	EXTENSIONS_FINISH,
+	EXTENSIONS_EXT,
+	EXTENSIONS,
 	EXTENSIONS_SUPPORTED_VERSIONS,
 	EXTENSIONS_SUPPORTED_VERSIONS_SIZE,
 	EXTENSIONS_NEGOTIATED_VERSION,
 	EXTENSIONS_TP_LIST_SIZE,
 	EXTENSIONS_TP_KEY,
-	EXTENSIONS_TP_FINISH,
+	EXTENSIONS_TP,
 	EXTENSIONS_TP_stream_data_bidi_local,
 	EXTENSIONS_TP_stream_data_bidi_remote,
 	EXTENSIONS_TP_stream_data_uni,
@@ -155,24 +220,24 @@ enum decoder_state {
 	EXTENSIONS_TP_max_ack_delay,
 	EXTENSIONS_TP_original_connection_id,
 
-	CERTIFICATES_HEADER,
-	CERTIFICATES_CONTEXT,
-	CERTIFICATES_LIST_SIZE,
-	CERTIFICATES_DATA_SIZE,
-	CERTIFICATES_DATA,
-	CERTIFICATES_EXT_SIZE,
-	CERTIFICATES_EXT,
-	CERTIFICATES_FINISH,
+	CERTIFICATE_HEADER,
+	CERTIFICATE_CONTEXT,
+	CERTIFICATE_LIST_SIZE,
+	CERTIFICATE_DATA_SIZE,
+	CERTIFICATE_DATA,
+	CERTIFICATE_EXT_SIZE,
+	CERTIFICATE_EXT,
+	CERTIFICATE,
 
 	VERIFY_HEADER,
 	VERIFY_ALGORITHM,
 	VERIFY_SIG_SIZE,
 	VERIFY_SIG_DATA,
-	VERIFY_FINISH,
+	VERIFY,
 
-	FINISHED_START,
+	ACCEPT_START,
 	FINISHED_HEADER,
-	FINISHED_DATA,
+	FINISHED,
 };
 
 struct qtx_packet {
@@ -199,6 +264,7 @@ struct qpacket_buffer {
 struct connection {
 	// caller interface
 	const qinterface_t **iface;
+	uint16_t flags;
 
 	// send/recv
 	uint8_t peer_len;
@@ -207,15 +273,6 @@ struct connection {
 	struct sockaddr_storage addr;
 	socklen_t addr_len;
 	uint8_t is_server;
-	bool peer_verified;
-	bool path_validated;
-	bool challenge_sent;
-	bool handshake_complete;
-	bool closing;
-	bool close_sent;
-	bool draining;
-	bool have_path_response;
-	bool path_response_sent;
 	int close_errnum;
 
 	qcipher_compat prot_tx;
@@ -263,17 +320,25 @@ struct connection {
 	tickdiff_t rttvar;
 };
 
-struct handshake {
-	struct connection c;
+struct crypto_state {
 	int level;
 	uint32_t next;
-	enum decoder_state state;
+	int state;
 	uint32_t end;
-	uint32_t stack[4];
+	uint32_t stack[6];
 	uint32_t have_bytes;
 	uint8_t buf[7];
 	uint8_t bufsz;
 	uint8_t depth;
+
+	const br_hash_class **msgs;
+	br_sha256_context msg_sha256;
+	br_sha384_context msg_sha384;
+};
+
+struct handshake {
+	struct connection c;
+	struct crypto_state crypto;
 
 	uint64_t orig_server_id;
 	qpacket_buffer_t pkts[2];
@@ -285,12 +350,8 @@ struct handshake {
 	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
 	
 	const qcipher_class *cipher;
-	const br_hash_class **msgs;
-	br_sha256_context msg_sha256;
-	br_sha384_context msg_sha384;
 
 	uint8_t *conn_buf_end;
-	bool received_hs_packet;
 };
 
 struct client_handshake {
@@ -305,8 +366,7 @@ struct client_handshake {
 
 	union {
 		struct {
-			uint16_t cipher;
-			uint16_t tls_version;
+			bool have_tls_version;
 			br_ec_public_key k;
 			uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
 		} sh;
@@ -345,17 +405,40 @@ struct server_handshake {
 	uint8_t server_id[DEFAULT_SERVER_ID_LEN];
 };
 
+static inline uint8_t q_encode_id_len(uint8_t len) {
+	return len ? (len - 3) : 0;
+}
+static inline uint8_t q_decode_id_len(uint8_t val) {
+	return val ? (val + 3) : 0;
+}
+uint8_t *q_encode_varint(uint8_t *p, uint64_t val);
+int q_decode_varint(qslice_t *s, uint64_t *pval);
+uint8_t *q_encode_packet_number(uint8_t *p, uint64_t base, uint64_t val);
+uint8_t *q_decode_packet_number(uint8_t *p, uint64_t base, uint64_t *pval);
 uint64_t q_generate_local_id(const qconnection_cfg_t *cfg, const br_prng_class **r);
+
+// Crypto
+
+int q_decode_handshake_crypto(struct connection *c, enum qcrypto_level level, qslice_t *fd, tick_t rxtime);
+int q_decode_request_crypto(qconnect_request_t *req, qslice_t *fd);
+const br_hash_class **init_message_hash(struct handshake *h);
+void init_protected_keys(struct handshake *h, const uint8_t *msg_hash);
+
+
+
+uint8_t *q_encode_finished(struct connection *c, uint8_t *p);
 
 // Packet sending
 
 #define SEND_FORCE 1
 #define SEND_PING 2
-#define SEND_CLOSE 4
 void q_send_handshake_close(struct connection *c);
 void q_send_close(struct connection *c);
 qtx_packet_t *q_send_packet(struct connection *c, tick_t now, uint8_t flags);
 uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned exp);
+
+qtx_packet_t *q_send_client_hello(struct client_handshake *ch, const br_prng_class **rand, tick_t now);
+int q_send_server_hello(struct server_handshake *sh, const br_prng_class **rand, const br_ec_public_key *pk, tick_t now);
 
 // Streams
 void q_setup_local_stream(struct connection *c, qstream_t *s, uint64_t id);
@@ -380,6 +463,9 @@ int q_decode_stop(struct connection *c, qslice_t *p);
 int q_decode_stream_data(struct connection *c, qslice_t *s);
 int q_decode_max_data(struct connection *c, qslice_t *s);
 int q_decode_max_id(struct connection *c, qslice_t *p);
+int q_decode_blocked(struct connection *c, qslice_t *p);
+int q_decode_stream_blocked(struct connection *c, qslice_t *p);
+int q_decode_id_blocked(struct connection *c, qslice_t *p);
 
 uint8_t *q_encode_scheduler(struct connection *c, uint8_t *p, qtx_packet_t *pkt);
 void q_commit_scheduler(struct connection *c, const qtx_packet_t *pkt);
@@ -391,7 +477,7 @@ void q_remove_stream(struct connection *c, qstream_t *s);
 void q_shutdown_from_idle(struct connection *c);
 void q_shutdown_from_library(struct connection *c, int errnum);
 int q_decode_close(struct connection *c, uint8_t hdr, qslice_t *s, tick_t now);
-uint8_t *q_encode_close(struct connection *c, uint8_t *p);
+uint8_t *q_encode_close(struct connection *c, uint8_t *p, uint8_t *e, bool pad);
 
 // Timers
 
@@ -405,7 +491,7 @@ void q_reset_idle_timer(struct connection *c, tick_t now);
 void q_start_migration(struct connection *c, tick_t now);
 void q_start_handshake_timers(struct handshake *h, tick_t now);
 void q_start_runtime_timers(struct handshake *h, tick_t now);
-void q_start_shutdown(struct connection *c, int errnum);
+void q_start_shutdown(struct connection *c);
 
 // Congestion
 void q_reset_cwnd(struct connection *c, uint64_t first_after_reset);
@@ -430,6 +516,9 @@ void q_process_version(struct client_handshake *ch, qslice_t s, tick_t now);
 int q_update_address(struct connection *c, uint64_t pktnum, const struct sockaddr *sa, socklen_t salen, tick_t rxtime);
 int q_decode_path_challenge(struct connection *c, qslice_t *p);
 int q_decode_path_response(struct connection *c, qslice_t *p);
+int q_decode_new_id(struct connection *c, qslice_t *p);
+int q_decode_retire_id(struct connection *c, qslice_t *p);
+int q_decode_new_token(struct connection *c, qslice_t *p);
 void q_ack_path_response(struct connection *c);
 void q_lost_path_challenge(struct connection *c);
 uint8_t *q_encode_migration(struct connection *c, uint8_t *p, qtx_packet_t *pkt);

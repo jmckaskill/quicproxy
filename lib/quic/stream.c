@@ -207,23 +207,23 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 	uint64_t new_max = qbuf_max(&s->rx);
 	if (new_max > s->rx_max_allowed && !(s->flags & QS_TX_STOP)) {
 		*(p++) = MAX_STREAM_DATA;
-		p = encode_varint(p, s->id);
-		p = encode_varint(p, new_max);
+		p = q_encode_varint(p, s->id);
+		p = q_encode_varint(p, new_max);
 		pkt->flags |= QPKT_STREAM_DATA;
 	}
 
 	if (s->flags & QS_TX_STOP_SEND) {
 		*(p++) = STOP_SENDING;
-		p = encode_varint(p, s->id);
+		p = q_encode_varint(p, s->id);
 		p = write_big_16(p, (uint16_t)(s->stop_errnum - QC_ERR_APP_OFFSET));
 		pkt->flags |= QPKT_STOP;
 	}
 
 	if (s->flags & QS_TX_RST_SEND) {
 		*(p++) = RST_STREAM;
-		p = encode_varint(p, s->id);
+		p = q_encode_varint(p, s->id);
 		p = write_big_16(p, (uint16_t)(s->rst_errnum - QC_ERR_APP_OFFSET));
-		p = encode_varint(p, s->tx.tail);
+		p = q_encode_varint(p, s->tx.tail);
 		pkt->flags |= QPKT_RST;
 	}
 
@@ -236,12 +236,12 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 	if (not_started || (off < end) || ((s->flags & QS_TX_FIN_SEND) && off == s->tx.tail)) {
 		uint8_t *hdr = p;
 		*p++ = STREAM;
-		p = encode_varint(p, s->id);
+		p = q_encode_varint(p, s->id);
 
 		if (off > 0) {
 			pkt->off = off;
 			*hdr |= STREAM_OFF_FLAG;
-			p = encode_varint(p, off);
+			p = q_encode_varint(p, off);
 		}
 
 		if (off < end) {
@@ -279,12 +279,7 @@ uint8_t *q_encode_stream(struct connection *c, qstream_t *s, uint8_t *p, uint8_t
 		pkt->flags |= QPKT_SEND;
 	}
 
-	if (pad) {
-		memset(p, 0, (size_t)(e - p));
-		return e;
-	} else {
-		return p;
-	}
+	return pad ? append_bytes(p, 0, (size_t)(e - p)) : p;
 }
 
 void q_commit_stream(struct connection *c, qstream_t *s, qtx_packet_t *pkt) {

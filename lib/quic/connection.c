@@ -18,7 +18,7 @@ struct raw_prng {
 static void update_raw(const br_prng_class **vt, const void *seed, size_t len) {
 	struct raw_prng *r = (struct raw_prng*)vt;
 	len = MIN(len, r->sz);
-	r->p = append(r->p, seed, len);
+	r->p = append_mem(r->p, seed, len);
 	r->sz -= len;
 }
 static const br_prng_class raw_vtable = {
@@ -45,17 +45,8 @@ uint64_t q_generate_local_id(const qconnection_cfg_t *cfg, const br_prng_class *
 ////////////////////////////////////////////////
 // ACK Generation
 
-static void receive_packet(struct connection *c, enum qcrypto_level level, uint64_t num, tick_t rxtime) {
-	qpacket_buffer_t *s = (level == QC_PROTECTED) ? &c->prot_pkts : &((struct handshake*)c)->pkts[level];
-	assert(level == QC_PROTECTED || !c->peer_verified);
-	if (level == QC_PROTECTED && !c->handshake_complete) {
-		// Until this point, the client will send the finished message in every
-		// protected packet. Once the server has acknowledged one, we know that it
-		// got the finished frame and the handshake is complete.
-		LOG(c->local_cfg->debug, "client handshake complete");
-		c->handshake_complete = true;
-	}
-	if (level == QC_PROTECTED && num > s->rx_next) {
+static void receive_packet(struct connection *c, qpacket_buffer_t *s, uint64_t num, tick_t rxtime) {
+	if (num > s->rx_next && (c->flags & QC_HS_COMPLETE)) {
 		// out of order or dropped packet
 		q_fast_async_ack(c, rxtime);
 	}
@@ -93,11 +84,11 @@ uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned e
 	*(p++) = ACK;
 
 	// largest acknowledged
-	p = encode_varint(p, pkts->rx_next - 1);
+	p = q_encode_varint(p, pkts->rx_next - 1);
 
 	// ack delay
 	tickdiff_t delay = (tickdiff_t)(now - pkts->rx_largest);
-	p = encode_varint(p, q_encode_ack_delay(delay, exp));
+	p = q_encode_varint(p, q_encode_ack_delay(delay, exp));
 
 	// block count - fill out later
 	uint8_t *pblock_count = p++;
@@ -217,37 +208,37 @@ static void update_rtt(struct connection *c, qpacket_buffer_t *b, uint64_t pktnu
 	}
 }
 
-static int decode_varint_plus_one(qslice_t *s, uint64_t *pval) {
-	int ret = decode_varint(s, pval);
-	*pval++;
-	return ret;
-}
-
-static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hdr, qslice_t *s, tick_t rxtime) {
+static int decode_ack(struct connection *c, qpacket_buffer_t *b, uint8_t hdr, qslice_t *s, tick_t rxtime) {
 	uint64_t largest, raw_delay, num_blocks, first_block;
-	if (decode_varint(s, &largest)
-		|| decode_varint(s, &raw_delay)
-		|| decode_varint(s, &num_blocks)
-		|| decode_varint(s, &first_block)) {
+	if (q_decode_varint(s, &largest)
+		|| q_decode_varint(s, &raw_delay)
+		|| q_decode_varint(s, &num_blocks)
+		|| q_decode_varint(s, &first_block)) {
 		return QC_ERR_FRAME_ENCODING;
 	}
 
 	uint8_t *block_start = s->p;
 	bool before = q_cwnd_allow(c);
 
-	qpacket_buffer_t *b = (level == QC_PROTECTED) ? &c->prot_pkts : &((struct handshake*)c)->pkts[level];
-	assert(level == QC_PROTECTED || !c->peer_verified);
 	if (largest < b->tx_oldest) {
 		return 0;
 	} else if (largest >= b->tx_next) {
 		return QC_ERR_FRAME_ENCODING;
 	}
 
+	if (b == &c->prot_pkts && !(c->flags & QC_FIN_ACKNOWLEDGED)) {
+		// Until this point, the client will send the finished message in every
+		// protected packet. Once the server has acknowledged one, we know that it
+		// got the finished frame and the handshake is complete.
+		LOG(c->local_cfg->debug, "client handshake complete");
+		c->flags |= QC_FIN_ACKNOWLEDGED;
+	}
+
 	if (largest > b->tx_largest_acked) {
 		b->tx_largest_acked = largest;
 	}
 
-	tickdiff_t delay = q_decode_ack_delay(raw_delay, (level == QC_PROTECTED ? c->peer_cfg.ack_delay_exponent : 0));
+	tickdiff_t delay = q_decode_ack_delay(raw_delay, (b == &c->prot_pkts ? c->peer_cfg.ack_delay_exponent : 0));
 	update_rtt(c, b, largest, rxtime, delay);
 	
 	// Process ACKs first
@@ -279,7 +270,7 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 
 		// num is now the smallest in the block
 		uint64_t gap, block;
-		if (decode_varint(s, &gap) || decode_varint(s, &block) || gap + block + 2 > num) {
+		if (q_decode_varint(s, &gap) || q_decode_varint(s, &block) || gap + block + 2 > num) {
 			return QC_ERR_FRAME_ENCODING;
 		}
 		num -= gap + 1;
@@ -316,8 +307,8 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 
 			if (blocks_left) {
 				uint64_t gap, ack;
-				decode_varint(s, &gap);
-				decode_varint(s, &ack);
+				q_decode_varint(s, &gap);
+				q_decode_varint(s, &ack);
 				gap_pkts = gap + 1;
 				ack_pkts = ack + 1;
 				blocks_left--;
@@ -357,15 +348,15 @@ static int decode_ack(struct connection *c, enum qcrypto_level level, uint8_t hd
 	// Then ECN
 	if (hdr & ACK_ECN_FLAG) {
 		uint64_t ect0, ect1, ce;
-		if (decode_varint(s, &ect0)
-			|| decode_varint(s, &ect1)
-			|| decode_varint(s, &ce)) {
+		if (q_decode_varint(s, &ect0)
+			|| q_decode_varint(s, &ect1)
+			|| q_decode_varint(s, &ce)) {
 			return QC_ERR_FRAME_ENCODING;
 		}
 		q_cwnd_ecn(c, largest, ce);
 	}
 
-	if (c->peer_verified && !before && q_cwnd_allow(c)) {
+	if ((c->flags & (QC_CLOSING|QC_HS_COMPLETE)) == QC_HS_COMPLETE && !before && q_cwnd_allow(c)) {
 		q_async_send_data(c);
 	}
 
@@ -383,137 +374,6 @@ static uint8_t *find_non_padding(uint8_t *p, uint8_t *e) {
 	return p;
 }
 
-static int process_protected_frame(struct connection *c, qslice_t *s, tick_t rxtime) {
-	uint8_t hdr = *(s->p++);
-	if ((hdr & STREAM_MASK) == STREAM) {
-		q_async_ack(c, rxtime);
-		return q_decode_stream(c, hdr, s);
-	} else {
-		switch (hdr) {
-		default:
-			return QC_ERR_FRAME_ENCODING;
-		case PADDING:
-			s->p = find_non_padding(s->p, s->e);
-			return 0;
-		case RST_STREAM:
-			q_async_ack(c, rxtime);
-			return q_decode_reset(c, s);
-		case CONNECTION_CLOSE:
-		case APPLICATION_CLOSE:
-			return q_decode_close(c, hdr, s, rxtime);
-		case MAX_DATA:
-			q_async_ack(c, rxtime);
-			return q_decode_max_data(c, s);
-		case MAX_STREAM_DATA:
-			q_async_ack(c, rxtime);
-			return q_decode_stream_data(c, s);
-		case MAX_STREAM_ID:
-			q_async_ack(c, rxtime);
-			return q_decode_max_id(c, s);
-		case PING:
-			LOG(c->local_cfg->debug, "RX PING");
-			q_fast_async_ack(c, rxtime);
-			return 0;
-		case BLOCKED: {
-			uint64_t off;
-			if (decode_varint(s, &off)) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			LOG(c->local_cfg->debug, "RX BLOCKED Off %"PRIu64, off);
-			return 0;
-		}
-		case STREAM_BLOCKED: {
-			uint64_t id, off;
-			if (decode_varint(s, &id) || decode_varint(s, &off)) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			LOG(c->local_cfg->debug, "RX STREAM BLOCKED ID %"PRIu64" Off %"PRIu64, id, off);
-			return 0;
-		}
-		case STREAM_ID_BLOCKED: {
-			uint64_t id;
-			if (decode_varint(s, &id)) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			LOG(c->local_cfg->debug, "RX STREAM ID BLOCKED MAX ID %"PRIu64, id);
-			return 0;
-		}
-		case NEW_CONNECTION_ID: {
-			if (s->p == s->e) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			size_t len = *(s->p++);
-			uint64_t seqnum;
-			if (decode_varint(s, &seqnum) || len < 4 || len > 18 || s->p + len + 16 > s->e) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			s->p += len + 16;
-			LOG(c->local_cfg->debug, "RX NEW ID Seq %"PRIu64, seqnum);
-			q_async_ack(c, rxtime);
-			return 0;
-		}
-		case RETIRE_CONNECTION_ID: {
-			uint64_t seqnum;
-			if (decode_varint(s, &seqnum)) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			LOG(c->local_cfg->debug, "RX RETIRE ID Seq %"PRIu64, seqnum);
-			q_async_ack(c, rxtime);
-			return 0;
-		}
-		case STOP_SENDING:
-			q_async_ack(c, rxtime);
-			return q_decode_stop(c, s);
-		case ACK | ACK_ECN_FLAG:
-		case ACK:
-			LOG(c->local_cfg->debug, "RX ACK");
-			return decode_ack(c, QC_PROTECTED, hdr, s, rxtime);
-		case PATH_CHALLENGE:
-			q_async_ack(c, rxtime);
-			return q_decode_path_challenge(c, s);
-		case PATH_RESPONSE:
-			q_async_ack(c, rxtime);
-			return q_decode_path_response(c, s);
-		case NEW_TOKEN: {
-			uint64_t len;
-			if (decode_varint(s, &len) || len > (uint64_t)(s->e - s->p)) {
-				return QC_ERR_FRAME_ENCODING;
-			}
-			s->p += (size_t)len;
-			LOG(c->local_cfg->debug, "RX TOKEN");
-			q_async_ack(c, rxtime);
-			return 0;
-		}
-		case CRYPTO:
-			LOG(c->local_cfg->debug, "RX CRYPTO");
-			q_fast_async_ack(c, rxtime);
-			return q_decode_crypto(c, QC_PROTECTED, s, rxtime);
-		}
-	}
-}
-
-static int process_handshake_frame(struct connection *c, qslice_t *s, enum qcrypto_level level, tick_t rxtime) {
-	uint8_t hdr = *(s->p++);
-	switch (hdr) {
-	default:
-		return QC_ERR_DROP;
-	case PADDING:
-		s->p = find_non_padding(s->p, s->e);
-		return 0;
-	case CONNECTION_CLOSE:
-	case APPLICATION_CLOSE:
-		return q_decode_close(c, hdr, s, rxtime);
-	case ACK | ACK_ECN_FLAG:
-	case ACK:
-		LOG(c->local_cfg->debug, "RX ACK");
-		return decode_ack(c, level, hdr, s, rxtime);
-	case CRYPTO:
-		LOG(c->local_cfg->debug, "RX CRYPTO");
-		q_fast_async_ack(c, rxtime);
-		return q_decode_crypto(c, level, s, rxtime);
-	}
-}
-
 static int decrypt_packet(uint64_t base, const qcipher_class **k, uint8_t *pkt_begin, qslice_t *s, uint64_t *pktnum) {
 	// copy the encoded packet number data out so that if it is less
 	// than 4 bytes, we can copy it back after
@@ -521,34 +381,127 @@ static int decrypt_packet(uint64_t base, const qcipher_class **k, uint8_t *pkt_b
 	memcpy(tmp, s->p, 4);
 	(*k)->protect(k, s->p, 4, s->e - s->p);
 	uint8_t *begin = s->p;
-	s->p = decode_packet_number(s->p, base, pktnum);
+	s->p = q_decode_packet_number(s->p, base, pktnum);
 	memcpy(s->p, tmp + (s->p - begin), 4 - (s->p - begin));
 	s->e -= QUIC_TAG_SIZE;
 	return s->p > s->e || (*k)->decrypt(k, *pktnum, pkt_begin, (size_t)(s->p - pkt_begin), s->p, s->e);
 }
 
-static int process_packet(struct connection *c, uint64_t base, const qcipher_class **key, enum qcrypto_level level, uint8_t *pkt_begin, qslice_t s, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
+static int process_packet(struct connection *c, const qcipher_class **key, qpacket_buffer_t *b, enum qcrypto_level level, uint8_t *pkt_begin, qslice_t s, const struct sockaddr *sa, socklen_t salen, tick_t rxtime) {
 	uint64_t pktnum;
-	if (decrypt_packet(base, key, pkt_begin, &s, &pktnum)) {
+	if (decrypt_packet(b->rx_next, key, pkt_begin, &s, &pktnum)) {
 		return 0;
 	}
 	if (level == QC_HANDSHAKE) {
-		((struct handshake*)c)->received_hs_packet = true;
+		c->flags |= QC_HS_RECEIVED;
 	}
 	int err = q_update_address(c, pktnum, sa, salen, rxtime);
 	while (!err && s.p < s.e) {
-		if (!c->peer_verified) {
-			err = process_handshake_frame(c, &s, level, rxtime);
+		uint8_t hdr = *(s.p++);
+		if (!(c->flags & QC_HS_COMPLETE)) {
+			switch (hdr) {
+			default:
+				err = QC_ERR_DROP;
+				break;
+			case PADDING:
+				s.p = find_non_padding(s.p, s.e);
+				continue;
+			case CONNECTION_CLOSE:
+			case APPLICATION_CLOSE:
+				err = q_decode_close(c, hdr, &s, rxtime);
+				continue;
+			case ACK | ACK_ECN_FLAG:
+			case ACK:
+				err = decode_ack(c, b, hdr, &s, rxtime);
+				continue;
+			case CRYPTO:
+				err = q_decode_handshake_crypto(c, level, &s, rxtime);
+				continue;
+			}
+		} else if ((hdr & STREAM_MASK) == STREAM) {
+			q_async_ack(c, rxtime);
+			err = q_decode_stream(c, hdr, &s);
 		} else {
-			assert(level == QC_PROTECTED);
-			err = process_protected_frame(c, &s, rxtime);
+			switch (hdr) {
+			default:
+				err = QC_ERR_FRAME_ENCODING;
+				break;
+			case PADDING:
+				s.p = find_non_padding(s.p, s.e);
+				continue;
+			case RST_STREAM:
+				q_async_ack(c, rxtime);
+				err = q_decode_reset(c, &s);
+				continue;
+			case CONNECTION_CLOSE:
+			case APPLICATION_CLOSE:
+				err = q_decode_close(c, hdr, &s, rxtime);
+				continue;
+			case MAX_DATA:
+				q_async_ack(c, rxtime);
+				err = q_decode_max_data(c, &s);
+				continue;
+			case MAX_STREAM_DATA:
+				q_async_ack(c, rxtime);
+				err = q_decode_stream_data(c, &s);
+				continue;
+			case MAX_STREAM_ID:
+				q_async_ack(c, rxtime);
+				err = q_decode_max_id(c, &s);
+				continue;
+			case PING:
+				q_fast_async_ack(c, rxtime);
+				continue;
+			case BLOCKED:
+				err = q_decode_blocked(c, &s);
+				continue;
+			case STREAM_BLOCKED:
+				err = q_decode_stream_blocked(c, &s);
+				continue;
+			case STREAM_ID_BLOCKED:
+				err = q_decode_id_blocked(c, &s);
+				continue;
+			case NEW_CONNECTION_ID:
+				q_async_ack(c, rxtime);
+				err = q_decode_new_id(c, &s);
+				continue;
+			case RETIRE_CONNECTION_ID:
+				q_async_ack(c, rxtime);
+				err = q_decode_retire_id(c, &s);
+				continue;
+			case STOP_SENDING:
+				q_async_ack(c, rxtime);
+				err = q_decode_stop(c, &s);
+				continue;
+			case ACK | ACK_ECN_FLAG:
+			case ACK:
+				err = decode_ack(c, &c->prot_pkts, hdr, &s, rxtime);
+				continue;
+			case PATH_CHALLENGE:
+				q_async_ack(c, rxtime);
+				err = q_decode_path_challenge(c, &s);
+				continue;
+			case PATH_RESPONSE:
+				q_async_ack(c, rxtime);
+				err = q_decode_path_response(c, &s);
+				continue;
+			case NEW_TOKEN:
+				q_async_ack(c, rxtime);
+				err = q_decode_new_token(c, &s);
+				continue;
+			case CRYPTO:
+				q_fast_async_ack(c, rxtime);
+				err = q_decode_handshake_crypto(c, QC_PROTECTED, &s, rxtime);
+				continue;
+			}
 		}
 	}
-	if (!err) {
-		receive_packet(c, level, pktnum, rxtime);
-	} else if (err != QC_ERR_DROP) {
-		q_shutdown_from_library(c, err);
-		return -1;
+	if (err != QC_ERR_DROP) {
+		receive_packet(c, b, pktnum, rxtime);
+		if (err) {
+			q_shutdown_from_library(c, err);
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -562,7 +515,7 @@ uint64_t qc_get_destination(void *buf, size_t len) {
 	}
 	if (*(u++) & LONG_HEADER_FLAG) {
 		u += 4; // skip over version
-		uint8_t dcil = decode_id_len(*(u++) >> 4);
+		uint8_t dcil = q_decode_id_len(*(u++) >> 4);
 		if (dcil != DEFAULT_SERVER_ID_LEN || len < 6 + DEFAULT_SERVER_ID_LEN) {
 			return 0;
 		}
@@ -586,8 +539,8 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 	}
 	uint32_t version = big_32(s.p);
 	s.p += 4;
-	req->server_len = decode_id_len(*s.p >> 4);
-	req->client_len = decode_id_len(*s.p & 0xF);
+	req->server_len = q_decode_id_len(*s.p >> 4);
+	req->client_len = q_decode_id_len(*s.p & 0xF);
 	s.p++;
 	if (s.p + req->server_len + req->client_len > s.e) {
 		return QC_PARSE_ERROR;
@@ -613,7 +566,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 
 	// token
 	uint64_t toksz;
-	if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
+	if (q_decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
 		return QC_PARSE_ERROR;
 	} else if (cfg->validate_path && !q_is_retry_valid(req, s.p, (size_t)toksz)) {
 		return QC_STATELESS_RETRY;
@@ -622,7 +575,7 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 
 	// length
 	uint64_t paysz;
-	if (decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p)) {
+	if (q_decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p)) {
 		return QC_PARSE_ERROR;
 	}
 	s.e = s.p + paysz;
@@ -642,19 +595,9 @@ int qc_decode_request(qconnect_request_t *req, const qconnection_cfg_t *cfg, voi
 			s.p = find_non_padding(s.p, s.e);
 			break;
 		case CRYPTO: {
-			if (req->chello) {
+			if (q_decode_request_crypto(req, &s)) {
 				return QC_PARSE_ERROR;
 			}
-			uint64_t off, len;
-			if (decode_varint(&s, &off) || off != 0 || decode_varint(&s, &len) || len > (uint64_t)(s.e - s.p)) {
-				return QC_PARSE_ERROR;
-			}
-			if (decode_client_hello(s.p, (size_t)len, req, cfg)) {
-				return QC_PARSE_ERROR;
-			}
-			req->chello = s.p;
-			req->chello_size = (size_t)len;
-			s.p += len;
 			break;
 		}
 		}
@@ -701,8 +644,8 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			uint32_t version = big_32(s.p);
 			s.p += 4;
 			// skip over ids
-			uint8_t dcil = decode_id_len(*s.p >> 4);
-			uint8_t scil = decode_id_len(*s.p & 0xF);
+			uint8_t dcil = q_decode_id_len(*s.p >> 4);
+			uint8_t scil = q_decode_id_len(*s.p & 0xF);
 			s.p++;
 			s.p += dcil;
 			const uint8_t *source = s.p;
@@ -712,7 +655,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			}
 
 			// check the version
-			if (!c->is_server && !c->peer_verified && !ch->initial_version && !version) {
+			if ((c->flags & (QC_IS_SERVER | QC_HS_COMPLETE)) == 0 && !ch->initial_version && !version) {
 				q_process_version(ch, s, rxtime);
 				return;
 			} else if (version != QUIC_VERSION) {
@@ -722,7 +665,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			switch (hdr) {
 			case INITIAL_PACKET: {
 				uint64_t toksz;
-				if (decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
+				if (q_decode_varint(&s, &toksz) || toksz > (uint64_t)(s.e - s.p)) {
 					return;
 				}
 				s.p += (size_t)toksz;
@@ -732,7 +675,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			case PROTECTED_PACKET:
 				break;
 			case RETRY_PACKET:
-				if (!c->is_server && !c->peer_verified && !h->orig_server_id) {
+				if ((c->flags & (QC_IS_SERVER | QC_HS_COMPLETE)) == 0 && !h->orig_server_id) {
 					q_process_retry(ch, scil, source, s, rxtime);
 				}
 				return;
@@ -741,7 +684,7 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			}
 
 			uint64_t paysz;
-			if (decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p) || paysz < QUIC_TAG_SIZE + 1) {
+			if (q_decode_varint(&s, &paysz) || paysz > (uint64_t)(s.e - s.p) || paysz < QUIC_TAG_SIZE + 1) {
 				return;
 			}
 			qslice_t pkt = { s.p, s.p + (size_t)paysz };
@@ -750,31 +693,31 @@ void qc_recv(qconnection_t *cin, void *buf, size_t len, const struct sockaddr *s
 			enum qcrypto_level level;
 			qcipher_compat key;
 
-			if (c->peer_verified) {
+			if (c->flags & QC_HS_COMPLETE) {
 				continue;
 			} else if (hdr == INITIAL_PACKET) {
-				if (c->is_server) {
+				if (c->flags & QC_IS_SERVER) {
 					init_initial_cipher(&key.aes_gcm, STREAM_CLIENT, sh->server_id, DEFAULT_SERVER_ID_LEN);
 				} else {
 					init_initial_cipher(&key.aes_gcm, STREAM_SERVER, c->peer_id, c->peer_len);
 				}
 				level = QC_INITIAL;
-			} else if (hdr == HANDSHAKE_PACKET && h->cipher) {
-				h->cipher->init(&key.vtable, h->hs_rx);
+			} else if (hdr == HANDSHAKE_PACKET && (c->flags & QC_INIT_COMPLETE)) {
+				c->prot_rx.vtable->init(&key.vtable, h->hs_rx);
 				level = QC_HANDSHAKE;
 			} else {
 				continue;
 			}
 
-			if (process_packet(c, h->pkts[level].rx_next, &key.vtable, level, pkt_begin, pkt, sa, salen, rxtime)) {
+			if (process_packet(c, &key.vtable, &h->pkts[level], level, pkt_begin, pkt, sa, salen, rxtime)) {
 				return;
 			}
 
 		} else if ((hdr & SHORT_PACKET_MASK) == SHORT_PACKET) {
 			// short header
-			s.p += c->is_server ? DEFAULT_SERVER_ID_LEN : 0;
+			s.p += (c->flags & QC_IS_SERVER) ? DEFAULT_SERVER_ID_LEN : 0;
 			if (s.p + 1 + QUIC_TAG_SIZE <= s.e && c->prot_rx.vtable) {
-				process_packet(c, c->prot_pkts.rx_next, &c->prot_rx.vtable, QC_PROTECTED, pkt_begin, s, sa, salen, rxtime);
+				process_packet(c, &c->prot_rx.vtable, &c->prot_pkts, QC_PROTECTED, pkt_begin, s, sa, salen, rxtime);
 			}
 			return;
 		}
@@ -808,14 +751,15 @@ int qc_connect(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface
 	memset(ch, 0, sizeof(*ch));
 	init_connection(h, csz);
 	c->version = cfg->versions ? cfg->versions[0] : QUIC_VERSION;
-	c->is_server = STREAM_CLIENT;
+	c->flags = 0;
 	c->iface = vt;
 	c->local_cfg = cfg;
 	c->dispatcher = d;
 	ch->server_name = server_name;
 	ch->x509 = x;
-	h->level = QC_INITIAL;
-	h->state = SHELLO_START;
+	h->crypto.level = QC_INITIAL;
+	h->crypto.state = CLIENT_START;
+	h->crypto.end = UINT32_MAX;
 	h->pkts[QC_INITIAL].sent = ch->init_pkts;
 	h->pkts[QC_INITIAL].sent_len = ARRAYSZ(ch->init_pkts);
 	h->pkts[QC_HANDSHAKE].sent = ch->hs_pkts;
@@ -858,7 +802,7 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	memset(sh, 0, sizeof(*sh));
 	init_connection(h, csz);
 	c->version = req->version;
-	c->is_server = STREAM_SERVER;
+	c->flags = QC_IS_SERVER | QC_INIT_COMPLETE;
 	c->iface = vt;
 	c->local_cfg = req->server_cfg;
 	c->peer_cfg = req->client_cfg;
@@ -871,8 +815,9 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	memcpy(c->client_random, req->client_random, QUIC_RANDOM_SIZE);
 	memcpy(&c->addr, req->sa, req->salen);
 	c->addr_len = req->salen;
-	h->level = QC_PROTECTED;
-	h->state = FINISHED_START;
+	h->crypto.level = QC_PROTECTED;
+	h->crypto.state = ACCEPT_START;
+	h->crypto.end = UINT32_MAX;
 	h->pkts[QC_INITIAL].sent = sh->init_pkts;
 	h->pkts[QC_INITIAL].sent_len = ARRAYSZ(sh->init_pkts);
 	h->pkts[QC_HANDSHAKE].sent = sh->hs_pkts;
@@ -893,13 +838,14 @@ int qc_accept(qconnection_t *cin, size_t csz, dispatcher_t *d, const qinterface_
 	if (!req->cipher) {
 		return -1;
 	}
-	h->cipher = req->cipher;
-	const br_hash_class **msgs = init_message_hash(h, req->cipher->hash);
-	req->cipher->hash->init(msgs);
+	c->prot_rx.vtable = req->cipher;
+	c->prot_tx.vtable = req->cipher;
+	const br_hash_class **msgs = init_message_hash(h);
+	(*msgs)->init(msgs);
 	(*msgs)->update(msgs, req->chello, req->chello_size);
 
 	// send server hello
-	receive_packet(c, QC_INITIAL, req->pktnum, req->rxtime);
+	receive_packet(c, &h->pkts[QC_INITIAL], req->pktnum, req->rxtime);
 	if (q_send_server_hello(sh, &rand.vtable, &req->key, req->rxtime)) {
 		return -1;
 	}

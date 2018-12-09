@@ -213,19 +213,19 @@ int main(int argc, const char *argv[]) {
 	uint64_t pktnum;
 	buf[0] = 0x89;
 	buf[1] = 0xB3;
-	EXPECT_PTREQ(buf + 2, decode_packet_number(buf, 0xaa82f30e, &pktnum));
+	EXPECT_PTREQ(buf + 2, q_decode_packet_number(buf, 0xaa82f30e, &pktnum));
 	EXPECT_EQ(0xaa8309b3, pktnum);
-	EXPECT_PTREQ(buf + 1, encode_packet_number(buf, 0x6afa2f, 0x6AFA6D));
-	EXPECT_PTREQ(buf + 1, decode_packet_number(buf, 0x6afa7f, &pktnum));
+	EXPECT_PTREQ(buf + 1, q_encode_packet_number(buf, 0x6afa2f, 0x6AFA6D));
+	EXPECT_PTREQ(buf + 1, q_decode_packet_number(buf, 0x6afa7f, &pktnum));
 	EXPECT_EQ(0x6AFA6D, pktnum);
-	EXPECT_PTREQ(buf + 2, encode_packet_number(buf, 0x6afa2f, 0x6AFA74));
-	EXPECT_PTREQ(buf + 2, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_PTREQ(buf + 2, q_encode_packet_number(buf, 0x6afa2f, 0x6AFA74));
+	EXPECT_PTREQ(buf + 2, q_decode_packet_number(buf, 0x6afa2f, &pktnum));
 	EXPECT_EQ(0x6AFA74, pktnum);
-	EXPECT_PTREQ(buf + 4, encode_packet_number(buf, 0x6afa2f, 0x6b2d79));
-	EXPECT_PTREQ(buf + 4, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_PTREQ(buf + 4, q_encode_packet_number(buf, 0x6afa2f, 0x6b2d79));
+	EXPECT_PTREQ(buf + 4, q_decode_packet_number(buf, 0x6afa2f, &pktnum));
 	EXPECT_EQ(0x6b2d79, pktnum);
-	EXPECT_PTREQ(buf + 4, encode_packet_number(buf, 0x6afa2f, 0x6bc107));
-	EXPECT_PTREQ(buf + 4, decode_packet_number(buf, 0x6afa2f, &pktnum));
+	EXPECT_PTREQ(buf + 4, q_encode_packet_number(buf, 0x6afa2f, 0x6bc107));
+	EXPECT_PTREQ(buf + 4, q_decode_packet_number(buf, 0x6afa2f, &pktnum));
 	EXPECT_EQ(0x6bc107, pktnum);
 
 	static const uint8_t token_key[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
@@ -316,9 +316,9 @@ int main(int argc, const char *argv[]) {
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
-	EXPECT_TRUE(ch->h.c.peer_verified);
-	EXPECT_TRUE(!ch->h.c.handshake_complete);
-	EXPECT_TRUE(!sh->h.c.peer_verified);
+	EXPECT_TRUE(ch->h.c.flags & QC_HS_COMPLETE);
+	EXPECT_TRUE(!(ch->h.c.flags & QC_FIN_ACKNOWLEDGED));
+	EXPECT_TRUE(!(sh->h.c.flags & QC_HS_COMPLETE));
 	EXPECT_EQ(client_cfg.max_data, sh->h.c.peer_cfg.max_data);
 	EXPECT_EQ(client_cfg.bidi_streams, sh->h.c.peer_cfg.bidi_streams);
 	EXPECT_EQ(1, c.msgn); // Client Finished
@@ -329,8 +329,8 @@ int main(int argc, const char *argv[]) {
 	qc_recv(s.c, c.msgv[0].buf, c.msgv[0].sz, ca, sizeof(c4), NOW);
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
-	EXPECT_TRUE(sh->h.c.peer_verified);
-	EXPECT_TRUE(sh->h.c.handshake_complete);
+	EXPECT_TRUE(sh->h.c.flags & QC_HS_COMPLETE);
+	EXPECT_TRUE(sh->h.c.flags & QC_FIN_ACKNOWLEDGED);
 	EXPECT_EQ(20 * MS, sh->h.c.srtt);
 	EXPECT_EQ(1, s.msgn); // ACK
 
@@ -339,7 +339,7 @@ int main(int argc, const char *argv[]) {
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
-	EXPECT_TRUE(ch->h.c.handshake_complete);
+	EXPECT_TRUE(ch->h.c.flags & QC_FIN_ACKNOWLEDGED);
 	EXPECT_EQ(0, c.msgn);
 
 	// Send a bidi stream
@@ -505,7 +505,7 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_BYTES_EQ(ca, sizeof(c4), &sh->h.c.addr, sh->h.c.addr_len);
-	EXPECT_TRUE(!sh->h.c.path_validated && sh->h.c.challenge_sent);
+	EXPECT_TRUE((sh->h.c.flags & QC_MIGRATING) && !(sh->h.c.flags & QC_PATH_CHALLENGE_SEND));
 	EXPECT_EQ(1, s.msgn);
 	EXPECT_EQ(0, sh->h.c.srtt);
 	EXPECT_EQ(0, sh->h.c.rttvar);
@@ -517,7 +517,7 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_EQ(1, c.msgn);
-	EXPECT_TRUE(ch->h.c.have_path_response && ch->h.c.path_response_sent);
+	EXPECT_TRUE((ch->h.c.flags & QC_HAVE_PATH_CHALLENGE) && !(ch->h.c.flags & QC_PATH_RESPONSE_SEND));
 
 	// receive the response on the server side
 	NOW += 10 * MS;
@@ -525,7 +525,7 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	c.msgn = 0;
 	EXPECT_EQ(20 * 1000, sh->h.c.srtt);
-	EXPECT_TRUE(sh->h.c.path_validated);
+	EXPECT_TRUE(!(sh->h.c.flags & QC_MIGRATING));
 	NOW += 25 * MS;
 	dispatch_apcs(&d, NOW, 1000);
 	EXPECT_EQ(1, s.msgn); // send back an ack
@@ -535,7 +535,7 @@ int main(int argc, const char *argv[]) {
 	qc_recv(c.c, s.msgv[0].buf, s.msgv[0].sz, sa, sizeof(s4), NOW);
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
-	EXPECT_TRUE(!ch->h.c.have_path_response);
+	EXPECT_TRUE(!(ch->h.c.flags & QC_HAVE_PATH_CHALLENGE));
 
 	// now have the server shut down the connection
 	NOW += 10 * MS;
@@ -544,8 +544,8 @@ int main(int argc, const char *argv[]) {
 	EXPECT_EQ(1, s.msgn);
 	EXPECT_EQ(0, s.shutdown_reason); // as we called qc_shutdown, the callback shouldn't be called
 	EXPECT_TRUE(!s.conn_closed); // we shouldn't shutdown just yet
-	EXPECT_TRUE(sh->h.c.closing);
-	EXPECT_TRUE(!sh->h.c.draining);
+	EXPECT_TRUE(sh->h.c.flags & QC_CLOSING);
+	EXPECT_TRUE(!(sh->h.c.flags & QC_DRAINING));
 
 	// receive the shutdown on the client
 	NOW += 10 * MS;
@@ -553,8 +553,8 @@ int main(int argc, const char *argv[]) {
 	dispatch_apcs(&d, NOW, 1000);
 	s.msgn = 0;
 	EXPECT_EQ(QC_ERR_SERVER_BUSY, c.shutdown_reason);
-	EXPECT_TRUE(ch->h.c.closing);
-	EXPECT_TRUE(ch->h.c.draining);
+	EXPECT_TRUE(ch->h.c.flags & QC_CLOSING);
+	EXPECT_TRUE(ch->h.c.flags & QC_DRAINING);
 	EXPECT_TRUE(!c.conn_closed);
 
 	// and sometime later both sides should shut down

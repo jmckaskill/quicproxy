@@ -50,8 +50,8 @@ static void on_handshake_timeout(apc_t *a, tick_t now) {
 	struct connection *c = container_of(a, struct connection, rx_timer);
 	// ignore the error if the send fails, we'll try again next timeout
 	LOG(c->local_cfg->debug, "HS timeout %d", c->rx_timer_count);
-	assert(!c->peer_verified);
-	if (c->is_server) {
+	assert(!(c->flags & QC_HS_COMPLETE));
+	if (c->flags & QC_IS_SERVER) {
 		q_send_server_hello((struct server_handshake*)c, NULL, NULL, now);
 	} else {
 		q_send_client_hello((struct client_handshake*)c, NULL, now);
@@ -95,9 +95,9 @@ static void on_ping_timeout(apc_t *a, tick_t now) {
 void q_reset_rx_timer(struct connection *c, tick_t now) {
 	c->rto_next = 0;
 	c->rx_timer_count = 0;
-	if (c->closing) {
+	if (c->flags & QC_CLOSING) {
 		cancel_apc(c->dispatcher, &c->rx_timer);
-	} else if (!c->peer_verified) {
+	} else if (!(c->flags & QC_HS_COMPLETE)) {
 		add_timed_apc(c->dispatcher, &c->rx_timer, now + crypto_timeout(c, c->rx_timer_count++), &on_handshake_timeout);
 	} else if (c->bytes_in_flight) {
 		add_timed_apc(c->dispatcher, &c->rx_timer, now + probe_timeout(c, c->rx_timer_count++), &on_probe_timeout);
@@ -120,7 +120,8 @@ static void on_ack_timeout(apc_t *a, tick_t now) {
 static void async_ack(struct connection *c, tick_t wakeup) {
 	// This is allowed to be called during closing. It is used to resend close frames
 	// when receiving incoming messages.
-	if (!c->draining && (!is_apc_active(&c->ack_timer) || (tickdiff_t)(c->ack_timer.wakeup - wakeup) > 0)) {
+	assert(c->flags & QC_HS_COMPLETE);
+	if (!(c->flags & QC_DRAINING) && (!is_apc_active(&c->ack_timer) || (tickdiff_t)(c->ack_timer.wakeup - wakeup) > 0)) {
 		add_timed_apc(c->dispatcher, &c->ack_timer, wakeup, &on_ack_timeout);
 	}
 }
@@ -143,7 +144,7 @@ static void on_async_send_data(apc_t *a, tick_t now) {
 }
 
 void q_async_send_data(struct connection *c) {
-	assert(!c->closing);
+	assert(!(c->flags & QC_CLOSING));
 	if (!is_apc_active(&c->flush_apc)) {
 		add_apc(c->dispatcher, &c->flush_apc, &on_async_send_data);
 	}
@@ -175,7 +176,7 @@ static void on_drained_timeout(apc_t *a, tick_t now) {
 
 // called after receiving a new packet
 void q_reset_idle_timer(struct connection *c, tick_t now) {
-	if (!c->closing && c->peer_verified && c->path_validated) {
+	if ((c->flags & (QC_CLOSING|QC_HS_COMPLETE|QC_MIGRATING)) == QC_HS_COMPLETE) {
 		add_timed_apc(c->dispatcher, &c->idle_timer, now + idle_timeout(c), &on_idle_timeout);
 	}
 }
@@ -184,10 +185,8 @@ void q_start_migration(struct connection *c, tick_t now) {
 	add_timed_apc(c->dispatcher, &c->idle_timer, now + path_migration_timeout(c), &on_path_timeout);
 }
 
-void q_start_shutdown(struct connection *c, int errnum) {
+void q_start_shutdown(struct connection *c) {
 	tick_t now = c->dispatcher->last_tick;
-	c->closing = true;
-	c->close_errnum = errnum;
 	add_timed_apc(c->dispatcher, &c->idle_timer, now + drain_timeout(c), &on_drained_timeout);
 	cancel_apc(c->dispatcher, &c->rx_timer);
 	cancel_apc(c->dispatcher, &c->flush_apc);
@@ -202,7 +201,7 @@ void q_start_handshake_timers(struct handshake *h, tick_t now) {
 
 void q_start_runtime_timers(struct handshake *h, tick_t now) {
 	struct connection *c = &h->c;
-	if (c->is_server && !c->srtt) {
+	if ((c->flags & QC_IS_SERVER) && !c->srtt) {
 		// Client may not send any acks on initial & handshake as the client
 		// is finished with those levels. Use the handshake response time
 		// to initialize srtt.
@@ -213,9 +212,6 @@ void q_start_runtime_timers(struct handshake *h, tick_t now) {
 	}
 	c->prot_pkts.sent = (qtx_packet_t*)(c + 1);
 	c->prot_pkts.sent_len = (h->conn_buf_end - (uint8_t*)(c+1)) / sizeof(qtx_packet_t);
-	c->peer_verified = true;
-	c->path_validated = true;
-	c->challenge_sent = true;
 	q_update_scheduler_from_cfg(c);
 	q_reset_idle_timer(c, now);
 	q_reset_rx_timer(c, now);

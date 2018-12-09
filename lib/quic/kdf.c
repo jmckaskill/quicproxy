@@ -31,11 +31,11 @@ void hkdf_expand_label(void *out, size_t outsz, const br_hash_class *digest, con
 	assert(outsz <= UINT16_MAX);
 	p = write_big_16(p, (uint16_t)outsz);
 	*(p++) = (uint8_t)labelsz;
-	p = append(p, label, labelsz);
+	p = append_mem(p, label, labelsz);
 	if (msg_hash) {
 		size_t hash_len = digest_size(digest);
 		*(p++) = (uint8_t)hash_len;
-		p = append(p, msg_hash, hash_len);
+		p = append_mem(p, msg_hash, hash_len);
 	} else {
 		*(p++) = 0;
 	}
@@ -96,10 +96,9 @@ size_t calc_cert_verify(void *out, bool client, const br_hash_class *digest, con
 	size_t hash_len = digest_size(digest);
 	size_t ret = 64 + sizeof(server_context) + hash_len;
 	assert(64 + sizeof(server_context) + hash_len <= QUIC_MAX_CERT_VERIFY_SIZE);
-	memset(out, 0x20, 64);
-	out = (char*)out + 64;
-	out = append(out, client ? client_context : server_context, sizeof(client_context));
-	out = append(out, msg_hash, hash_len);
+	out = append_bytes(out, ' ', 64);
+	out = append_mem(out, client ? client_context : server_context, sizeof(client_context));
+	out = append_mem(out, msg_hash, hash_len);
 	return ret;
 }
 

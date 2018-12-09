@@ -3,7 +3,6 @@
 #include "common.h"
 #include "stream.h"
 #include "cipher.h"
-#include "handshake.h"
 #include "signature.h"
 #include <cutils/socket.h>
 #include <cutils/apc.h>
@@ -72,11 +71,6 @@ struct qconnect_request {
 	const uint8_t *server;
 	uint64_t orig_server_id;
 
-	const uint8_t *client_random;
-
-	const char *server_name;
-	size_t name_len;
-
 	br_ec_public_key key;
 	const qcipher_class *cipher;
 	uint64_t signatures;
@@ -86,10 +80,16 @@ struct qconnect_request {
 
 	uint32_t version;
 	uint64_t pktnum;
-	const void *chello;
+	const uint8_t *chello;
 	size_t chello_size;
 	const struct sockaddr *sa;
 	socklen_t salen;
+
+	size_t name_len;
+	uint8_t client_random[QUIC_RANDOM_SIZE];
+	uint8_t msg_hash[QUIC_MAX_HASH_SIZE];
+	uint8_t key_data[BR_EC_KBUF_PUB_MAX_SIZE];
+	char server_name[256];
 };
 
 uint64_t qc_get_destination(void *buf, size_t len);

@@ -6,16 +6,16 @@ size_t q_sockaddr_aad(uint8_t *o, const struct sockaddr *sa, socklen_t salen) {
 	case AF_INET6: {
 		struct sockaddr_in6 *sa6 = (struct sockaddr_in6*) sa;
 		*(o++) = AF_INET6;
-		o = append(o, &sa6->sin6_addr, sizeof(sa6->sin6_addr));
-		o = append(o, &sa6->sin6_port, sizeof(sa6->sin6_port));
-		o = append(o, &sa6->sin6_scope_id, sizeof(sa6->sin6_scope_id)); // include the interface id for link-local addresses
+		o = append_mem(o, &sa6->sin6_addr, sizeof(sa6->sin6_addr));
+		o = append_mem(o, &sa6->sin6_port, sizeof(sa6->sin6_port));
+		o = append_mem(o, &sa6->sin6_scope_id, sizeof(sa6->sin6_scope_id)); // include the interface id for link-local addresses
 		return (size_t)(o - begin);
 	}
 	case AF_INET: {
 		struct sockaddr_in *sa4 = (struct sockaddr_in*) sa;
 		*(o++) = AF_INET;
-		o = append(o, &sa4->sin_addr, sizeof(sa4->sin_addr));
-		o = append(o, &sa4->sin_port, sizeof(sa4->sin_port));
+		o = append_mem(o, &sa4->sin_addr, sizeof(sa4->sin_addr));
+		o = append_mem(o, &sa4->sin_port, sizeof(sa4->sin_port));
 		return (size_t)(o - begin);
 	}
 	default:
@@ -55,13 +55,13 @@ size_t q_encode_retry(qconnect_request_t *req, void *buf, size_t bufsz) {
 	s.p = write_big_32(s.p, req->version);
 
 	// peer & local ids
-	*(s.p++) = (encode_id_len(req->client_len) << 4) | encode_id_len(DEFAULT_SERVER_ID_LEN);
-	s.p = append(s.p, req->client, req->client_len);
+	*(s.p++) = (q_encode_id_len(req->client_len) << 4) | q_encode_id_len(DEFAULT_SERVER_ID_LEN);
+	s.p = append_mem(s.p, req->client, req->client_len);
 	s.p = write_little_64(s.p, new_id);
 
 	// original destination
-	*(s.p++) = 0xE0 | encode_id_len(DEFAULT_SERVER_ID_LEN);
-	s.p = append(s.p, req->server, DEFAULT_SERVER_ID_LEN);
+	*(s.p++) = 0xE0 | q_encode_id_len(DEFAULT_SERVER_ID_LEN);
+	s.p = append_mem(s.p, req->server, DEFAULT_SERVER_ID_LEN);
 
 	// token data: timestamp & original destination
 	struct retry_token *tok = (struct retry_token*)s.p;
@@ -109,7 +109,7 @@ void q_process_retry(struct client_handshake *ch, uint8_t scil, const uint8_t *s
 	if (s.p + 1 > s.e) {
 		return;
 	}
-	uint8_t odcil = decode_id_len(*(s.p++) & 0xF);
+	uint8_t odcil = q_decode_id_len(*(s.p++) & 0xF);
 	if (s.p + odcil > s.e || odcil != c->peer_len || memcmp(s.p, c->peer_id, odcil)) {
 		return;
 	}

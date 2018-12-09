@@ -18,9 +18,9 @@ size_t q_encode_version(qconnect_request_t *req, void *buf, size_t bufsz) {
 	uint8_t *p = buf;
 	*(p++) = 0xE3;
 	p = write_big_32(p, 0);
-	*(p++) = (encode_id_len(req->client_len) << 4) | encode_id_len(req->server_len);
-	p = append(p, req->client, req->client_len);
-	p = append(p, req->server, req->server_len);
+	*(p++) = (q_encode_id_len(req->client_len) << 4) | q_encode_id_len(req->server_len);
+	p = append_mem(p, req->client, req->client_len);
+	p = append_mem(p, req->server, req->server_len);
 	for (size_t i = 0; i < num; i++) {
 		p = write_big_32(p, ver[i]);
 	}
