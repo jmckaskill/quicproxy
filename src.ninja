@@ -71,14 +71,23 @@ build $bin/test_quic.exe: clink $
 
 
 build $obj/hq/qpack.o: cc lib/hq/qpack.c
+build $obj/hq/header.o: cc lib/hq/header.c
 build $obj/hq.lib: lib $
  $obj/hq/qpack.o $
+ $obj/hq/header.o $
 
 build $obj/hq/qpack_test.o: cc lib/hq/qpack_test.c
 build $bin/test_qpack.exe: clink $
  $obj/hq/qpack_test.o $
  $obj/hq/qpack.o $
  $obj/cutils.lib $
+
+build $obj/hq/header_test.o: cc lib/hq/header_test.c
+build $bin/test_header.exe: clink $
+ $obj/hq/header_test.o $
+ $obj/hq/header.o $
+ $obj/cutils.lib $
+ $obj/bearssl.lib $
 
 build $TGT: phony $
  $bin/qproxy-server.exe $

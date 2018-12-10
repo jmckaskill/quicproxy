@@ -33,16 +33,6 @@
 // data_sent
 // data_received
 
-#define HQ_HEADER_COMPRESSED 1
-#define HQ_HEADER_SECURE 2
-
-typedef struct hq_header hq_header;
-struct hq_header {
-	const uint8_t *key, *value;
-	uint16_t value_len;
-	uint8_t key_len;
-	uint8_t flags;
-};
 
 #define HQ_TRY_AGAIN SSIZE_T_MIN
 

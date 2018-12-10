@@ -1,30 +1,6 @@
 #include "buffer.h"
 #include "internal.h"
 
-// ctz = count trailing zeros
-// These versions do not protect against a zero value.
-#if defined __GNUC__
-static size_t ctz(uint32_t v) {
-	return __builtin_ctz(v);
-}
-#elif defined _MSC_VER
-#include <intrin.h>
-#pragma intrinsic(_BitScanForward)
-static size_t ctz(uint32_t v) {
-	unsigned long ret;
-	_BitScanForward(&ret, v);
-	return ret;
-}
-#else
-static size_t ctz(uint32_t v) {
-	unsigned n = 0;
-	while (!(v & 1)) {
-		n++;
-		v >>= 1;
-	}
-	return n;
-}
-#endif
 
 void qbuf_init(qbuffer_t *b, void *buf, size_t size) {
 	// buffer is split into two circular buffers
