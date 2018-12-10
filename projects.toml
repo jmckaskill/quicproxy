@@ -115,6 +115,11 @@ dirs = [
 ]
 
 [[project]]
+name =  "test - string"
+file = "ext/string_test.vcxproj"
+target = "bin/{TGT}/test_str.exe"
+
+[[project]]
 name =  "test - buffer"
 file = "lib/buffer_test.vcxproj"
 target = "bin/{TGT}/test_buffer.exe"

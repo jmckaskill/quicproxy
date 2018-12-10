@@ -23,60 +23,15 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="cutils\src\apc.c" />
-    <ClCompile Include="cutils\src\file.c" />
-    <ClCompile Include="cutils\src\flag.c" />
-    <ClCompile Include="cutils\src\flag_test.c" />
-    <ClCompile Include="cutils\src\hash.c" />
-    <ClCompile Include="cutils\src\hash_test.c" />
-    <ClCompile Include="cutils\src\heap.c" />
-    <ClCompile Include="cutils\src\heap_test.c" />
-    <ClCompile Include="cutils\src\log.c" />
-    <ClCompile Include="cutils\src\mapped-file_posix.c" />
-    <ClCompile Include="cutils\src\mapped-file_win.c" />
-    <ClCompile Include="cutils\src\path.c" />
-    <ClCompile Include="cutils\src\rbtree.c" />
-    <ClCompile Include="cutils\src\rbtree_test.c" />
-    <ClCompile Include="cutils\src\socket.c" />
-    <ClCompile Include="cutils\src\str.c" />
-    <ClCompile Include="cutils\src\str_test.c" />
-    <ClCompile Include="cutils\src\test.c" />
-    <ClCompile Include="cutils\src\test_test.c" />
-    <ClCompile Include="cutils\src\timer.c" />
-    <ClCompile Include="cutils\src\utf.c" />
-    <ClCompile Include="cutils\src\vector.c" />
-    <ClCompile Include="cutils\src\zip-writer.c" />
-    <ClCompile Include="cutils\src\rand\mersenne-twister.c" />
-    <ClCompile Include="cutils\src\rand\test-bench.cpp" />
-    <ClCompile Include="cutils\src\rand\test-mt.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="cutils\inc\cutils\apc.h" />
-    <ClInclude Include="cutils\inc\cutils\char-array.h" />
-    <ClInclude Include="cutils\inc\cutils\endian.h" />
-    <ClInclude Include="cutils\inc\cutils\file.h" />
-    <ClInclude Include="cutils\inc\cutils\flag.h" />
-    <ClInclude Include="cutils\inc\cutils\hash.h" />
-    <ClInclude Include="cutils\inc\cutils\heap.h" />
-    <ClInclude Include="cutils\inc\cutils\log.h" />
-    <ClInclude Include="cutils\inc\cutils\mersenne-twister.h" />
-    <ClInclude Include="cutils\inc\cutils\path.h" />
-    <ClInclude Include="cutils\inc\cutils\rbtree.h" />
-    <ClInclude Include="cutils\inc\cutils\socket.h" />
-    <ClInclude Include="cutils\inc\cutils\str.h" />
-    <ClInclude Include="cutils\inc\cutils\stream.h" />
-    <ClInclude Include="cutils\inc\cutils\test.h" />
-    <ClInclude Include="cutils\inc\cutils\timer.h" />
-    <ClInclude Include="cutils\inc\cutils\utf.h" />
-    <ClInclude Include="cutils\inc\cutils\vector.h" />
-    <ClInclude Include="cutils\inc\cutils\zip-writer.h" />
   </ItemGroup>
   <ItemGroup>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{A83AD043-4538-5550-9C87-61AA1B9E20E9}</ProjectGuid>
+    <ProjectGuid>{91EE5157-3D50-5675-8089-1160E41E802A}</ProjectGuid>
     <Keyword>MakeFileProj</Keyword>
-    <ProjectName>lib - cutils</ProjectName>
+    <ProjectName>test - string</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -126,55 +81,55 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <NMakeOutput>$(SolutionDir)\bin\obj\win32-debug\cutils.lib</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win32-debug\test_str.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-debug/cutils.lib</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-debug/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-debug/cutils.lib</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-debug/cutils.lib</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/test_str.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/test_str.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-debug/test_str.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-debug/test_str.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <NMakeOutput>$(SolutionDir)\bin\obj\win32-release\cutils.lib</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win32-release\test_str.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-release/cutils.lib</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-release/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win32-release/cutils.lib</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win32-release/cutils.lib</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/test_str.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/test_str.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win32-release/test_str.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win32-release/test_str.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\obj\win64-debug\cutils.lib</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win64-debug\test_str.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;DEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-debug/cutils.lib</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-debug/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-debug/cutils.lib</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-debug/cutils.lib</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/test_str.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/test_str.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-debug/test_str.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-debug/test_str.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\obj\win64-release\cutils.lib</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\win64-release\test_str.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>WIN32;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-release/cutils.lib</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-release/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/win64-release/cutils.lib</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/win64-release/cutils.lib</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/test_str.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/test_str.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/win64-release/test_str.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/win64-release/test_str.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />
     <ExcludePath />
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Arm-Release|x64'">
-    <NMakeOutput>$(SolutionDir)\bin\obj\armv7-release\cutils.lib</NMakeOutput>
+    <NMakeOutput>$(SolutionDir)\bin\armv7-release\test_str.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>__linux__;NDEBUG</NMakePreprocessorDefinitions>
-    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/cutils.lib</NMakeBuildCommandLine>
-    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/cutils.lib &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/obj/armv7-release/cutils.lib</NMakeReBuildCommandLine>
-    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/obj/armv7-release/cutils.lib</NMakeCleanCommandLine>
+    <NMakeBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_str.exe</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_str.exe &amp;&amp; $(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja bin/armv7-release/test_str.exe</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>$(SolutionDir)\download.exe $(SolutionDir) bin\ninja\ninja.exe -f msvc.ninja -t clean bin/armv7-release/test_str.exe</NMakeCleanCommandLine>
     <NMakeIncludeSearchPath>$(ProjectDir);$(SolutionDir)\.;$(SolutionDir)\ext\cutils\inc;$(SolutionDir)\ext\BearSSL\inc;$(SolutionDir)\ext\BearSSL\src;$(SolutionDir)\bin\libarm\armv7\include;$(SolutionDir)\bin\clang\lib\clang\5.0.1\include</NMakeIncludeSearchPath>
     <IntDir>$(SolutionDir)\obj\$(Configuration)\</IntDir>
     <SourcePath />

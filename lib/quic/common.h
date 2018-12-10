@@ -15,9 +15,13 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <string.h>
+#include <limits.h>
 
 #ifdef _MSC_VER
-typedef ptrdiff_t ssize_t;
+#define _WIN32_WINNT 0x600
+#include <basetsd.h>
+typedef SSIZE_T ssize_t;
+#define SSIZE_T_MIN MINSSIZE_T
 #else
 #include <sys/types.h>
 #endif

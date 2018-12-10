@@ -501,105 +501,105 @@ static const hq_dict_entry_t entries[] = {
 
 const hq_dictionary_t HQ_STATIC_DICT = { HUF, entries, 99, 0, 0, 99 };
 
-const hq_header_t HQ_AUTHORITY = { 0, 8, 0, false, HUF + 0, NULL };
-const hq_header_t HQ_PATH_SLASH = { 1, 4, 1, false, HUF + 8, HUF + 12 };
-const hq_header_t HQ_AGE_0 = { 2, 2, 1, false, HUF + 13, HUF + 15 };
-const hq_header_t HQ_CONTENT_DISPOSITION = { 3, 13, 0, false, HUF + 16, NULL };
-const hq_header_t HQ_CONTENT_LENGTH_0 = { 4, 10, 1, false, HUF + 29, HUF + 15 };
-const hq_header_t HQ_COOKIE = { 5, 4, 0, false, HUF + 39, NULL };
-const hq_header_t HQ_DATE = { 6, 3, 0, false, HUF + 43, NULL };
-const hq_header_t HQ_ETAG = { 7, 3, 0, false, HUF + 46, NULL };
-const hq_header_t HQ_IF_MODIFIED_SINCE = { 8, 12, 0, false, HUF + 49, NULL };
-const hq_header_t HQ_IF_NONE_MATCH = { 9, 9, 0, false, HUF + 61, NULL };
-const hq_header_t HQ_LAST_MODIFIED = { 10, 9, 0, false, HUF + 70, NULL };
-const hq_header_t HQ_LINK = { 11, 3, 0, false, HUF + 79, NULL };
-const hq_header_t HQ_LOCATION = { 12, 6, 0, false, HUF + 82, NULL };
-const hq_header_t HQ_REFERER = { 13, 5, 0, false, HUF + 88, NULL };
-const hq_header_t HQ_SET_COOKIE = { 14, 7, 0, false, HUF + 93, NULL };
-const hq_header_t HQ_METHOD_CONNECT = { 15, 5, 7, false, HUF + 100, HUF + 105 };
-const hq_header_t HQ_METHOD_DELETE = { 16, 5, 6, false, HUF + 100, HUF + 112 };
-const hq_header_t HQ_METHOD_GET = { 17, 5, 3, false, HUF + 100, HUF + 118 };
-const hq_header_t HQ_METHOD_HEAD = { 18, 5, 4, false, HUF + 100, HUF + 121 };
-const hq_header_t HQ_METHOD_OPTIONS = { 19, 5, 7, false, HUF + 100, HUF + 125 };
-const hq_header_t HQ_METHOD_POST = { 20, 5, 4, false, HUF + 100, HUF + 132 };
-const hq_header_t HQ_METHOD_PUT = { 21, 5, 3, false, HUF + 100, HUF + 136 };
-const hq_header_t HQ_SCHEME_HTTP = { 22, 5, 3, false, HUF + 139, HUF + 144 };
-const hq_header_t HQ_SCHEME_HTTPS = { 23, 5, 4, false, HUF + 139, HUF + 147 };
-const hq_header_t HQ_STATUS_103 = { 24, 5, 2, false, HUF + 151, HUF + 156 };
-const hq_header_t HQ_STATUS_200 = { 25, 5, 2, false, HUF + 151, HUF + 158 };
-const hq_header_t HQ_STATUS_304 = { 26, 5, 3, false, HUF + 151, HUF + 160 };
-const hq_header_t HQ_STATUS_404 = { 27, 5, 3, false, HUF + 151, HUF + 163 };
-const hq_header_t HQ_STATUS_503 = { 28, 5, 3, false, HUF + 151, HUF + 166 };
-const hq_header_t HQ_ACCEPT_STAR_STAR = { 29, 4, 3, false, HUF + 169, HUF + 173 };
-const hq_header_t HQ_ACCEPT_APPLICATION_DNS_MESSAGE = { 30, 4, 16, false, HUF + 169, HUF + 176 };
-const hq_header_t HQ_ACCEPT_ENCODING_GZIP_DEFLATE_BR = { 31, 11, 13, false, HUF + 192, HUF + 203 };
-const hq_header_t HQ_ACCEPT_RANGES_BYTES = { 32, 9, 4, false, HUF + 216, HUF + 225 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_HEADERS_CACHE_CONTROL = { 33, 20, 9, false, HUF + 229, HUF + 249 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_HEADERS_CONTENT_TYPE = { 34, 20, 9, false, HUF + 229, HUF + 258 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_ORIGIN_STAR = { 35, 19, 1, false, HUF + 267, HUF + 286 };
-const hq_header_t HQ_CACHE_CONTROL_MAX_AGE_0 = { 36, 9, 7, false, HUF + 249, HUF + 287 };
-const hq_header_t HQ_CACHE_CONTROL_MAX_AGE_2592000 = { 37, 9, 11, false, HUF + 249, HUF + 294 };
-const hq_header_t HQ_CACHE_CONTROL_MAX_AGE_604800 = { 38, 9, 10, false, HUF + 249, HUF + 305 };
-const hq_header_t HQ_CACHE_CONTROL_NO_CACHE = { 39, 9, 6, false, HUF + 249, HUF + 315 };
-const hq_header_t HQ_CACHE_CONTROL_NO_STORE = { 40, 9, 6, false, HUF + 249, HUF + 321 };
-const hq_header_t HQ_CACHE_CONTROL_PUBLIC_MAX_AGE_31536000 = { 41, 9, 18, false, HUF + 249, HUF + 327 };
-const hq_header_t HQ_CONTENT_ENCODING_BR = { 42, 11, 2, false, HUF + 345, HUF + 356 };
-const hq_header_t HQ_CONTENT_ENCODING_GZIP = { 43, 11, 3, false, HUF + 345, HUF + 358 };
-const hq_header_t HQ_CONTENT_TYPE_APPLICATION_DNS_MESSAGE = { 44, 9, 16, false, HUF + 258, HUF + 176 };
-const hq_header_t HQ_CONTENT_TYPE_APPLICATION_JAVASCRIPT = { 45, 9, 16, false, HUF + 258, HUF + 361 };
-const hq_header_t HQ_CONTENT_TYPE_APPLICATION_JSON = { 46, 9, 11, false, HUF + 258, HUF + 377 };
-const hq_header_t HQ_CONTENT_TYPE_APPLICATION_X_WWW_FORM_URLENCODED = { 47, 9, 24, false, HUF + 258, HUF + 388 };
-const hq_header_t HQ_CONTENT_TYPE_IMAGE_GIF = { 48, 9, 7, false, HUF + 258, HUF + 412 };
-const hq_header_t HQ_CONTENT_TYPE_IMAGE_JPEG = { 49, 9, 8, false, HUF + 258, HUF + 419 };
-const hq_header_t HQ_CONTENT_TYPE_IMAGE_PNG = { 50, 9, 7, false, HUF + 258, HUF + 427 };
-const hq_header_t HQ_CONTENT_TYPE_TEXT_CSS = { 51, 9, 6, false, HUF + 258, HUF + 434 };
-const hq_header_t HQ_CONTENT_TYPE_TEXT_HTML_CHARSET_UTF_8 = { 52, 9, 18, false, HUF + 258, HUF + 440 };
-const hq_header_t HQ_CONTENT_TYPE_TEXT_PLAIN = { 53, 9, 7, false, HUF + 258, HUF + 458 };
-const hq_header_t HQ_CONTENT_TYPE_TEXT_PLAIN_CHARSET_UTF_8 = { 54, 9, 17, false, HUF + 258, HUF + 465 };
-const hq_header_t HQ_RANGE_BYTES_0_ = { 55, 4, 6, false, HUF + 482, HUF + 486 };
-const hq_header_t HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000 = { 56, 17, 12, false, HUF + 492, HUF + 509 };
-const hq_header_t HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS = { 57, 17, 25, false, HUF + 492, HUF + 521 };
-const hq_header_t HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS_PRELOAD = { 58, 17, 32, false, HUF + 492, HUF + 546 };
-const hq_header_t HQ_VARY_ACCEPT_ENCODING = { 59, 4, 11, false, HUF + 578, HUF + 192 };
-const hq_header_t HQ_VARY_ORIGIN = { 60, 4, 5, false, HUF + 578, HUF + 582 };
-const hq_header_t HQ_X_CONTENT_TYPE_OPTIONS_NOSNIFF = { 61, 16, 5, false, HUF + 587, HUF + 603 };
-const hq_header_t HQ_X_XSS_PROTECTION_1_MODE_BLOCK = { 62, 12, 10, false, HUF + 608, HUF + 620 };
-const hq_header_t HQ_STATUS_100 = { 63, 5, 2, false, HUF + 151, HUF + 630 };
-const hq_header_t HQ_STATUS_204 = { 64, 5, 2, false, HUF + 151, HUF + 632 };
-const hq_header_t HQ_STATUS_206 = { 65, 5, 2, false, HUF + 151, HUF + 634 };
-const hq_header_t HQ_STATUS_302 = { 66, 5, 2, false, HUF + 151, HUF + 636 };
-const hq_header_t HQ_STATUS_400 = { 67, 5, 2, false, HUF + 151, HUF + 638 };
-const hq_header_t HQ_STATUS_403 = { 68, 5, 3, false, HUF + 151, HUF + 640 };
-const hq_header_t HQ_STATUS_421 = { 69, 5, 2, false, HUF + 151, HUF + 643 };
-const hq_header_t HQ_STATUS_425 = { 70, 5, 3, false, HUF + 151, HUF + 645 };
-const hq_header_t HQ_STATUS_500 = { 71, 5, 2, false, HUF + 151, HUF + 648 };
-const hq_header_t HQ_ACCEPT_LANGUAGE = { 72, 11, 0, false, HUF + 650, NULL };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_FALSE = { 73, 22, 5, false, HUF + 661, HUF + 683 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_TRUE = { 74, 22, 4, false, HUF + 661, HUF + 688 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_HEADERS_STAR = { 75, 20, 1, false, HUF + 229, HUF + 286 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_METHODS_GET = { 76, 20, 2, false, HUF + 692, HUF + 712 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_METHODS_GET_POST_OPTIONS = { 77, 20, 13, false, HUF + 692, HUF + 714 };
-const hq_header_t HQ_ACCESS_CONTROL_ALLOW_METHODS_OPTIONS = { 78, 20, 5, false, HUF + 692, HUF + 727 };
-const hq_header_t HQ_ACCESS_CONTROL_EXPOSE_HEADERS_CONTENT_LENGTH = { 79, 20, 10, false, HUF + 732, HUF + 29 };
-const hq_header_t HQ_ACCESS_CONTROL_REQUEST_HEADERS_CONTENT_TYPE = { 80, 21, 9, false, HUF + 752, HUF + 258 };
-const hq_header_t HQ_ACCESS_CONTROL_REQUEST_METHOD_GET = { 81, 20, 2, false, HUF + 773, HUF + 712 };
-const hq_header_t HQ_ACCESS_CONTROL_REQUEST_METHOD_POST = { 82, 20, 3, false, HUF + 773, HUF + 793 };
-const hq_header_t HQ_ALT_SVC_CLEAR = { 83, 5, 4, false, HUF + 796, HUF + 801 };
-const hq_header_t HQ_AUTHORIZATION = { 84, 9, 0, false, HUF + 805, NULL };
-const hq_header_t HQ_CONTENT_SECURITY_POLICY_SCRIPT_SRC_NONE_OBJECT_SRC_NONE_BASE_URI_NONE = { 85, 16, 42, false, HUF + 814, HUF + 830 };
-const hq_header_t HQ_EARLY_DATA_1 = { 86, 7, 1, false, HUF + 872, HUF + 879 };
-const hq_header_t HQ_EXPECT_CT = { 87, 7, 0, false, HUF + 880, NULL };
-const hq_header_t HQ_FORWARDED = { 88, 7, 0, false, HUF + 887, NULL };
-const hq_header_t HQ_IF_RANGE = { 89, 6, 0, false, HUF + 894, NULL };
-const hq_header_t HQ_ORIGIN = { 90, 5, 0, false, HUF + 582, NULL };
-const hq_header_t HQ_PURPOSE_PREFETCH = { 91, 5, 6, false, HUF + 900, HUF + 905 };
-const hq_header_t HQ_SERVER = { 92, 5, 0, false, HUF + 911, NULL };
-const hq_header_t HQ_TIMING_ALLOW_ORIGIN_STAR = { 93, 14, 1, false, HUF + 916, HUF + 286 };
-const hq_header_t HQ_UPGRADE_INSECURE_REQUESTS_1 = { 94, 18, 1, false, HUF + 930, HUF + 879 };
-const hq_header_t HQ_USER_AGENT = { 95, 7, 0, false, HUF + 948, NULL };
-const hq_header_t HQ_X_FORWARDED_FOR = { 96, 11, 0, false, HUF + 955, NULL };
-const hq_header_t HQ_X_FRAME_OPTIONS_DENY = { 97, 11, 3, false, HUF + 966, HUF + 977 };
-const hq_header_t HQ_X_FRAME_OPTIONS_SAMEORIGIN = { 98, 11, 7, false, HUF + 966, HUF + 980 };
+const hq_header HQ_AUTHORITY = { 0, 8, 0, false, HUF + 0, NULL };
+const hq_header HQ_PATH_SLASH = { 1, 4, 1, false, HUF + 8, HUF + 12 };
+const hq_header HQ_AGE_0 = { 2, 2, 1, false, HUF + 13, HUF + 15 };
+const hq_header HQ_CONTENT_DISPOSITION = { 3, 13, 0, false, HUF + 16, NULL };
+const hq_header HQ_CONTENT_LENGTH_0 = { 4, 10, 1, false, HUF + 29, HUF + 15 };
+const hq_header HQ_COOKIE = { 5, 4, 0, false, HUF + 39, NULL };
+const hq_header HQ_DATE = { 6, 3, 0, false, HUF + 43, NULL };
+const hq_header HQ_ETAG = { 7, 3, 0, false, HUF + 46, NULL };
+const hq_header HQ_IF_MODIFIED_SINCE = { 8, 12, 0, false, HUF + 49, NULL };
+const hq_header HQ_IF_NONE_MATCH = { 9, 9, 0, false, HUF + 61, NULL };
+const hq_header HQ_LAST_MODIFIED = { 10, 9, 0, false, HUF + 70, NULL };
+const hq_header HQ_LINK = { 11, 3, 0, false, HUF + 79, NULL };
+const hq_header HQ_LOCATION = { 12, 6, 0, false, HUF + 82, NULL };
+const hq_header HQ_REFERER = { 13, 5, 0, false, HUF + 88, NULL };
+const hq_header HQ_SET_COOKIE = { 14, 7, 0, false, HUF + 93, NULL };
+const hq_header HQ_METHOD_CONNECT = { 15, 5, 7, false, HUF + 100, HUF + 105 };
+const hq_header HQ_METHOD_DELETE = { 16, 5, 6, false, HUF + 100, HUF + 112 };
+const hq_header HQ_METHOD_GET = { 17, 5, 3, false, HUF + 100, HUF + 118 };
+const hq_header HQ_METHOD_HEAD = { 18, 5, 4, false, HUF + 100, HUF + 121 };
+const hq_header HQ_METHOD_OPTIONS = { 19, 5, 7, false, HUF + 100, HUF + 125 };
+const hq_header HQ_METHOD_POST = { 20, 5, 4, false, HUF + 100, HUF + 132 };
+const hq_header HQ_METHOD_PUT = { 21, 5, 3, false, HUF + 100, HUF + 136 };
+const hq_header HQ_SCHEME_HTTP = { 22, 5, 3, false, HUF + 139, HUF + 144 };
+const hq_header HQ_SCHEME_HTTPS = { 23, 5, 4, false, HUF + 139, HUF + 147 };
+const hq_header HQ_STATUS_103 = { 24, 5, 2, false, HUF + 151, HUF + 156 };
+const hq_header HQ_STATUS_200 = { 25, 5, 2, false, HUF + 151, HUF + 158 };
+const hq_header HQ_STATUS_304 = { 26, 5, 3, false, HUF + 151, HUF + 160 };
+const hq_header HQ_STATUS_404 = { 27, 5, 3, false, HUF + 151, HUF + 163 };
+const hq_header HQ_STATUS_503 = { 28, 5, 3, false, HUF + 151, HUF + 166 };
+const hq_header HQ_ACCEPT_STAR_STAR = { 29, 4, 3, false, HUF + 169, HUF + 173 };
+const hq_header HQ_ACCEPT_APPLICATION_DNS_MESSAGE = { 30, 4, 16, false, HUF + 169, HUF + 176 };
+const hq_header HQ_ACCEPT_ENCODING_GZIP_DEFLATE_BR = { 31, 11, 13, false, HUF + 192, HUF + 203 };
+const hq_header HQ_ACCEPT_RANGES_BYTES = { 32, 9, 4, false, HUF + 216, HUF + 225 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CACHE_CONTROL = { 33, 20, 9, false, HUF + 229, HUF + 249 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CONTENT_TYPE = { 34, 20, 9, false, HUF + 229, HUF + 258 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_ORIGIN_STAR = { 35, 19, 1, false, HUF + 267, HUF + 286 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_0 = { 36, 9, 7, false, HUF + 249, HUF + 287 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_2592000 = { 37, 9, 11, false, HUF + 249, HUF + 294 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_604800 = { 38, 9, 10, false, HUF + 249, HUF + 305 };
+const hq_header HQ_CACHE_CONTROL_NO_CACHE = { 39, 9, 6, false, HUF + 249, HUF + 315 };
+const hq_header HQ_CACHE_CONTROL_NO_STORE = { 40, 9, 6, false, HUF + 249, HUF + 321 };
+const hq_header HQ_CACHE_CONTROL_PUBLIC_MAX_AGE_31536000 = { 41, 9, 18, false, HUF + 249, HUF + 327 };
+const hq_header HQ_CONTENT_ENCODING_BR = { 42, 11, 2, false, HUF + 345, HUF + 356 };
+const hq_header HQ_CONTENT_ENCODING_GZIP = { 43, 11, 3, false, HUF + 345, HUF + 358 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_DNS_MESSAGE = { 44, 9, 16, false, HUF + 258, HUF + 176 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_JAVASCRIPT = { 45, 9, 16, false, HUF + 258, HUF + 361 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_JSON = { 46, 9, 11, false, HUF + 258, HUF + 377 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_X_WWW_FORM_URLENCODED = { 47, 9, 24, false, HUF + 258, HUF + 388 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_GIF = { 48, 9, 7, false, HUF + 258, HUF + 412 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_JPEG = { 49, 9, 8, false, HUF + 258, HUF + 419 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_PNG = { 50, 9, 7, false, HUF + 258, HUF + 427 };
+const hq_header HQ_CONTENT_TYPE_TEXT_CSS = { 51, 9, 6, false, HUF + 258, HUF + 434 };
+const hq_header HQ_CONTENT_TYPE_TEXT_HTML_CHARSET_UTF_8 = { 52, 9, 18, false, HUF + 258, HUF + 440 };
+const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN = { 53, 9, 7, false, HUF + 258, HUF + 458 };
+const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN_CHARSET_UTF_8 = { 54, 9, 17, false, HUF + 258, HUF + 465 };
+const hq_header HQ_RANGE_BYTES_0_ = { 55, 4, 6, false, HUF + 482, HUF + 486 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000 = { 56, 17, 12, false, HUF + 492, HUF + 509 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS = { 57, 17, 25, false, HUF + 492, HUF + 521 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS_PRELOAD = { 58, 17, 32, false, HUF + 492, HUF + 546 };
+const hq_header HQ_VARY_ACCEPT_ENCODING = { 59, 4, 11, false, HUF + 578, HUF + 192 };
+const hq_header HQ_VARY_ORIGIN = { 60, 4, 5, false, HUF + 578, HUF + 582 };
+const hq_header HQ_X_CONTENT_TYPE_OPTIONS_NOSNIFF = { 61, 16, 5, false, HUF + 587, HUF + 603 };
+const hq_header HQ_X_XSS_PROTECTION_1_MODE_BLOCK = { 62, 12, 10, false, HUF + 608, HUF + 620 };
+const hq_header HQ_STATUS_100 = { 63, 5, 2, false, HUF + 151, HUF + 630 };
+const hq_header HQ_STATUS_204 = { 64, 5, 2, false, HUF + 151, HUF + 632 };
+const hq_header HQ_STATUS_206 = { 65, 5, 2, false, HUF + 151, HUF + 634 };
+const hq_header HQ_STATUS_302 = { 66, 5, 2, false, HUF + 151, HUF + 636 };
+const hq_header HQ_STATUS_400 = { 67, 5, 2, false, HUF + 151, HUF + 638 };
+const hq_header HQ_STATUS_403 = { 68, 5, 3, false, HUF + 151, HUF + 640 };
+const hq_header HQ_STATUS_421 = { 69, 5, 2, false, HUF + 151, HUF + 643 };
+const hq_header HQ_STATUS_425 = { 70, 5, 3, false, HUF + 151, HUF + 645 };
+const hq_header HQ_STATUS_500 = { 71, 5, 2, false, HUF + 151, HUF + 648 };
+const hq_header HQ_ACCEPT_LANGUAGE = { 72, 11, 0, false, HUF + 650, NULL };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_FALSE = { 73, 22, 5, false, HUF + 661, HUF + 683 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_TRUE = { 74, 22, 4, false, HUF + 661, HUF + 688 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_STAR = { 75, 20, 1, false, HUF + 229, HUF + 286 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET = { 76, 20, 2, false, HUF + 692, HUF + 712 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET_POST_OPTIONS = { 77, 20, 13, false, HUF + 692, HUF + 714 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_OPTIONS = { 78, 20, 5, false, HUF + 692, HUF + 727 };
+const hq_header HQ_ACCESS_CONTROL_EXPOSE_HEADERS_CONTENT_LENGTH = { 79, 20, 10, false, HUF + 732, HUF + 29 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_HEADERS_CONTENT_TYPE = { 80, 21, 9, false, HUF + 752, HUF + 258 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_GET = { 81, 20, 2, false, HUF + 773, HUF + 712 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_POST = { 82, 20, 3, false, HUF + 773, HUF + 793 };
+const hq_header HQ_ALT_SVC_CLEAR = { 83, 5, 4, false, HUF + 796, HUF + 801 };
+const hq_header HQ_AUTHORIZATION = { 84, 9, 0, false, HUF + 805, NULL };
+const hq_header HQ_CONTENT_SECURITY_POLICY_SCRIPT_SRC_NONE_OBJECT_SRC_NONE_BASE_URI_NONE = { 85, 16, 42, false, HUF + 814, HUF + 830 };
+const hq_header HQ_EARLY_DATA_1 = { 86, 7, 1, false, HUF + 872, HUF + 879 };
+const hq_header HQ_EXPECT_CT = { 87, 7, 0, false, HUF + 880, NULL };
+const hq_header HQ_FORWARDED = { 88, 7, 0, false, HUF + 887, NULL };
+const hq_header HQ_IF_RANGE = { 89, 6, 0, false, HUF + 894, NULL };
+const hq_header HQ_ORIGIN = { 90, 5, 0, false, HUF + 582, NULL };
+const hq_header HQ_PURPOSE_PREFETCH = { 91, 5, 6, false, HUF + 900, HUF + 905 };
+const hq_header HQ_SERVER = { 92, 5, 0, false, HUF + 911, NULL };
+const hq_header HQ_TIMING_ALLOW_ORIGIN_STAR = { 93, 14, 1, false, HUF + 916, HUF + 286 };
+const hq_header HQ_UPGRADE_INSECURE_REQUESTS_1 = { 94, 18, 1, false, HUF + 930, HUF + 879 };
+const hq_header HQ_USER_AGENT = { 95, 7, 0, false, HUF + 948, NULL };
+const hq_header HQ_X_FORWARDED_FOR = { 96, 11, 0, false, HUF + 955, NULL };
+const hq_header HQ_X_FRAME_OPTIONS_DENY = { 97, 11, 3, false, HUF + 966, HUF + 977 };
+const hq_header HQ_X_FRAME_OPTIONS_SAMEORIGIN = { 98, 11, 7, false, HUF + 966, HUF + 980 };
 
 
 
@@ -677,7 +677,7 @@ static int write_literal(qslice_t *s, uint8_t hdr, uint8_t mask, const void *dat
 	if (s->p + len > s->e) {
 		return -1;
 	}
-	s->p = append(s->p, data, len);
+	s->p = append_mem(s->p, data, len);
 	return 0;
 }
 
@@ -724,7 +724,7 @@ static const hq_dict_entry_t *lookup_entry(qslice_t *s, uint8_t mask, const hq_d
 
 #define HUFFMAN_ENCODED 0x80
 
-int hq_decode_header(qslice_t *s, qslice_t *buf, const hq_dictionary_t *dict, hq_header_t *h) {
+int hq_decode_header(qslice_t *s, qslice_t *buf, const hq_dictionary_t *dict, hq_header *h) {
 	assert(s->p < s->e);
 	uint8_t hdr = *(s->p);
 	h->static_index = -1;
@@ -785,7 +785,7 @@ int hq_decode_header(qslice_t *s, qslice_t *buf, const hq_dictionary_t *dict, hq
 	}
 }
 
-int hq_encode_header(qslice_t *s, const hq_header_t *hdr, const void *value, size_t len, int flags) {
+int hq_encode_header(qslice_t *s, const hq_header *hdr, const void *value, size_t len, int flags) {
 	if (hdr->static_index >= 0) {
 		if (!value) {
 			return write_integer(s, INDEX_BOTH | INDEX_BOTH_STATIC, INDEX_BOTH_INDEX, (uint64_t)hdr->static_index);

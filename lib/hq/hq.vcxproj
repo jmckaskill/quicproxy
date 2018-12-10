@@ -23,10 +23,16 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="file.c" />
+    <ClCompile Include="h1.c" />
     <ClCompile Include="qpack.c" />
     <ClCompile Include="qpack_test.c" />
+    <ClCompile Include="test_http.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="file.h" />
+    <ClInclude Include="h1.h" />
+    <ClInclude Include="http.h" />
     <ClInclude Include="qpack.h" />
   </ItemGroup>
   <ItemGroup>

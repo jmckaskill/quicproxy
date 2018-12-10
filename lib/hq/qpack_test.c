@@ -4,6 +4,7 @@
 #include <cutils/hash.h>
 #include <cutils/vector.h>
 #include <ctype.h>
+#include <limits.h>
 
 struct csym {
 	unsigned off;
@@ -279,7 +280,7 @@ int main(int argc, const char *argv[]) {
 	while (s.p < s.e) {
 		sbuf.p = bigbuf;
 		sbuf.e = bigbuf + sizeof(bigbuf);
-		hq_header_t h;
+		hq_header h;
 		EXPECT_EQ(0, hq_decode_header(&s, &sbuf, NULL, &h));
 		char *key = (char*)sbuf.p;
 		ssize_t ksz = hq_huffman_decode(&sbuf, h.key, h.key_len);
@@ -292,8 +293,8 @@ int main(int argc, const char *argv[]) {
 	}
 	LOG(log, "%d vs %d", (int)total, (int)sizeof(unpack_test));
 
-	static const hq_header_t static_medium = { .static_index = 80 };
-	static const hq_header_t static_large = { .static_index = INT_MAX };
+	static const hq_header static_medium = { .static_index = 80 };
+	static const hq_header static_large = { .static_index = INT_MAX };
 	sbuf.p = bigbuf;
 	sbuf.e = bigbuf + sizeof(bigbuf);
 	EXPECT_EQ(0, hq_encode_header(&sbuf, &HQ_METHOD_GET, NULL, 0, 0));
