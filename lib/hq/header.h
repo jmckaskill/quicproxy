@@ -5,31 +5,31 @@
 #define HQ_MAX_HEADERS UINT8_C(128)
 #define HQ_MAX_HEADER_SIZE 4096
 
-#define HQ_HEADER_COMPRESSED 0x4000
-#define HQ_HEADER_SECURE 0x8000
-#define HQ_HEADER_VALUE_SHIFT 2
+#define HQ_HEADER_COMPRESSED 1
+#define HQ_HEADER_SECURE 2
+#define HQ_HEADER_VALUE_LEN_SHIFT 2
 
 typedef struct hq_header hq_header;
 struct hq_header {
-	const void *key, *value;
-	uint32_t hash;
-	uint16_t value_len : 14;
-	uint16_t compressed : 1;
-	uint16_t secure : 1;
+	const void *key;
+	const void *value;
+	uint16_t value_flags;
 	uint8_t key_len;
-	int8_t next;
+	uint8_t hash;
+	uint8_t next;
+	uint8_t h2_static;
+	uint8_t hq_static;
 };
 
 typedef struct hq_header_table hq_header_table;
 struct hq_header_table {
-	const br_hash_class *digest;
-	int8_t table[HQ_HEADER_TABLE_SIZE];
+	uint8_t table[HQ_HEADER_TABLE_SIZE];
 	hq_header headers[HQ_MAX_HEADERS];
-	uint32_t used[HQ_MAX_HEADERS / 32];
+	uint32_t used[(HQ_MAX_HEADERS + 31) / 32];
 };
 
-void hq_hdr_init(hq_header_table *t);
 int hq_hdr_set(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags);
+int hq_hdr_add(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags);
 int hq_hdr_remove(hq_header_table *t, const hq_header *h);
 
 const hq_header *hq_hdr_get(hq_header_table *t, const hq_header *h);
@@ -41,7 +41,7 @@ ssize_t hq_encode_key(void *buf, size_t bufsz, const char *data, size_t len);
 ssize_t hq_decode_value(void *buf, size_t bufsz, const uint8_t *data, size_t len);
 int hq_verify_key(const uint8_t *data, size_t len);
 
-uint32_t hq_compute_hash(const uint8_t *key, size_t len);
+uint8_t hq_compute_hash(const uint8_t *key, size_t len);
 
 extern const hq_header HQ_AUTHORITY;
 extern const hq_header HQ_PATH_SLASH;

@@ -9,7 +9,7 @@
 struct csym {
 	unsigned off;
 	unsigned sz;
-	uint32_t hash;
+	uint8_t hash;
 	str_t c;
 };
 
@@ -112,9 +112,9 @@ static void print_headers(log_t *log, bool declare) {
 		if (declare) {
 			LOG(log, "extern const hq_header HQ%s%s;", k->c.c_str, v ? v->c.c_str : "");
 		} else if (v) {
-			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, %u, %u, 1, 0, %u, 0 };", k->c.c_str, v->c.c_str, k->off, v->off, k->hash, v->sz, k->sz);
+			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, (%u<<2)|1, %u, %u, 0, 0, %u };", k->c.c_str, v->c.c_str, k->off, v->off, v->sz, k->sz, k->hash, (unsigned)i+1);
 		} else {
-			LOG(log, "const hq_header HQ%s = { HUF+%u, NULL, %u, 0, 1, 0, %u, 0 };", k->c.c_str, k->off, k->hash, k->sz);
+			LOG(log, "const hq_header HQ%s = { HUF+%u, NULL, 0, %u, %u, 0, 0, %u };", k->c.c_str, k->off, k->sz, k->hash, (unsigned)i+1);
 		}
 	}
 }
@@ -336,9 +336,28 @@ int main(int argc, const char *argv[]) {
 	LOG(log, "");
 	print_headers(log, true);
 
-	hq_header_table t;
-	hq_hdr_init(&t);
+#if 1
+	hq_header_table t = { 0 };
+	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_CACHE_CONTROL_MAX_AGE_0, NULL, 0, 0));
+	EXPECT_EQ(0, hq_hdr_add(&t, &HQ_CACHE_CONTROL_NO_CACHE, NULL, 0, 0));
+	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_CONTENT_TYPE_IMAGE_GIF, NULL, 0, 0));
+	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_CONTENT_TYPE_APPLICATION_DNS_MESSAGE, "test", 4, 0));
 	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_AUTHORITY, "www.google.com", strlen("www.google.com"), 0));
+	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_IF_NONE_MATCH, NULL, 0, 0));
+	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_CONTENT_LENGTH_0, NULL, 0, 0));
+	EXPECT_PTREQ(NULL, hq_hdr_get(&t, &HQ_STATUS_200));
+	const hq_header *n = hq_hdr_get(&t, &HQ_CONTENT_TYPE_TEXT_PLAIN);
+	EXPECT_TRUE(n != NULL);
+	EXPECT_STREQ(n->value, "test");
+	hq_header h = { 0 };
+	strcpy((char*)buf, "Content-Type");
+	h.key_len = (uint8_t)hq_encode_key(buf, sizeof(buf), (char*)buf, strlen("Content-Type"));
+	h.key = buf;
+	h.hash = hq_compute_hash(h.key, h.key_len);
+	n = hq_hdr_get(&t, &h);
+	EXPECT_TRUE(n != NULL);
+	EXPECT_STREQ(n->value, "test");
+#endif
 
 	return finish_test();
 }

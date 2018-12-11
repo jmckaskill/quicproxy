@@ -2,126 +2,138 @@
 #include <cutils/endian.h>
 
 #define ARRAYSZ(A) (sizeof(A) / sizeof((A)[0]))
-static_assert(HQ_MAX_HEADERS <= 128, "header index must be fit in one byte");
+static_assert(HQ_MAX_HEADERS+1 < 256, "header index must fit in one byte");
 
-static bool hdr_key_equals(const hq_header *a, uint32_t hash, const void *key, size_t len) {
-	return a->key == key
-		|| (a->key_len == len && a->hash == hash && !memcmp(a->key, key, len));
+static bool hdr_key_equals(const hq_header *a, const hq_header *b) {
+	return a->key == b->key
+		|| (a->key_len == b->key_len && a->hash == b->hash && !memcmp(a->key, b->key, a->key_len));
 }
 
-static int8_t find_empty_index(hq_header_table *t) {
-	for (int8_t i = 0; i < ARRAYSZ(t->used); i++) {
+static uint8_t find_empty_index(hq_header_table *t) {
+	for (uint8_t i = 0; i < ARRAYSZ(t->used); i++) {
 		if (t->used[i] != ~UINT32_C(0)) {
-			return (i * 32) + ctz(~t->used[i]);
+			return (i * 32) + ctz(~t->used[i]) + 1;
 		}
 	}
-	return -1;
+	return 0;
 }
 
-static void remove_header(hq_header_table *t, int8_t *pidx) {
-	int8_t idx = *pidx;
-	t->used[idx >> 5] &= ~(1 << (idx & 31));
-	*pidx = t->headers[idx].next;
+static hq_header *get_header(hq_header_table *t, uint8_t idx) {
+	assert(idx && idx < HQ_MAX_HEADERS);
+	return &t->headers[idx - 1];
 }
 
-static int8_t *find_header(hq_header_table *t, uint32_t hash, const void *key, size_t len, bool *pfound) {
-	int8_t *ret = &t->table[hash % HQ_HEADER_TABLE_SIZE];
-	*pfound = false;
-	while (*ret >= 0) {
-		if (hdr_key_equals(&t->headers[*ret], hash, key, len)) {
-			*pfound = true;
-			break;
+static hq_header *insert_header(hq_header_table *t, uint8_t idx) {
+	int off = idx - 1;
+	assert(idx && idx < HQ_MAX_HEADERS && !(t->used[off >> 5] & (1 << (off & 31))));
+	t->used[off >> 5] |= 1 << (off & 31);
+	return &t->headers[off];
+}
+
+static void remove_header(hq_header_table *t, uint8_t *pidx) {
+	int off = *pidx - 1;
+	assert(*pidx && *pidx < HQ_MAX_HEADERS && (t->used[off >> 5] & (1 << (off & 31))));
+	t->used[off >> 5] &= ~(1 << (off & 31));
+	*pidx = t->headers[off].next;
+}
+
+static bool find_header(hq_header_table *t, const hq_header *k, uint8_t **ppidx) {
+	*ppidx = &t->table[k->hash];
+	while (**ppidx) {
+		hq_header *h = get_header(t, **ppidx);
+		if (hdr_key_equals(h, k)) {
+			return true;
 		}
-		ret = &t->headers[*ret].next;
+		*ppidx = &h->next;
 	}
-	return ret;
+	return false;
 }
 
-uint32_t hq_compute_hash(const uint8_t *key, size_t len) {
+uint8_t hq_compute_hash(const uint8_t *key, size_t len) {
 	// FNV-1a using the 32b parameters
 	uint32_t u = UINT32_C(0x811c9dc5);
 	for (size_t i = 0; i < len; i++) {
 		u ^= key[i];
 		u *= 16777619;
 	}
-	return u;
+	return (uint8_t)(u % HQ_HEADER_TABLE_SIZE);
 }
 
-void hq_hdr_init(hq_header_table *t) {
-	memset(t->used, 0, sizeof(t->used));
-	memset(t->table, -1, sizeof(t->table));
-}
-
-int hq_hdr_set(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags) {
+static int do_insert(hq_header_table *t, uint8_t *pidx, const hq_header *h, const void *value, size_t len, int flags) {
 	if (len > HQ_MAX_HEADER_SIZE) {
 		return -1;
 	}
 
-	if (!value) {
-		value = h->value;
-		len = h->value_len;
-		flags = (h->compressed ? HQ_HEADER_COMPRESSED : 0) | (h->secure ? HQ_HEADER_SECURE : 0);
-	}
-
-	bool found;
-	int8_t *p = find_header(t, h->hash, h->key, h->key_len, &found);
-
-	// remove the existing header values
-	if (found) {
-		do {
-			remove_header(t, p);
-		} while (*p >= 0 && hdr_key_equals(&t->headers[*p], h->hash, h->key, h->key_len));
-	}
-
-	int8_t hidx = find_empty_index(t);
-	if (hidx < 0) {
+	uint8_t hidx = find_empty_index(t);
+	if (!hidx) {
 		return -1;
 	}
 
 	// create the new header entry
-	hq_header *c = &t->headers[hidx];
-	c->hash = h->hash;
-	c->key = h->key;
-	c->key_len = h->key_len;
-	c->value = value;
-	c->value_len = (uint16_t)len;
-	c->compressed = (flags & HQ_HEADER_COMPRESSED) ? 1 : 0;
-	c->secure = (flags & HQ_HEADER_SECURE) ? 1 : 0;
-
+	hq_header *c = insert_header(t, hidx);
+	*c = *h;
+	if (value) {
+		c->value = value;
+		c->value_flags = (uint16_t)flags | ((uint16_t)len << HQ_HEADER_VALUE_LEN_SHIFT);
+	}
+	
 	// and insert it into the chain
-	c->next = *p;
-	*p = hidx;
+	c->next = *pidx;
+	*pidx = hidx;
 	return 0;
 }
 
-int hq_hdr_remove(hq_header_table *t, const hq_header *h) {
-	bool found;
-	int8_t *p = find_header(t, h->hash, h->key, h->key_len, &found);
-	if (found) {
+int hq_hdr_set(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags) {
+	uint8_t *pidx;
+
+	// remove the existing entries
+	if (find_header(t, h, &pidx)) {
 		do {
-			remove_header(t, p);
-		} while (*p >= 0 && hdr_key_equals(&t->headers[*p], h->hash, h->key, h->key_len));
-		return 0;
-	} else {
+			remove_header(t, pidx);
+		} while (*pidx && hdr_key_equals(get_header(t, *pidx), h));
+	}
+
+	return do_insert(t, pidx, h, value, len, flags);
+}
+
+int hq_hdr_add(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags) {
+	uint8_t *pidx;
+
+	// find the end of the existing chain
+	if (find_header(t, h, &pidx)) {
+		do {
+			hq_header *n = get_header(t, *pidx);
+			pidx = &n->next;
+		} while (*pidx && hdr_key_equals(get_header(t, *pidx), h));
+	}
+
+	return do_insert(t, pidx, h, value, len, flags);
+}
+
+int hq_hdr_remove(hq_header_table *t, const hq_header *h) {
+	uint8_t *pidx;
+	if (!find_header(t, h, &pidx)) {
 		return -1;
 	}
+
+	do {
+		remove_header(t, pidx);
+	} while (*pidx && hdr_key_equals(get_header(t, *pidx), h));
+
+	return 0;
 }
 
 const hq_header *hq_hdr_get(hq_header_table *t, const hq_header *h) {
-	bool found;
-	int8_t *p = find_header(t, h->hash, h->key, h->key_len, &found);
-	return found ? &t->headers[*p] : NULL;
+	uint8_t *pidx;
+	return find_header(t, h, &pidx) ? get_header(t, *pidx) : NULL;
 }
 
 const hq_header *hq_hdr_next(hq_header_table *t, const hq_header *h) {
-	assert(t->headers <= h && h < &t->headers[ARRAYSZ(t->headers)]);
-	int8_t idx = (int8_t)(h - t->headers);
-	assert(t->used[idx >> 5] & (1 << (idx & 31)));
-	if (h->next < 0) {
+	if (!h->next) {
 		return NULL;
 	}
-	const hq_header *n = &t->headers[h->next];
-	return hdr_key_equals(n, h->hash, h->key, h->key_len) ? n : NULL;
+	const hq_header *n = get_header(t, h->next);
+	return hdr_key_equals(n, h) ? n : NULL;
 }
 
 const uint32_t hq_hdr_encoder[] = {
@@ -542,104 +554,102 @@ static const uint8_t HUF[] = {
 	144, 181, 122,  // deny
 	64, 233, 41, 236, 52, 198, 171,  // sameorigin
 };
-
-const hq_header HQ_AUTHORITY = { HUF + 0, NULL, 0, 0, 1, 0, 8, 0 };
-const hq_header HQ_PATH_SLASH = { HUF + 8, HUF + 12, 0, 1, 1, 0, 4, 0 };
-const hq_header HQ_AGE_0 = { HUF + 13, HUF + 15, 0, 1, 1, 0, 2, 0 };
-const hq_header HQ_CONTENT_DISPOSITION = { HUF + 16, NULL, 0, 0, 1, 0, 13, 0 };
-const hq_header HQ_CONTENT_LENGTH_0 = { HUF + 29, HUF + 15, 0, 1, 1, 0, 10, 0 };
-const hq_header HQ_COOKIE = { HUF + 39, NULL, 0, 0, 1, 0, 4, 0 };
-const hq_header HQ_DATE = { HUF + 43, NULL, 0, 0, 1, 0, 3, 0 };
-const hq_header HQ_ETAG = { HUF + 46, NULL, 0, 0, 1, 0, 3, 0 };
-const hq_header HQ_IF_MODIFIED_SINCE = { HUF + 49, NULL, 0, 0, 1, 0, 12, 0 };
-const hq_header HQ_IF_NONE_MATCH = { HUF + 61, NULL, 0, 0, 1, 0, 9, 0 };
-const hq_header HQ_LAST_MODIFIED = { HUF + 70, NULL, 0, 0, 1, 0, 9, 0 };
-const hq_header HQ_LINK = { HUF + 79, NULL, 0, 0, 1, 0, 3, 0 };
-const hq_header HQ_LOCATION = { HUF + 82, NULL, 0, 0, 1, 0, 6, 0 };
-const hq_header HQ_REFERER = { HUF + 88, NULL, 0, 0, 1, 0, 5, 0 };
-const hq_header HQ_SET_COOKIE = { HUF + 93, NULL, 0, 0, 1, 0, 7, 0 };
-const hq_header HQ_METHOD_CONNECT = { HUF + 100, HUF + 105, 0, 7, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_DELETE = { HUF + 100, HUF + 112, 0, 6, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_GET = { HUF + 100, HUF + 118, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_HEAD = { HUF + 100, HUF + 121, 0, 4, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_OPTIONS = { HUF + 100, HUF + 125, 0, 7, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_POST = { HUF + 100, HUF + 132, 0, 4, 1, 0, 5, 0 };
-const hq_header HQ_METHOD_PUT = { HUF + 100, HUF + 136, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_SCHEME_HTTP = { HUF + 139, HUF + 144, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_SCHEME_HTTPS = { HUF + 139, HUF + 147, 0, 4, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_103 = { HUF + 151, HUF + 156, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_200 = { HUF + 151, HUF + 158, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_304 = { HUF + 151, HUF + 160, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_404 = { HUF + 151, HUF + 163, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_503 = { HUF + 151, HUF + 166, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_ACCEPT_STAR_STAR = { HUF + 169, HUF + 173, 0, 3, 1, 0, 4, 0 };
-const hq_header HQ_ACCEPT_APPLICATION_DNS_MESSAGE = { HUF + 169, HUF + 176, 0, 16, 1, 0, 4, 0 };
-const hq_header HQ_ACCEPT_ENCODING_GZIP_DEFLATE_BR = { HUF + 192, HUF + 203, 0, 13, 1, 0, 11, 0 };
-const hq_header HQ_ACCEPT_RANGES_BYTES = { HUF + 216, HUF + 225, 0, 4, 1, 0, 9, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CACHE_CONTROL = { HUF + 229, HUF + 249, 0, 9, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CONTENT_TYPE = { HUF + 229, HUF + 258, 0, 9, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_ORIGIN_STAR = { HUF + 267, HUF + 286, 0, 1, 1, 0, 19, 0 };
-const hq_header HQ_CACHE_CONTROL_MAX_AGE_0 = { HUF + 249, HUF + 287, 0, 7, 1, 0, 9, 0 };
-const hq_header HQ_CACHE_CONTROL_MAX_AGE_2592000 = { HUF + 249, HUF + 294, 0, 11, 1, 0, 9, 0 };
-const hq_header HQ_CACHE_CONTROL_MAX_AGE_604800 = { HUF + 249, HUF + 305, 0, 10, 1, 0, 9, 0 };
-const hq_header HQ_CACHE_CONTROL_NO_CACHE = { HUF + 249, HUF + 315, 0, 6, 1, 0, 9, 0 };
-const hq_header HQ_CACHE_CONTROL_NO_STORE = { HUF + 249, HUF + 321, 0, 6, 1, 0, 9, 0 };
-const hq_header HQ_CACHE_CONTROL_PUBLIC_MAX_AGE_31536000 = { HUF + 249, HUF + 327, 0, 18, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_ENCODING_BR = { HUF + 345, HUF + 356, 0, 2, 1, 0, 11, 0 };
-const hq_header HQ_CONTENT_ENCODING_GZIP = { HUF + 345, HUF + 358, 0, 3, 1, 0, 11, 0 };
-const hq_header HQ_CONTENT_TYPE_APPLICATION_DNS_MESSAGE = { HUF + 258, HUF + 176, 0, 16, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_APPLICATION_JAVASCRIPT = { HUF + 258, HUF + 361, 0, 16, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_APPLICATION_JSON = { HUF + 258, HUF + 377, 0, 11, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_APPLICATION_X_WWW_FORM_URLENCODED = { HUF + 258, HUF + 388, 0, 24, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_IMAGE_GIF = { HUF + 258, HUF + 412, 0, 7, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_IMAGE_JPEG = { HUF + 258, HUF + 419, 0, 8, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_IMAGE_PNG = { HUF + 258, HUF + 427, 0, 7, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_TEXT_CSS = { HUF + 258, HUF + 434, 0, 6, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_TEXT_HTML_CHARSET_UTF_8 = { HUF + 258, HUF + 440, 0, 18, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN = { HUF + 258, HUF + 458, 0, 7, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN_CHARSET_UTF_8 = { HUF + 258, HUF + 465, 0, 17, 1, 0, 9, 0 };
-const hq_header HQ_RANGE_BYTES_0_ = { HUF + 482, HUF + 486, 0, 6, 1, 0, 4, 0 };
-const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000 = { HUF + 492, HUF + 509, 0, 12, 1, 0, 17, 0 };
-const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS = { HUF + 492, HUF + 521, 0, 25, 1, 0, 17, 0 };
-const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS_PRELOAD = { HUF + 492, HUF + 546, 0, 32, 1, 0, 17, 0 };
-const hq_header HQ_VARY_ACCEPT_ENCODING = { HUF + 578, HUF + 192, 0, 11, 1, 0, 4, 0 };
-const hq_header HQ_VARY_ORIGIN = { HUF + 578, HUF + 582, 0, 5, 1, 0, 4, 0 };
-const hq_header HQ_X_CONTENT_TYPE_OPTIONS_NOSNIFF = { HUF + 587, HUF + 603, 0, 5, 1, 0, 16, 0 };
-const hq_header HQ_X_XSS_PROTECTION_1_MODE_BLOCK = { HUF + 608, HUF + 620, 0, 10, 1, 0, 12, 0 };
-const hq_header HQ_STATUS_100 = { HUF + 151, HUF + 630, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_204 = { HUF + 151, HUF + 632, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_206 = { HUF + 151, HUF + 634, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_302 = { HUF + 151, HUF + 636, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_400 = { HUF + 151, HUF + 638, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_403 = { HUF + 151, HUF + 640, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_421 = { HUF + 151, HUF + 643, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_425 = { HUF + 151, HUF + 645, 0, 3, 1, 0, 5, 0 };
-const hq_header HQ_STATUS_500 = { HUF + 151, HUF + 648, 0, 2, 1, 0, 5, 0 };
-const hq_header HQ_ACCEPT_LANGUAGE = { HUF + 650, NULL, 0, 0, 1, 0, 11, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_FALSE = { HUF + 661, HUF + 683, 0, 5, 1, 0, 22, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_TRUE = { HUF + 661, HUF + 688, 0, 4, 1, 0, 22, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_STAR = { HUF + 229, HUF + 286, 0, 1, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET = { HUF + 692, HUF + 712, 0, 2, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET_POST_OPTIONS = { HUF + 692, HUF + 714, 0, 13, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_OPTIONS = { HUF + 692, HUF + 727, 0, 5, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_EXPOSE_HEADERS_CONTENT_LENGTH = { HUF + 732, HUF + 29, 0, 10, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_REQUEST_HEADERS_CONTENT_TYPE = { HUF + 752, HUF + 258, 0, 9, 1, 0, 21, 0 };
-const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_GET = { HUF + 773, HUF + 712, 0, 2, 1, 0, 20, 0 };
-const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_POST = { HUF + 773, HUF + 793, 0, 3, 1, 0, 20, 0 };
-const hq_header HQ_ALT_SVC_CLEAR = { HUF + 796, HUF + 801, 0, 4, 1, 0, 5, 0 };
-const hq_header HQ_AUTHORIZATION = { HUF + 805, NULL, 0, 0, 1, 0, 9, 0 };
-const hq_header HQ_CONTENT_SECURITY_POLICY_SCRIPT_SRC_NONE_OBJECT_SRC_NONE_BASE_URI_NONE = { HUF + 814, HUF + 830, 0, 42, 1, 0, 16, 0 };
-const hq_header HQ_EARLY_DATA_1 = { HUF + 872, HUF + 879, 0, 1, 1, 0, 7, 0 };
-const hq_header HQ_EXPECT_CT = { HUF + 880, NULL, 0, 0, 1, 0, 7, 0 };
-const hq_header HQ_FORWARDED = { HUF + 887, NULL, 0, 0, 1, 0, 7, 0 };
-const hq_header HQ_IF_RANGE = { HUF + 894, NULL, 0, 0, 1, 0, 6, 0 };
-const hq_header HQ_ORIGIN = { HUF + 582, NULL, 0, 0, 1, 0, 5, 0 };
-const hq_header HQ_PURPOSE_PREFETCH = { HUF + 900, HUF + 905, 0, 6, 1, 0, 5, 0 };
-const hq_header HQ_SERVER = { HUF + 911, NULL, 0, 0, 1, 0, 5, 0 };
-const hq_header HQ_TIMING_ALLOW_ORIGIN_STAR = { HUF + 916, HUF + 286, 0, 1, 1, 0, 14, 0 };
-const hq_header HQ_UPGRADE_INSECURE_REQUESTS_1 = { HUF + 930, HUF + 879, 0, 1, 1, 0, 18, 0 };
-const hq_header HQ_USER_AGENT = { HUF + 948, NULL, 0, 0, 1, 0, 7, 0 };
-const hq_header HQ_X_FORWARDED_FOR = { HUF + 955, NULL, 0, 0, 1, 0, 11, 0 };
-const hq_header HQ_X_FRAME_OPTIONS_DENY = { HUF + 966, HUF + 977, 0, 3, 1, 0, 11, 0 };
-const hq_header HQ_X_FRAME_OPTIONS_SAMEORIGIN = { HUF + 966, HUF + 980, 0, 7, 1, 0, 11, 0 };
-
+const hq_header HQ_AUTHORITY = { HUF + 0, NULL, 0, 8, 2, 0, 0, 1 };
+const hq_header HQ_PATH_SLASH = { HUF + 8, HUF + 12, (1 << 2) | 1, 4, 30, 0, 0, 2 };
+const hq_header HQ_AGE_0 = { HUF + 13, HUF + 15, (1 << 2) | 1, 2, 26, 0, 0, 3 };
+const hq_header HQ_CONTENT_DISPOSITION = { HUF + 16, NULL, 0, 13, 1, 0, 0, 4 };
+const hq_header HQ_CONTENT_LENGTH_0 = { HUF + 29, HUF + 15, (1 << 2) | 1, 10, 0, 0, 0, 5 };
+const hq_header HQ_COOKIE = { HUF + 39, NULL, 0, 4, 22, 0, 0, 6 };
+const hq_header HQ_DATE = { HUF + 43, NULL, 0, 3, 7, 0, 0, 7 };
+const hq_header HQ_ETAG = { HUF + 46, NULL, 0, 3, 27, 0, 0, 8 };
+const hq_header HQ_IF_MODIFIED_SINCE = { HUF + 49, NULL, 0, 12, 20, 0, 0, 9 };
+const hq_header HQ_IF_NONE_MATCH = { HUF + 61, NULL, 0, 9, 0, 0, 0, 10 };
+const hq_header HQ_LAST_MODIFIED = { HUF + 70, NULL, 0, 9, 19, 0, 0, 11 };
+const hq_header HQ_LINK = { HUF + 79, NULL, 0, 3, 17, 0, 0, 12 };
+const hq_header HQ_LOCATION = { HUF + 82, NULL, 0, 6, 24, 0, 0, 13 };
+const hq_header HQ_REFERER = { HUF + 88, NULL, 0, 5, 30, 0, 0, 14 };
+const hq_header HQ_SET_COOKIE = { HUF + 93, NULL, 0, 7, 22, 0, 0, 15 };
+const hq_header HQ_METHOD_CONNECT = { HUF + 100, HUF + 105, (7 << 2) | 1, 5, 1, 0, 0, 16 };
+const hq_header HQ_METHOD_DELETE = { HUF + 100, HUF + 112, (6 << 2) | 1, 5, 1, 0, 0, 17 };
+const hq_header HQ_METHOD_GET = { HUF + 100, HUF + 118, (3 << 2) | 1, 5, 1, 0, 0, 18 };
+const hq_header HQ_METHOD_HEAD = { HUF + 100, HUF + 121, (4 << 2) | 1, 5, 1, 0, 0, 19 };
+const hq_header HQ_METHOD_OPTIONS = { HUF + 100, HUF + 125, (7 << 2) | 1, 5, 1, 0, 0, 20 };
+const hq_header HQ_METHOD_POST = { HUF + 100, HUF + 132, (4 << 2) | 1, 5, 1, 0, 0, 21 };
+const hq_header HQ_METHOD_PUT = { HUF + 100, HUF + 136, (3 << 2) | 1, 5, 1, 0, 0, 22 };
+const hq_header HQ_SCHEME_HTTP = { HUF + 139, HUF + 144, (3 << 2) | 1, 5, 16, 0, 0, 23 };
+const hq_header HQ_SCHEME_HTTPS = { HUF + 139, HUF + 147, (4 << 2) | 1, 5, 16, 0, 0, 24 };
+const hq_header HQ_STATUS_103 = { HUF + 151, HUF + 156, (2 << 2) | 1, 5, 7, 0, 0, 25 };
+const hq_header HQ_STATUS_200 = { HUF + 151, HUF + 158, (2 << 2) | 1, 5, 7, 0, 0, 26 };
+const hq_header HQ_STATUS_304 = { HUF + 151, HUF + 160, (3 << 2) | 1, 5, 7, 0, 0, 27 };
+const hq_header HQ_STATUS_404 = { HUF + 151, HUF + 163, (3 << 2) | 1, 5, 7, 0, 0, 28 };
+const hq_header HQ_STATUS_503 = { HUF + 151, HUF + 166, (3 << 2) | 1, 5, 7, 0, 0, 29 };
+const hq_header HQ_ACCEPT_STAR_STAR = { HUF + 169, HUF + 173, (3 << 2) | 1, 4, 27, 0, 0, 30 };
+const hq_header HQ_ACCEPT_APPLICATION_DNS_MESSAGE = { HUF + 169, HUF + 176, (16 << 2) | 1, 4, 27, 0, 0, 31 };
+const hq_header HQ_ACCEPT_ENCODING_GZIP_DEFLATE_BR = { HUF + 192, HUF + 203, (13 << 2) | 1, 11, 3, 0, 0, 32 };
+const hq_header HQ_ACCEPT_RANGES_BYTES = { HUF + 216, HUF + 225, (4 << 2) | 1, 9, 9, 0, 0, 33 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CACHE_CONTROL = { HUF + 229, HUF + 249, (9 << 2) | 1, 20, 29, 0, 0, 34 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_CONTENT_TYPE = { HUF + 229, HUF + 258, (9 << 2) | 1, 20, 29, 0, 0, 35 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_ORIGIN_STAR = { HUF + 267, HUF + 286, (1 << 2) | 1, 19, 22, 0, 0, 36 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_0 = { HUF + 249, HUF + 287, (7 << 2) | 1, 9, 23, 0, 0, 37 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_2592000 = { HUF + 249, HUF + 294, (11 << 2) | 1, 9, 23, 0, 0, 38 };
+const hq_header HQ_CACHE_CONTROL_MAX_AGE_604800 = { HUF + 249, HUF + 305, (10 << 2) | 1, 9, 23, 0, 0, 39 };
+const hq_header HQ_CACHE_CONTROL_NO_CACHE = { HUF + 249, HUF + 315, (6 << 2) | 1, 9, 23, 0, 0, 40 };
+const hq_header HQ_CACHE_CONTROL_NO_STORE = { HUF + 249, HUF + 321, (6 << 2) | 1, 9, 23, 0, 0, 41 };
+const hq_header HQ_CACHE_CONTROL_PUBLIC_MAX_AGE_31536000 = { HUF + 249, HUF + 327, (18 << 2) | 1, 9, 23, 0, 0, 42 };
+const hq_header HQ_CONTENT_ENCODING_BR = { HUF + 345, HUF + 356, (2 << 2) | 1, 11, 13, 0, 0, 43 };
+const hq_header HQ_CONTENT_ENCODING_GZIP = { HUF + 345, HUF + 358, (3 << 2) | 1, 11, 13, 0, 0, 44 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_DNS_MESSAGE = { HUF + 258, HUF + 176, (16 << 2) | 1, 9, 15, 0, 0, 45 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_JAVASCRIPT = { HUF + 258, HUF + 361, (16 << 2) | 1, 9, 15, 0, 0, 46 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_JSON = { HUF + 258, HUF + 377, (11 << 2) | 1, 9, 15, 0, 0, 47 };
+const hq_header HQ_CONTENT_TYPE_APPLICATION_X_WWW_FORM_URLENCODED = { HUF + 258, HUF + 388, (24 << 2) | 1, 9, 15, 0, 0, 48 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_GIF = { HUF + 258, HUF + 412, (7 << 2) | 1, 9, 15, 0, 0, 49 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_JPEG = { HUF + 258, HUF + 419, (8 << 2) | 1, 9, 15, 0, 0, 50 };
+const hq_header HQ_CONTENT_TYPE_IMAGE_PNG = { HUF + 258, HUF + 427, (7 << 2) | 1, 9, 15, 0, 0, 51 };
+const hq_header HQ_CONTENT_TYPE_TEXT_CSS = { HUF + 258, HUF + 434, (6 << 2) | 1, 9, 15, 0, 0, 52 };
+const hq_header HQ_CONTENT_TYPE_TEXT_HTML_CHARSET_UTF_8 = { HUF + 258, HUF + 440, (18 << 2) | 1, 9, 15, 0, 0, 53 };
+const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN = { HUF + 258, HUF + 458, (7 << 2) | 1, 9, 15, 0, 0, 54 };
+const hq_header HQ_CONTENT_TYPE_TEXT_PLAIN_CHARSET_UTF_8 = { HUF + 258, HUF + 465, (17 << 2) | 1, 9, 15, 0, 0, 55 };
+const hq_header HQ_RANGE_BYTES_0_ = { HUF + 482, HUF + 486, (6 << 2) | 1, 4, 27, 0, 0, 56 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000 = { HUF + 492, HUF + 509, (12 << 2) | 1, 17, 4, 0, 0, 57 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS = { HUF + 492, HUF + 521, (25 << 2) | 1, 17, 4, 0, 0, 58 };
+const hq_header HQ_STRICT_TRANSPORT_SECURITY_MAX_AGE_31536000_INCLUDESUBDOMAINS_PRELOAD = { HUF + 492, HUF + 546, (32 << 2) | 1, 17, 4, 0, 0, 59 };
+const hq_header HQ_VARY_ACCEPT_ENCODING = { HUF + 578, HUF + 192, (11 << 2) | 1, 4, 18, 0, 0, 60 };
+const hq_header HQ_VARY_ORIGIN = { HUF + 578, HUF + 582, (5 << 2) | 1, 4, 18, 0, 0, 61 };
+const hq_header HQ_X_CONTENT_TYPE_OPTIONS_NOSNIFF = { HUF + 587, HUF + 603, (5 << 2) | 1, 16, 16, 0, 0, 62 };
+const hq_header HQ_X_XSS_PROTECTION_1_MODE_BLOCK = { HUF + 608, HUF + 620, (10 << 2) | 1, 12, 27, 0, 0, 63 };
+const hq_header HQ_STATUS_100 = { HUF + 151, HUF + 630, (2 << 2) | 1, 5, 7, 0, 0, 64 };
+const hq_header HQ_STATUS_204 = { HUF + 151, HUF + 632, (2 << 2) | 1, 5, 7, 0, 0, 65 };
+const hq_header HQ_STATUS_206 = { HUF + 151, HUF + 634, (2 << 2) | 1, 5, 7, 0, 0, 66 };
+const hq_header HQ_STATUS_302 = { HUF + 151, HUF + 636, (2 << 2) | 1, 5, 7, 0, 0, 67 };
+const hq_header HQ_STATUS_400 = { HUF + 151, HUF + 638, (2 << 2) | 1, 5, 7, 0, 0, 68 };
+const hq_header HQ_STATUS_403 = { HUF + 151, HUF + 640, (3 << 2) | 1, 5, 7, 0, 0, 69 };
+const hq_header HQ_STATUS_421 = { HUF + 151, HUF + 643, (2 << 2) | 1, 5, 7, 0, 0, 70 };
+const hq_header HQ_STATUS_425 = { HUF + 151, HUF + 645, (3 << 2) | 1, 5, 7, 0, 0, 71 };
+const hq_header HQ_STATUS_500 = { HUF + 151, HUF + 648, (2 << 2) | 1, 5, 7, 0, 0, 72 };
+const hq_header HQ_ACCEPT_LANGUAGE = { HUF + 650, NULL, 0, 11, 0, 0, 0, 73 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_FALSE = { HUF + 661, HUF + 683, (5 << 2) | 1, 22, 14, 0, 0, 74 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_CREDENTIALS_TRUE = { HUF + 661, HUF + 688, (4 << 2) | 1, 22, 14, 0, 0, 75 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_HEADERS_STAR = { HUF + 229, HUF + 286, (1 << 2) | 1, 20, 29, 0, 0, 76 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET = { HUF + 692, HUF + 712, (2 << 2) | 1, 20, 4, 0, 0, 77 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_GET_POST_OPTIONS = { HUF + 692, HUF + 714, (13 << 2) | 1, 20, 4, 0, 0, 78 };
+const hq_header HQ_ACCESS_CONTROL_ALLOW_METHODS_OPTIONS = { HUF + 692, HUF + 727, (5 << 2) | 1, 20, 4, 0, 0, 79 };
+const hq_header HQ_ACCESS_CONTROL_EXPOSE_HEADERS_CONTENT_LENGTH = { HUF + 732, HUF + 29, (10 << 2) | 1, 20, 5, 0, 0, 80 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_HEADERS_CONTENT_TYPE = { HUF + 752, HUF + 258, (9 << 2) | 1, 21, 7, 0, 0, 81 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_GET = { HUF + 773, HUF + 712, (2 << 2) | 1, 20, 17, 0, 0, 82 };
+const hq_header HQ_ACCESS_CONTROL_REQUEST_METHOD_POST = { HUF + 773, HUF + 793, (3 << 2) | 1, 20, 17, 0, 0, 83 };
+const hq_header HQ_ALT_SVC_CLEAR = { HUF + 796, HUF + 801, (4 << 2) | 1, 5, 16, 0, 0, 84 };
+const hq_header HQ_AUTHORIZATION = { HUF + 805, NULL, 0, 9, 4, 0, 0, 85 };
+const hq_header HQ_CONTENT_SECURITY_POLICY_SCRIPT_SRC_NONE_OBJECT_SRC_NONE_BASE_URI_NONE = { HUF + 814, HUF + 830, (42 << 2) | 1, 16, 25, 0, 0, 86 };
+const hq_header HQ_EARLY_DATA_1 = { HUF + 872, HUF + 879, (1 << 2) | 1, 7, 18, 0, 0, 87 };
+const hq_header HQ_EXPECT_CT = { HUF + 880, NULL, 0, 7, 15, 0, 0, 88 };
+const hq_header HQ_FORWARDED = { HUF + 887, NULL, 0, 7, 21, 0, 0, 89 };
+const hq_header HQ_IF_RANGE = { HUF + 894, NULL, 0, 6, 21, 0, 0, 90 };
+const hq_header HQ_ORIGIN = { HUF + 582, NULL, 0, 5, 18, 0, 0, 91 };
+const hq_header HQ_PURPOSE_PREFETCH = { HUF + 900, HUF + 905, (6 << 2) | 1, 5, 12, 0, 0, 92 };
+const hq_header HQ_SERVER = { HUF + 911, NULL, 0, 5, 20, 0, 0, 93 };
+const hq_header HQ_TIMING_ALLOW_ORIGIN_STAR = { HUF + 916, HUF + 286, (1 << 2) | 1, 14, 15, 0, 0, 94 };
+const hq_header HQ_UPGRADE_INSECURE_REQUESTS_1 = { HUF + 930, HUF + 879, (1 << 2) | 1, 18, 17, 0, 0, 95 };
+const hq_header HQ_USER_AGENT = { HUF + 948, NULL, 0, 7, 12, 0, 0, 96 };
+const hq_header HQ_X_FORWARDED_FOR = { HUF + 955, NULL, 0, 11, 31, 0, 0, 97 };
+const hq_header HQ_X_FRAME_OPTIONS_DENY = { HUF + 966, HUF + 977, (3 << 2) | 1, 11, 23, 0, 0, 98 };
+const hq_header HQ_X_FRAME_OPTIONS_SAMEORIGIN = { HUF + 966, HUF + 980, (7 << 2) | 1, 11, 23, 0, 0, 99 };

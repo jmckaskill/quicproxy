@@ -39,67 +39,61 @@
 typedef struct hq_stream_class hq_stream_class;
 struct hq_stream_class {
 	size_t context_size;
-	void(*init)(const hq_stream_class **vt, const hq_stream_class **upstream);
+	void(*init)(const hq_stream_class **vt);
 
-	// The stream class abstracts a unidirectional pipe where we pull data through
-	// the pipe starting at the downstream node pulling from the upstream nodes.
-	// An example where a client requests a file that is transparently compressed.
-	// Client App Response <- Client Library Receiving <- Server Library Sending
-	// <- Server App Compressor <- Server App File Reader <- Server App Dispatcher
-	// <- Server Library Receiving <- Client Library Sending <- Client App Request
+	// The stream class abstracts both a source and sink of data. Data is pulled
+	// from the sink through many intermediate notes to an originating source.
+	// An HTTP client for example is just a filter that takes a source of data
+	// (the request body) and produces a source of data (the response body) that is
+	// fed into a sink. Likewise an HTTP server expects to both be a source (the 
+	// request body) and a sink (the place to put the response body).
 
-	// Upstream API - call these to get data from/notify upstream
+	void(*set_source)(const hq_stream_class **vt, const hq_stream_class **source);
+	void(*set_sink)(const hq_stream_class **vt, const hq_stream_class **sink);
 
-	void(*set_downstream)(const hq_stream_class **vt, const hq_stream_class **down);
+	// Source API - call these on a source node
 
-	// Data is read from the upstream node. The upstream node is responsible for
+	// Data is read from the source. The source is responsible for
 	// buffering that data. Returned buffers MUST not be modified until a call to <read>.
-	// Calls of both headers and data with a variety of offsets can be intermixed.
-	// These call can return:
-	// +ve - number of items available in the returned pointer (bytes for <peek_data>, headers for <peek_header>)
-	// 0   - no more items available
+	// This call can return:
+	// +ve - number of bytes available in the returned pointer
+	// 0   - end of file
 	// -ve - permanent error
 	// HQ_TRY_AGAIN - try again after consuming data or after the <read_ready> notification
-	const hq_header*(*peek_header)(const hq_stream_class **vt, size_t idx);
-	ssize_t(*peek_data)(const hq_stream_class **vt, uint64_t off, const void **pdata);
+	ssize_t(*peek)(const hq_stream_class **vt, uint64_t off, const void **pdata);
 
-	// Some time after reading data, the downstream node will have consumed the buffer. At that
-	// point the downstream node will call this indicating the header and data offsets
-	// that are completed. Any data before that point doesn't need to be buffered any longer.
-	// Also data MAY be compacted/pointers moved around before the next read call.
-	// <header_idx> MAY be SIZE_T_MAX indicating that all header buffers can be removed.
-	void(*read)(const hq_stream_class **vt, size_t header_idx, uint64_t data_off);
+	// Some time after reading data, the sink will have consumed the buffer. At that
+	// point the sink will call this indicating the amount of data consumed. Data that
+	// is consumed no longer needs to be buffered. At the same time the source
+	// may compact any other data. Buffer pointers from previous read calls are no longer
+	// valid.
+	void(*read)(const hq_stream_class **vt, size_t sz);
 
-	// The downstream node MAY stop reading from upstream at any point. If reads
-	// are not going to resume at a later time, the downstream node SHOULD call this. The upstream
-	// node then MAY stop buffering data and SHOULD tell further upstreams nodes likewise.
+	// The sink MAY stop reading from the source at any point. If reads
+	// are not going to resume at a later time, the sink SHOULD call this. The source
+	// then MAY stop buffering data and SHOULD tell upstream sources likewise.
 	// This is not an error condition and MUST not stop the response from appearing.
 	// An example is a POST that returns a file independent of the POST content.
 	// As soon as we determine which file to use, we can stop the client from needing to
 	// send more POST content.
 	void(*finished)(const hq_stream_class **vt, int errnum);
 
+	// Sink API - call these on a sink
 
-
-	// Downstream API - call these on the downstream object to notify downstream
-
-	// This is used to notify downstream of an asynchronous error. The read functions (read_header,
-	// read-data, consume, and finish_read) MUST not be called after this point. The downstream
-	// node MUST push this further down the chain so that the end downstream node is notified.
-	// The downstream node MUST synchronously cancel any pending usage of returned buffers.
-	// This MUST not be called in a <peek> or <read> callback. Instead a synchronous error MUST
-	// be returned.
+	// This is used to notify a sink of an asynchronous error. The read functions (<peek>, <read>,
+	// and <finished>) MUST not be called after this point. The sink MUST push this further down
+	// the chain so that the end sink is notified. The sink MUST synchronously cancel any pending
+	// usage of buffers from the source. To avoid reentrancy issues, this MUST not be called 
+	// in a <peek> or <read> callback. Instead a synchronous error MUST be returned.
 	void(*abort)(const hq_stream_class **vt, int errnum);
 
-	// This is used to notify downstream that more data can be read. Downstream nodes must be
+	// This is used to notify the sink that more data can be read. Sinks must be
 	// prepared for both edge and level triggered notifications. To get a notification, the
-	// downstream node must read enough to get a TRY_AGAIN. Consumers must also be prepared
+	// sink must read enough to get a TRY_AGAIN. Sinks must also be prepared
 	// for spurious notifications. This allows compression/filter streams to pass the notification
 	// all the way downstream without having to peek through the upstream data to see if there 
 	// is a full sync point or data after filtering.
 	void(*read_ready)(const hq_stream_class **vt);
-
-	int(*set_header)(const hq_stream_class **vt, const hq_header *hdr, const void *value, size_t len, int flags);
 };
 
 typedef struct hq_callback_class hq_callback_class;
