@@ -115,6 +115,14 @@ dirs = [
 ]
 
 [[project]]
+name =  "bin - http-client"
+file = "src/http-client/http-client.vcxproj"
+target = "bin/{TGT}/http-client.exe"
+dirs = [
+	"src/http-client"
+]
+
+[[project]]
 name =  "test - string"
 file = "ext/string_test.vcxproj"
 target = "bin/{TGT}/test_str.exe"

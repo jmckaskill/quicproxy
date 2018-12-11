@@ -62,6 +62,11 @@ build $bin/qproxy-client.exe: clink $
  $obj/bearssl.lib $
  $obj/quic.lib $
 
+build $obj/http-client/http-client.o: cc src/http-client/http-client.c
+build $bin/http-client.exe: clink $
+ $obj/http-client/http-client.o $
+ $obj/cutils.lib $
+
 build $obj/quic/quic_test.o: cc lib/quic/quic_test.c
 build $bin/test_quic.exe: clink $
  $obj/quic/quic_test.o $

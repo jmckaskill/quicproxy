@@ -21,6 +21,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-server", "src\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - qproxy-client", "src\client\client.vcxproj", "{92623FB8-4F1B-5BBD-93C2-DDA902688894}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "bin - http-client", "src\http-client\http-client.vcxproj", "{2A9B906D-0215-5B8A-B6B8-926CC6D40077}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test - string", "ext\string_test.vcxproj", "{91EE5157-3D50-5675-8089-1160E41E802A}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test - header", "lib\hq\header_test.vcxproj", "{A14D2615-39EB-52B7-8826-AAFD2582E009}"
@@ -133,6 +135,17 @@ Global
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|Win32.Build.0 = Release|Win32
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|x64.ActiveCfg = Release|x64
 		{92623FB8-4F1B-5BBD-93C2-DDA902688894}.Release|x64.Build.0 = Release|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Arm-Release|Win32.ActiveCfg = Arm-Release|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Arm-Release|x64.ActiveCfg = Arm-Release|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Arm-Release|x64.Build.0 = Arm-Release|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Debug|Win32.ActiveCfg = Debug|Win32
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Debug|Win32.Build.0 = Debug|Win32
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Debug|x64.ActiveCfg = Debug|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Debug|x64.Build.0 = Debug|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Release|Win32.ActiveCfg = Release|Win32
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Release|Win32.Build.0 = Release|Win32
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Release|x64.ActiveCfg = Release|x64
+		{2A9B906D-0215-5B8A-B6B8-926CC6D40077}.Release|x64.Build.0 = Release|x64
 		{91EE5157-3D50-5675-8089-1160E41E802A}.Arm-Release|Win32.ActiveCfg = Arm-Release|x64
 		{91EE5157-3D50-5675-8089-1160E41E802A}.Arm-Release|x64.ActiveCfg = Arm-Release|x64
 		{91EE5157-3D50-5675-8089-1160E41E802A}.Arm-Release|x64.Build.0 = Arm-Release|x64

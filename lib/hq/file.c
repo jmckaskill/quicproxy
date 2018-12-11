@@ -39,7 +39,7 @@ static void fs_finished(const hq_stream_class **vt, int errnum) {
 const hq_stream_class hq_file_source_vtable = {
 	sizeof(hq_file_source),
 	NULL,
-	NULL,
+	&fs_set_sink,,
 	&fs_peek_header,
 	&fs_peek_data,
 	&fs_read,

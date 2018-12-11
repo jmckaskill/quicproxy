@@ -52,6 +52,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cutils\inc\cutils\apc.h" />
+    <ClInclude Include="cutils\inc\cutils\async.h" />
     <ClInclude Include="cutils\inc\cutils\char-array.h" />
     <ClInclude Include="cutils\inc\cutils\endian.h" />
     <ClInclude Include="cutils\inc\cutils\file.h" />
@@ -61,11 +62,15 @@
     <ClInclude Include="cutils\inc\cutils\log.h" />
     <ClInclude Include="cutils\inc\cutils\mersenne-twister.h" />
     <ClInclude Include="cutils\inc\cutils\path.h" />
+    <ClInclude Include="cutils\inc\cutils\poll.h" />
     <ClInclude Include="cutils\inc\cutils\rbtree.h" />
     <ClInclude Include="cutils\inc\cutils\socket.h" />
     <ClInclude Include="cutils\inc\cutils\str.h" />
     <ClInclude Include="cutils\inc\cutils\stream.h" />
     <ClInclude Include="cutils\inc\cutils\test.h" />
+    <ClInclude Include="cutils\inc\cutils\thread-pthread.h" />
+    <ClInclude Include="cutils\inc\cutils\thread-win32.h" />
+    <ClInclude Include="cutils\inc\cutils\thread.h" />
     <ClInclude Include="cutils\inc\cutils\timer.h" />
     <ClInclude Include="cutils\inc\cutils\utf.h" />
     <ClInclude Include="cutils\inc\cutils\vector.h" />

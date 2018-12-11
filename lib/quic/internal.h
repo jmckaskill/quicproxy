@@ -117,9 +117,7 @@
 #define RETRY_TOKEN_IV 32
 #define RETRY_ID_IV 512
 
-#define ARRAYSZ(A) (sizeof(A) / sizeof((A)[0]))
-#define ALIGN_DOWN(type, u, sz) ((u) &~ ((type)(sz)-1))
-#define ALIGN_UP(type, u, sz) ALIGN_DOWN(type, (u) + (sz) - 1, (sz))
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
