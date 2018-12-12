@@ -34,13 +34,10 @@
 // data_received
 
 
-#define HQ_TRY_AGAIN SSIZE_T_MIN
+#define HQ_PENDING SSIZE_T_MIN
 
 typedef struct hq_stream_class hq_stream_class;
 struct hq_stream_class {
-	size_t context_size;
-	void(*init)(const hq_stream_class **vt);
-
 	// The stream class abstracts both a source and sink of data. Data is pulled
 	// from the sink through many intermediate notes to an originating source.
 	// An HTTP client for example is just a filter that takes a source of data
@@ -59,8 +56,8 @@ struct hq_stream_class {
 	// +ve - number of bytes available in the returned pointer
 	// 0   - end of file
 	// -ve - permanent error
-	// HQ_TRY_AGAIN - try again after consuming data or after the <read_ready> notification
-	ssize_t(*peek)(const hq_stream_class **vt, uint64_t off, const void **pdata);
+	// HQ_PENDING - try again after consuming data or after the <read_ready> notification
+	ssize_t(*peek)(const hq_stream_class **vt, size_t off, const void **pdata);
 
 	// Some time after reading data, the sink will have consumed the buffer. At that
 	// point the sink will call this indicating the amount of data consumed. Data that
@@ -102,7 +99,7 @@ struct hq_callback_class {
 	void(*finish_shutdown)(const hq_callback_class **vt);
 
 	size_t(*send_buffer)(const hq_callback_class **vt, void **pbuf);
-	int(*send)(const hq_callback_class **vt, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *psent);
+	ssize_t(*send)(const hq_callback_class **vt, size_t len, const struct sockaddr *sa, socklen_t salen, tick_t *psent);
 
 	// server callbacks
 	// The server calls new_request when a new request comes in. This should return
@@ -110,11 +107,6 @@ struct hq_callback_class {
 	// on the server side and must be of the specified type. It can (and probably should)
 	// have a downstream node attached that will later process the headers and request data.
 	const hq_stream_class**(*new_request)(const hq_callback_class **vt, const hq_stream_class *request_type);
-
-	// When the server is ready to provide a response. The application should call this to
-	// hand the most downstream node to the library. The library will then begin to pull data
-	// from this node.
-	void(*set_response)(const hq_callback_class **vt, const hq_stream_class **request, const hq_stream_class **response);
 
 	// Once the request has finished, the library will call this with the user supplied request
 	// (most upstream) and response (most downstream) nodes for the application to clean up any
@@ -129,6 +121,7 @@ struct hq_tcp_class {
 	void(*shutdown)(const hq_tcp_class **vt, int error);
 	size_t(*received)(const hq_tcp_class **vt, const void *buf, size_t len);
 	void(*add_request)(const hq_tcp_class **vt, const hq_stream_class **req);
+	void(*set_response)(const hq_callback_class **vt, const hq_stream_class **request, const hq_stream_class **response);
 };
 
 

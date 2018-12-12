@@ -15,7 +15,7 @@ ssize_t fs_peek_data(const hq_stream_class **vt, uint64_t off, const void **pdat
 	if (off >= s->end) {
 		return 0;
 	} else if (off >= s->start + s->bufsz) {
-		return HQ_TRY_AGAIN;
+		return HQ_PENDING;
 	}
 	*pdata = s->buf + (size_t)(off - s->start);
 	return (size_t)(MIN(s->start + s->bufsz, s->end) - off);

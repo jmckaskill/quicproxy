@@ -67,7 +67,9 @@ name =  "lib - cutils"
 file = "ext/cutils.vcxproj"
 target = "bin/obj/{TGT}/cutils.lib"
 dirs = [
+	"ext/cutils",
 	"ext/cutils/src",
+	"ext/cutils/src/async",
 	"ext/cutils/src/rand",
 	"ext/cutils/inc/cutils",
 ]
