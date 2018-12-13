@@ -46,19 +46,12 @@
     <ClCompile Include="cutils\src\utf.c" />
     <ClCompile Include="cutils\src\vector.c" />
     <ClCompile Include="cutils\src\zip-writer.c" />
-    <ClCompile Include="cutils\src\async\async.c" />
-    <ClCompile Include="cutils\src\async\poll.c" />
     <ClCompile Include="cutils\src\rand\mersenne-twister.c" />
     <ClCompile Include="cutils\src\rand\test-bench.cpp" />
     <ClCompile Include="cutils\src\rand\test-mt.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="cutils\src\async\epoll.h" />
-    <ClInclude Include="cutils\src\async\iocp.h" />
-    <ClInclude Include="cutils\src\async\kqueue.h" />
-    <ClInclude Include="cutils\src\async\posix.h" />
     <ClInclude Include="cutils\inc\cutils\apc.h" />
-    <ClInclude Include="cutils\inc\cutils\async.h" />
     <ClInclude Include="cutils\inc\cutils\char-array.h" />
     <ClInclude Include="cutils\inc\cutils\endian.h" />
     <ClInclude Include="cutils\inc\cutils\file.h" />
@@ -68,7 +61,6 @@
     <ClInclude Include="cutils\inc\cutils\log.h" />
     <ClInclude Include="cutils\inc\cutils\mersenne-twister.h" />
     <ClInclude Include="cutils\inc\cutils\path.h" />
-    <ClInclude Include="cutils\inc\cutils\poll.h" />
     <ClInclude Include="cutils\inc\cutils\rbtree.h" />
     <ClInclude Include="cutils\inc\cutils\socket.h" />
     <ClInclude Include="cutils\inc\cutils\str.h" />

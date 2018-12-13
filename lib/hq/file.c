@@ -3,33 +3,31 @@
 #include <cutils/path.h>
 #include <cutils/char-array.h>
 
-static const hq_header *fs_peek_header(const hq_stream_class **vt, size_t idx) {
-	hq_file_source *s = (hq_file_source*)vt;
-	return idx < s->hdr_num ? &s->headers[idx] : NULL;
+static void set_sink(const hq_stream_class **vt, const hq_stream_class **sink) {
+	(void)vt;
+	(void)sink;
 }
 
-ssize_t fs_peek_data(const hq_stream_class **vt, uint64_t off, const void **pdata) {
-	hq_file_source *s = (hq_file_source*)vt;
-	assert(s->file);
-	assert(off >= s->start);
-	if (off >= s->end) {
-		return 0;
-	} else if (off >= s->start + s->bufsz) {
-		return HQ_PENDING;
-	}
-	*pdata = s->buf + (size_t)(off - s->start);
-	return (size_t)(MIN(s->start + s->bufsz, s->end) - off);
-}
-
-static void fs_read(const hq_stream_class **vt, size_t hdr_off, uint64_t data_off) {
+static ssize_t peek_file(const hq_stream_class **vt, size_t off, const void **pdata) {
 	hq_file_source *s = (hq_file_source*)vt;
 	assert(s->file);
-	if (data_off != s->start) {
-		fread(s->buf, 1, s->bufsz, s->file);
+	assert(off <= s->have);
+	if (off >= s->have) {
+		return (s->bufsz == s->have) ? HQ_PENDING : 0;
 	}
+	*pdata = s->buf + off;
+	return s->have - off;
 }
 
-static void fs_finished(const hq_stream_class **vt, int errnum) {
+static void seek_file(const hq_stream_class **vt, size_t sz) {
+	hq_file_source *s = (hq_file_source*)vt;
+	assert(s->file);
+	fseek(s->file, (long)sz, SEEK_CUR);
+	s->have = fread(s->buf, 1, s->bufsz, s->file);
+	fseek(s->file, -(long)s->have, SEEK_CUR);
+}
+
+static void close_file(const hq_stream_class **vt, int errnum) {
 	hq_file_source *s = (hq_file_source*)vt;
 	assert(s->file);
 	fclose(s->file);
@@ -37,52 +35,28 @@ static void fs_finished(const hq_stream_class **vt, int errnum) {
 }
 
 const hq_stream_class hq_file_source_vtable = {
-	sizeof(hq_file_source),
 	NULL,
-	&fs_set_sink,,
-	&fs_peek_header,
-	&fs_peek_data,
-	&fs_read,
+	&set_sink,
+	&peek_file,
+	&seek_file,
+	&close_file,
 	NULL,
 	NULL,
 };
 
 int hq_open_file_source(hq_file_source *s, const char *path, char *buf, size_t bufsz) {
-	FILE *f = fopen_utf8(path, "rb");
-	if (!f) {
+	memset(s, 0, sizeof(*s));
+	s->file = fopen_utf8(path, "rb");
+	if (!s->file) {
 		return -1;
 	}
 	s->vtable = &hq_file_source_vtable;
 	s->buf = buf;
 	s->bufsz = bufsz;
-	s->start = 0;
 
-	setvbuf(f, NULL, _IONBF, 0);
-	fseek(f, 0, SEEK_END);
-#ifdef _MSC_VER
-	s->end = _ftelli64(f);
-#else
-	s->end = ftello(f);
-#endif
-	ca_setf(&s->content_length, "%"PRIu64, s->end);
-	hq_header *h = &s->headers[0];
-
-	*(h++) = HQ_STATUS_200;
-
-	*h = HQ_CONTENT_LENGTH_0;
-	h->value = s->content_length.c_str;
-	h->value_len = s->content_length.len;
-	h->flags = 0;
-	h++;
-
-	fread(buf, 1, bufsz, f);
-	const char *ext = path_file_extension(path);
-	if (!strcasecmp(ext, ".html")) {
-		*(h++) = &HQ_CONTENT_TYPE_TEXT_HTML_CHARSET_UTF_8;
-	} else if (!strcasecmp(ext, ".js")) {
-		*(h++) = &HQ_CONTENT_TYPE_APPLICATION_JAVASCRIPT;
-	}
-
-	s->hdr_num = (size_t)(h - s->headers);
+	setvbuf(s->file, NULL, _IONBF, 0);
+	seek_file(&s->vtable, 0);
 	return 0;
 }
+
+

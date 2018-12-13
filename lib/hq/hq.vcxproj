@@ -27,6 +27,7 @@
     <ClCompile Include="h1.c" />
     <ClCompile Include="header.c" />
     <ClCompile Include="header_test.c" />
+    <ClCompile Include="poll.c" />
     <ClCompile Include="qpack.c" />
     <ClCompile Include="qpack_test.c" />
     <ClCompile Include="test_http.c" />

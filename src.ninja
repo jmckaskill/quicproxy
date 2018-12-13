@@ -65,6 +65,8 @@ build $bin/qproxy-client.exe: clink $
 build $obj/http-client/http-client.o: cc src/http-client/http-client.c
 build $bin/http-client.exe: clink $
  $obj/http-client/http-client.o $
+ $obj/hq/file.o $
+ $obj/hq/poll.o $
  $obj/cutils.lib $
 
 build $obj/quic/quic_test.o: cc lib/quic/quic_test.c
@@ -77,6 +79,8 @@ build $bin/test_quic.exe: clink $
 
 build $obj/hq/qpack.o: cc lib/hq/qpack.c
 build $obj/hq/header.o: cc lib/hq/header.c
+build $obj/hq/poll.o: cc lib/hq/poll.c
+build $obj/hq/file.o: cc lib/hq/file.c
 build $obj/hq.lib: lib $
  $obj/hq/qpack.o $
  $obj/hq/header.o $
