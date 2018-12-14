@@ -17,13 +17,15 @@ static void print_huffman(log_t *log, const char *value, struct csym *sym) {
 	static unsigned offset;
 	uint8_t buf[128];
 	ssize_t sz = hq_encode_value(buf, sizeof(buf), value, strlen(value));
-	EXPECT_GT(sz, 0);
-	sym->c = str_init("_");
-	if (!strcmp(value, "/")) {
-		str_add(&sym->c, "SLASH");
+	EXPECT_GE(sz, 0);
+	if (!strcmp(value, "")) {
+		sym->c = str_init("");
+	} else if (!strcmp(value, "/")) {
+		sym->c = str_init("_SLASH");
 	} else if (!strcmp(value, "*/*")) {
-		str_add(&sym->c, "STAR_STAR");
+		sym->c = str_init("_STAR_STAR");
 	} else {
+		sym->c = str_init("_");
 		for (size_t i = 0; value[i]; i++) {
 			char ch = value[i];
 			if (ch == ':' || ch == '\'' || ((ch == ';' || ch == ',') && value[i + 1] == ' ')) {
@@ -39,12 +41,14 @@ static void print_huffman(log_t *log, const char *value, struct csym *sym) {
 			}
 		}
 	}
-	str_t data = STR_INIT;
-	for (ssize_t i = 0; i < sz; i++) {
-		str_addf(&data, "%d,%s", buf[i], (i && !(i&15) && (i+1) < sz) ? "\n\t" : " ");
+	if (sz) {
+		str_t data = STR_INIT;
+		for (ssize_t i = 0; i < sz; i++) {
+			str_addf(&data, "%d,%s", buf[i], (i && !(i & 15) && (i + 1) < sz) ? "\n\t" : " ");
+		}
+		LOG(log, "\t%s // %s", data.c_str, value);
+		str_destroy(&data);
 	}
-	LOG(log, "\t%s // %s", data.c_str, value);
-	str_destroy(&data);
 	sym->off = offset;
 	sym->sz = (unsigned)sz;
 	sym->hash = hq_compute_hash(buf, sz);
@@ -69,7 +73,6 @@ static struct {
 static size_t rawlen;
 
 static void insert_header(log_t *log, int index, const char *key, const char *value) {
-	assert(index == (int)headers.size);
 	struct header *h = APPEND_ZERO(&headers);
 	h->index = index;
 
@@ -80,27 +83,28 @@ static void insert_header(log_t *log, int index, const char *key, const char *va
 	}
 	h->key = key;
 
-	if (*value) {
-		idx = INSERT_BLOB_HASH(&symbols, value, strlen(value), &added);
-		if (added) {
-			print_huffman(log, value, &symbols.values[idx]);
-		}
-		h->value = value;
+	idx = INSERT_BLOB_HASH(&symbols, value, strlen(value), &added);
+	if (added) {
+		print_huffman(log, value, &symbols.values[idx]);
 	}
+	h->value = value;
 	rawlen += strlen(key) + strlen(value);
 }
 
 static void print_dictionary(log_t *log) {
 	LOG(log, "static const hq_dict_entry_t entries[] = {");
+	size_t next_index = 0;
 	for (size_t i = 0; i < headers.size; i++) {
 		struct header *h = &headers.v[i];
-		struct csym *k = &symbols.values[FIND_BLOB_HASH(&symbols, h->key, strlen(h->key))];
-		struct csym *v = h->value ? &symbols.values[FIND_BLOB_HASH(&symbols, h->value, strlen(h->value))] : NULL;
-		LOG(log, "\t{ %u, %u, %u, %u },", k->off, k->sz, v ? v->off : 0, v ? v->sz : 0);
+		if (h->index == next_index) {
+			struct csym *k = &symbols.values[FIND_BLOB_HASH(&symbols, h->key, strlen(h->key))];
+			struct csym *v = h->value ? &symbols.values[FIND_BLOB_HASH(&symbols, h->value, strlen(h->value))] : NULL;
+			LOG(log, "\t{ %u, %u, %u, %u },", k->off, k->sz, v ? v->off : 0, v ? v->sz : 0);
+			next_index++;
+		}
 	}
 	LOG(log, "};");
 	LOG(log, "");
-	LOG(log, "const hq_dictionary_t HQ_STATIC_DICT = { HUF, entries, %u, 0, 0, %u };", (unsigned)headers.size, (unsigned)headers.size);
 }
 
 static void print_headers(log_t *log, bool declare) {
@@ -111,10 +115,8 @@ static void print_headers(log_t *log, bool declare) {
 
 		if (declare) {
 			LOG(log, "extern const hq_header HQ%s%s;", k->c.c_str, v ? v->c.c_str : "");
-		} else if (v) {
-			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, (%u<<2)|1, %u, %u, 0, 0, %u };", k->c.c_str, v->c.c_str, k->off, v->off, v->sz, k->sz, k->hash, (unsigned)i+1);
 		} else {
-			LOG(log, "const hq_header HQ%s = { HUF+%u, NULL, 0, %u, %u, 0, 0, %u };", k->c.c_str, k->off, k->sz, k->hash, (unsigned)i+1);
+			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, HQ_HEADER_COMPRESSED, %u, %u, %u, 0 };", k->c.c_str, v->c.c_str, k->off, v->off, v->sz, k->sz, k->hash);
 		}
 	}
 }
@@ -219,14 +221,15 @@ int main(int argc, const char *argv[]) {
 
 	uint8_t buf[4096];
 	uint8_t custom_key[] = { 0x25, 0xa8, 0x49, 0xe9, 0x5b, 0xa9, 0x7d, 0x7f };
-	EXPECT_EQ(sizeof(custom_key), hq_encode_key(buf, sizeof(buf), "Custom-Key", strlen("custom-key")));
+	EXPECT_EQ(sizeof(custom_key), hq_encode_http1_key(buf, sizeof(buf), "Custom-Key", strlen("custom-key")));
 	EXPECT_BYTES_EQ(custom_key, sizeof(custom_key), buf, sizeof(custom_key));
 
-	EXPECT_EQ(0, hq_verify_key(custom_key, sizeof(custom_key)));
-	EXPECT_EQ(-1, hq_verify_key(custom_key, sizeof(custom_key) - 1));
+	EXPECT_EQ(0, hq_verify_http2_key(custom_key, sizeof(custom_key)));
+	EXPECT_EQ(-1, hq_verify_http2_key(custom_key, sizeof(custom_key) - 1));
 
 	LOG(log, "static const uint8_t HUF[] = {");
 	insert_header(log, 0, ":authority", "");
+	insert_header(log, 1, ":path", "");
 	insert_header(log, 1, ":path", "/");
 	insert_header(log, 2, "age", "0");
 	insert_header(log, 3, "content-disposition", "");
@@ -241,6 +244,7 @@ int main(int argc, const char *argv[]) {
 	insert_header(log, 12, "location", "");
 	insert_header(log, 13, "referer", "");
 	insert_header(log, 14, "set-cookie", "");
+	insert_header(log, 15, ":method", "");
 	insert_header(log, 15, ":method", "CONNECT");
 	insert_header(log, 16, ":method", "DELETE");
 	insert_header(log, 17, ":method", "GET");
@@ -250,6 +254,7 @@ int main(int argc, const char *argv[]) {
 	insert_header(log, 21, ":method", "PUT");
 	insert_header(log, 22, ":scheme", "http");
 	insert_header(log, 23, ":scheme", "https");
+	insert_header(log, 24, ":status", "");
 	insert_header(log, 24, ":status", "103");
 	insert_header(log, 25, ":status", "200");
 	insert_header(log, 26, ":status", "304");
@@ -328,15 +333,15 @@ int main(int argc, const char *argv[]) {
 	LOG(log, "};");
 
 	LOG(log, "");
-	print_dictionary(log);
-	LOG(log, "");
 	print_headers(log, false);
 	LOG(log, "");
-	LOG(log, "extern const hq_dictionary_t HQ_STATIC_DICT;");
-	LOG(log, "");
 	print_headers(log, true);
+	LOG(log, "");
+	print_dictionary(log);
+	LOG(log, "");
+	LOG(log, "extern const hq_dictionary_t HQ_STATIC_DICT;");
 
-#if 1
+#if 0
 	hq_header_table t = { 0 };
 	EXPECT_EQ(0, hq_hdr_set(&t, &HQ_CACHE_CONTROL_MAX_AGE_0, NULL, 0, 0));
 	EXPECT_EQ(0, hq_hdr_add(&t, &HQ_CACHE_CONTROL_NO_CACHE, NULL, 0, 0));

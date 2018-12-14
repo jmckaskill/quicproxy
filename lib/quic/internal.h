@@ -6,6 +6,7 @@
 #include "kdf.h"
 #include "signature.h"
 #include <cutils/endian.h>
+#include <cutils/char-array.h>
 #include <cutils/log.h>
 #include <inttypes.h>
 #include <limits.h>

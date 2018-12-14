@@ -2,6 +2,8 @@
 #include <cutils/socket.h>
 #include <cutils/apc.h>
 
+#define HQ_ERR_SUCCESS 0
+#define HQ_ERR_TCP_RESET 1
 #define HQ_PENDING SSIZE_T_MIN
 
 typedef struct hq_stream_class hq_stream_class;
@@ -63,18 +65,17 @@ struct hq_stream_class {
 };
 
 typedef struct hq_callback_class hq_callback_class;
-struct hq_callback_class {
-	// server callbacks
-	// The server calls new_request when a new request comes in. This should return
-	// a stream instance to cover the request. This is the most upstream node
-	// on the server side and must be of the specified type. It can (and probably should)
-	// have a downstream node attached that will later process the headers and request data.
-	const hq_stream_class**(*new_request)(const hq_callback_class **vt, const hq_stream_class *request_type);
+typedef struct hq_connection_class hq_connection_class;
 
-	// Once the request has finished, the library will call this with the user supplied request
-	// (most upstream) and response (most downstream) nodes for the application to clean up any
-	// memory associated with the request.
+struct hq_callback_class {
+	void(*free_connection)(const hq_callback_class **vt, const hq_connection_class **c);
 	void(*free_request)(const hq_callback_class **vt, const hq_stream_class **request, const hq_stream_class **response);
+	const hq_stream_class**(*new_request)(const hq_callback_class **vt, const hq_stream_class *request_type);
+};
+
+struct hq_connection_class {
+	void(*close)(const hq_connection_class **vt, int errnum);
+	void(*add_request)(const hq_connection_class **vt, const hq_stream_class **request);
 };
 
 typedef void(*hq_free_cb)(void*);
@@ -91,7 +92,7 @@ struct hq_poll {
 	size_t num;
 	struct hq_poll_socket *sockets[256];
 	struct pollfd pfd[256];
-	struct hq_poll_socket *free_list;
+	bool dirty;
 };
 
 void hq_init_poll(hq_poll *p);

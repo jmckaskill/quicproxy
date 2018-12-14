@@ -6,8 +6,8 @@ void qbuf_init(qbuffer_t *b, void *buf, size_t size) {
 	// buffer is split into two circular buffers
 	// Data bytes in chunks of 32B
 	// Valid bits in chunks of 32b
-	char *s = (char*)ALIGN_UP(uintptr_t, (uintptr_t)buf, 4);
-	char *e = (char*)ALIGN_DOWN(uintptr_t, (uintptr_t)buf + size, 4);
+	char *s = (char*)ALIGN_UP((uintptr_t)buf, (uintptr_t)4);
+	char *e = (char*)ALIGN_DOWN((uintptr_t)buf + size, (uintptr_t)4);
 	b->size = 32 * ((e - s) / (4 + 32));
 	b->head = 0;
 	b->tail = 0;

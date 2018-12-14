@@ -64,7 +64,7 @@ static void receive_packet(struct connection *c, qpacket_buffer_t *s, uint64_t n
 		s->rx_next = num + 1;
 	} else if (num > s->rx_next) {
 		// a short way
-		size_t shift = (size_t)(s->rx_next - ALIGN_DOWN(uint64_t, s->rx_next, 64));
+		size_t shift = (size_t)(s->rx_next - ALIGN_DOWN(s->rx_next, (uint64_t)64));
 		uint64_t mask = UINT64_C(1) << (num - s->rx_next);
 		mask -= 1; // create a mask of n bits
 		mask = (mask << shift) | (mask >> (64 - shift)); // and rotate left
@@ -95,7 +95,7 @@ uint8_t *q_encode_ack(qpacket_buffer_t *pkts, uint8_t *p, tick_t now, unsigned e
 	unsigned num_blocks = 0;
 
 	// rotate left such that the latest (b.next-1) packet is in the top bit
-	unsigned shift = (unsigned)(ALIGN_UP(uint64_t, pkts->rx_next, 64) - pkts->rx_next);
+	unsigned shift = (unsigned)(ALIGN_UP(pkts->rx_next, (uint64_t)64) - pkts->rx_next);
 	uint64_t rx = (pkts->rx_mask << shift) | (pkts->rx_mask >> (64 - shift));
 
 	// and shift the latest packet out

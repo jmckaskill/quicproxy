@@ -7,25 +7,24 @@
 
 #define HQ_HEADER_COMPRESSED 1
 #define HQ_HEADER_SECURE 2
-#define HQ_HEADER_VALUE_LEN_SHIFT 2
+#define HQ_HEADER_KEY_FLAGS 3
 
 typedef struct hq_header hq_header;
 struct hq_header {
 	const void *key;
 	const void *value;
-	uint16_t value_flags;
+	uint16_t flags;
+	uint16_t value_len;
 	uint8_t key_len;
 	uint8_t hash;
 	uint8_t next;
-	uint8_t h2_static;
-	uint8_t hq_static;
 };
 
 typedef struct hq_header_table hq_header_table;
 struct hq_header_table {
 	uint8_t table[HQ_HEADER_TABLE_SIZE];
+	uint8_t next;
 	hq_header headers[HQ_MAX_HEADERS];
-	uint32_t used[(HQ_MAX_HEADERS + 31) / 32];
 };
 
 int hq_hdr_set(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags);
@@ -37,13 +36,15 @@ const hq_header *hq_hdr_next(hq_header_table *t, const hq_header *h);
 
 extern const uint32_t hq_hdr_encoder[];
 ssize_t hq_encode_value(void *buf, size_t bufsz, const char *data, size_t len);
-ssize_t hq_encode_key(void *buf, size_t bufsz, const char *data, size_t len);
+ssize_t hq_encode_http1_key(void *buf, size_t bufsz, const char *data, size_t len);
+ssize_t hq_encode_http2_key(void *buf, size_t bufsz, const char *data, size_t len);
 ssize_t hq_decode_value(void *buf, size_t bufsz, const uint8_t *data, size_t len);
-int hq_verify_key(const uint8_t *data, size_t len);
+int hq_verify_http2_key(const uint8_t *data, size_t len);
 
 uint8_t hq_compute_hash(const uint8_t *key, size_t len);
 
 extern const hq_header HQ_AUTHORITY;
+extern const hq_header HQ_PATH;
 extern const hq_header HQ_PATH_SLASH;
 extern const hq_header HQ_AGE_0;
 extern const hq_header HQ_CONTENT_DISPOSITION;
@@ -58,6 +59,7 @@ extern const hq_header HQ_LINK;
 extern const hq_header HQ_LOCATION;
 extern const hq_header HQ_REFERER;
 extern const hq_header HQ_SET_COOKIE;
+extern const hq_header HQ_METHOD;
 extern const hq_header HQ_METHOD_CONNECT;
 extern const hq_header HQ_METHOD_DELETE;
 extern const hq_header HQ_METHOD_GET;
@@ -67,6 +69,7 @@ extern const hq_header HQ_METHOD_POST;
 extern const hq_header HQ_METHOD_PUT;
 extern const hq_header HQ_SCHEME_HTTP;
 extern const hq_header HQ_SCHEME_HTTPS;
+extern const hq_header HQ_STATUS;
 extern const hq_header HQ_STATUS_103;
 extern const hq_header HQ_STATUS_200;
 extern const hq_header HQ_STATUS_304;
@@ -142,4 +145,6 @@ extern const hq_header HQ_USER_AGENT;
 extern const hq_header HQ_X_FORWARDED_FOR;
 extern const hq_header HQ_X_FRAME_OPTIONS_DENY;
 extern const hq_header HQ_X_FRAME_OPTIONS_SAMEORIGIN;
+
+
 
