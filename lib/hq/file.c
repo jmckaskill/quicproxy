@@ -35,11 +35,11 @@ static void close_file(const hq_stream_class **vt, int errnum) {
 }
 
 const hq_stream_class hq_file_source_vtable = {
-	NULL,
 	&set_sink,
 	&peek_file,
 	&seek_file,
 	&close_file,
+	NULL,
 	NULL,
 	NULL,
 };

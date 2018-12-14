@@ -2,52 +2,20 @@
 #include <cutils/socket.h>
 #include <cutils/apc.h>
 
-// create a connection object
-// create a request
-// push a bunch of headers at the request
-// this encodes them ready for sending
-// assign the request to the connection
-// this buffers the request pending the connection being open
-// for HTTP/1.1, that's when the socket becomes connected
-// for HTTP/2, once the TLS handshake finishes
-// for HTTP/QUIC, once the handshake finishes
-// Once the request has been assigned to a connection, it sits pending
-// and will send as soon as we can. This could be extended to multi
-// connection pools if we wanted to.
-// When creating the connection we can use a interface that has implementations for:
-// - HTTP/1.0 & 1.1 (single & pooled)
-// - HTTP/2
-// - HTTP/QUIC
-// The interface would need to have
-// init
-// shutdown
-// flush stream
-// receive
-// And a callback interface with
-// closed
-// shutdown
-// send
-// new_request
-// free_request
-// data_sent
-// data_received
-
-
 #define HQ_PENDING SSIZE_T_MIN
 
 typedef struct hq_stream_class hq_stream_class;
 struct hq_stream_class {
 	// The stream class abstracts both a source and sink of data. Data is pulled
 	// from the sink through many intermediate notes to an originating source.
-	// An HTTP client for example is just a filter that takes a source of data
+	// An HTTP client for example is just a sink that takes a source of data
 	// (the request body) and produces a source of data (the response body) that is
 	// fed into a sink. Likewise an HTTP server expects to both be a source (the 
 	// request body) and a sink (the place to put the response body).
 
-	void(*set_source)(const hq_stream_class **vt, const hq_stream_class **source);
-	void(*set_sink)(const hq_stream_class **vt, const hq_stream_class **sink);
-
 	// Source API - call these on a source node
+	// All four functions must be implemented for a node to act as a source
+	void(*set_sink)(const hq_stream_class **vt, const hq_stream_class **sink);
 
 	// Data is read from the source. The source is responsible for
 	// buffering that data. Returned buffers MUST not be modified until a call to <seek>.
@@ -72,9 +40,11 @@ struct hq_stream_class {
 	// An example is a POST that returns a file independent of the POST content.
 	// As soon as we determine which file to use, we can stop the client from needing to
 	// send more POST content.
-	void(*close_read)(const hq_stream_class **vt, int errnum);
+	void(*close)(const hq_stream_class **vt, int errnum);
 
 	// Sink API - call these on a sink
+	// All three functions must be implemented for a node to act as a sink
+	void(*set_source)(const hq_stream_class **vt, const hq_stream_class **source);
 
 	// This is used to notify a sink of an asynchronous error. The read functions (<peek>, <seek>,
 	// and <finished>) MUST not be called after this point. The sink MUST push this further down
@@ -89,7 +59,7 @@ struct hq_stream_class {
 	// for spurious notifications. This allows compression/filter streams to pass the notification
 	// all the way downstream without having to peek through the upstream data to see if there 
 	// is a full sync point or data after filtering.
-	void(*read_ready)(const hq_stream_class **vt);
+	void(*notify)(const hq_stream_class **vt);
 };
 
 typedef struct hq_callback_class hq_callback_class;
@@ -121,6 +91,7 @@ struct hq_poll {
 	size_t num;
 	struct hq_poll_socket *sockets[256];
 	struct pollfd pfd[256];
+	struct hq_poll_socket *free_list;
 };
 
 void hq_init_poll(hq_poll *p);
