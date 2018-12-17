@@ -30,6 +30,7 @@
     <ClCompile Include="poll.c" />
     <ClCompile Include="qpack.c" />
     <ClCompile Include="qpack_test.c" />
+    <ClCompile Include="request.c" />
     <ClCompile Include="test_http.c" />
   </ItemGroup>
   <ItemGroup>

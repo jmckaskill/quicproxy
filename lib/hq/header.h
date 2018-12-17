@@ -11,7 +11,7 @@
 
 typedef struct hq_header hq_header;
 struct hq_header {
-	const void *key;
+	const uint8_t *key;
 	const void *value;
 	uint16_t flags;
 	uint16_t value_len;
@@ -31,8 +31,8 @@ int hq_hdr_set(hq_header_table *t, const hq_header *h, const void *value, size_t
 int hq_hdr_add(hq_header_table *t, const hq_header *h, const void *value, size_t len, int flags);
 int hq_hdr_remove(hq_header_table *t, const hq_header *h);
 
-const hq_header *hq_hdr_get(hq_header_table *t, const hq_header *h);
-const hq_header *hq_hdr_next(hq_header_table *t, const hq_header *h);
+const hq_header *hq_hdr_get(const hq_header_table *t, const hq_header *h);
+const hq_header *hq_hdr_next(const hq_header_table *t, const hq_header *h);
 
 extern const uint32_t hq_hdr_encoder[];
 ssize_t hq_encode_value(void *buf, size_t bufsz, const char *data, size_t len);
@@ -42,6 +42,10 @@ ssize_t hq_decode_value(void *buf, size_t bufsz, const uint8_t *data, size_t len
 int hq_verify_http2_key(const uint8_t *data, size_t len);
 
 uint8_t hq_compute_hash(const uint8_t *key, size_t len);
+
+static inline bool hq_is_pseudo_header(const hq_header *h) {
+	return (h->key[0] >> 1) == 0x5C;
+}
 
 extern const hq_header HQ_AUTHORITY;
 extern const hq_header HQ_PATH;
