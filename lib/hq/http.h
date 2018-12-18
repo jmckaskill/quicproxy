@@ -6,6 +6,7 @@
 #define HQ_ERR_SUCCESS 0
 #define HQ_ERR_TCP_RESET -1
 #define HQ_ERR_INVALID_REQUEST -2
+#define HQ_ERR_APP_RESET -3
 #define HQ_PENDING SSIZE_T_MIN
 
 typedef struct hq_stream_class hq_stream_class;
@@ -26,7 +27,7 @@ struct hq_stream_class {
 	// 0   - end of file
 	// -ve - permanent error
 	// HQ_PENDING - try again after consuming data or after the notification
-	ssize_t(*read)(const hq_stream_class **vt, const hq_stream_class **sink, size_t off, const void **pdata);
+	ssize_t(*read)(const hq_stream_class **vt, const hq_stream_class **sink, uint64_t off, const void **pdata);
 
 	// Some time after reading data, the sink will have consumed the buffer. At that
 	// point the sink will call this indicating the amount of data consumed. Data that
@@ -41,7 +42,7 @@ struct hq_stream_class {
 	// An example is a POST that returns a file independent of the POST content.
 	// As soon as we determine which file to use, we can stop the client from needing to
 	// send more POST content.
-	void(*finish_read)(const hq_stream_class **vt, size_t sz, int close);
+	void(*finish_read)(const hq_stream_class **vt, uint64_t finished, int close);
 
 
 	// Sink API - call these on a sink
@@ -58,7 +59,7 @@ struct hq_stream_class {
 	// for spurious notifications. This allows compression/filter streams to pass the notification
 	// all the way downstream without having to peek through the upstream data to see if there 
 	// is a full sync point or data after filtering.
-	void(*ready)(const hq_stream_class **vt, const hq_stream_class **source, int close);
+	void(*notify)(const hq_stream_class **vt, const hq_stream_class **source, int close);
 };
 
 typedef struct http_request http_request;
@@ -82,8 +83,8 @@ struct hq_callback_class {
 
 struct hq_connection_class {
 	void(*close)(const hq_connection_class **vt, int errnum);
-	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, size_t off, const void **pdata);
-	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, ssize_t sz);
+	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, uint64_t off, const void **pdata);
+	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, uint64_t finished, int close);
 	void(*request_ready)(const hq_connection_class **vt, http_request *request, int close);
 };
 

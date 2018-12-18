@@ -36,8 +36,8 @@ const hq_header *hq_hdr_next(const hq_header_table *t, const hq_header *h);
 
 extern const uint32_t hq_hdr_encoder[];
 ssize_t hq_encode_value(void *buf, size_t bufsz, const char *data, size_t len);
-ssize_t hq_encode_http1_key(void *buf, size_t bufsz, const char *data, size_t len);
-ssize_t hq_encode_http2_key(void *buf, size_t bufsz, const char *data, size_t len);
+ssize_t hq_encode_http1_key(char *data, size_t len);
+ssize_t hq_encode_http2_key(char *data, size_t len);
 ssize_t hq_decode_value(void *buf, size_t bufsz, const uint8_t *data, size_t len);
 int hq_verify_http2_key(const uint8_t *data, size_t len);
 
