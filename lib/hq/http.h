@@ -83,8 +83,8 @@ struct hq_callback_class {
 
 struct hq_connection_class {
 	void(*close)(const hq_connection_class **vt, int errnum);
-	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, uint64_t off, const void **pdata);
-	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, uint64_t finished, int close);
+	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, size_t off, const void **pdata);
+	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, size_t finished, int close);
 	void(*request_ready)(const hq_connection_class **vt, http_request *request, int close);
 };
 
