@@ -12,10 +12,10 @@ struct http1_connection {
 	http_request *last;
 	const char *hostname;
 	uint32_t flags;
-	uint64_t bsend, brecv;
+	uint64_t brecv;
 	size_t parsed;
 	struct {
-		size_t len;
+		size_t len, sent;
 		char c_str[4096];
 	} hsend, hrecv;
 };
