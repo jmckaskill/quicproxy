@@ -27,7 +27,7 @@ struct hq_stream_class {
 	// 0   - end of file
 	// -ve - permanent error
 	// HQ_PENDING - try again after consuming data or after the notification
-	ssize_t(*read)(const hq_stream_class **vt, const hq_stream_class **sink, size_t off, const void **pdata);
+	ssize_t(*read)(const hq_stream_class **vt, const hq_stream_class **sink, const void **pdata);
 
 	// Some time after reading data, the sink will have consumed the buffer. At that
 	// point the sink will call this indicating the amount of data consumed. Data that
@@ -42,7 +42,7 @@ struct hq_stream_class {
 	// An example is a POST that returns a file independent of the POST content.
 	// As soon as we determine which file to use, we can stop the client from needing to
 	// send more POST content.
-	void(*finish_read)(const hq_stream_class **vt, size_t finished, int close);
+	void(*finish_read)(const hq_stream_class **vt, ssize_t finished);
 
 
 	// Sink API - call these on a sink
@@ -71,6 +71,7 @@ struct http_request {
 	const hq_stream_class **source, **sink;
 	const hq_connection_class **connection;
 	hq_header_table req_hdrs, resp_hdrs;
+	bool finished;
 };
 
 void init_http_request(http_request *r);
@@ -82,9 +83,8 @@ struct hq_callback_class {
 };
 
 struct hq_connection_class {
-	void(*close)(const hq_connection_class **vt, int errnum);
-	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, size_t off, const void **pdata);
-	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, size_t finished, int close);
+	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, const void **pdata);
+	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, ssize_t finished);
 	void(*request_ready)(const hq_connection_class **vt, http_request *request, int close);
 };
 

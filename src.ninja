@@ -65,8 +65,7 @@ build $bin/qproxy-client.exe: clink $
 build $obj/http-client/http-client.o: cc src/http-client/http-client.c
 build $bin/http-client.exe: clink $
  $obj/http-client/http-client.o $
- $obj/hq/file.o $
- $obj/hq/poll.o $
+ $obj/hq.lib $
  $obj/cutils.lib $
 
 build $obj/quic/quic_test.o: cc lib/quic/quic_test.c
@@ -81,9 +80,13 @@ build $obj/hq/qpack.o: cc lib/hq/qpack.c
 build $obj/hq/header.o: cc lib/hq/header.c
 build $obj/hq/poll.o: cc lib/hq/poll.c
 build $obj/hq/file.o: cc lib/hq/file.c
+build $obj/hq/http1.o: cc lib/hq/http1.c
+build $obj/hq/request.o: cc lib/hq/request.c
 build $obj/hq.lib: lib $
- $obj/hq/qpack.o $
+ $obj/hq/poll.o $
  $obj/hq/header.o $
+ $obj/hq/http1.o $
+ $obj/hq/request.o $
 
 build $obj/hq/qpack_test.o: cc lib/hq/qpack_test.c
 build $bin/test_qpack.exe: clink $
@@ -121,6 +124,7 @@ build check-$TGT: phony $
  $bin/test_buffer.log $
 
 include ext/bearssl.ninja
+
 
 
 

@@ -74,7 +74,7 @@ static size_t rawlen;
 
 static void insert_header(log_t *log, int index, const char *key, const char *value) {
 	struct header *h = APPEND_ZERO(&headers);
-	h->index = index;
+	h->index = index+1;
 
 	bool added;
 	size_t idx = INSERT_BLOB_HASH(&symbols, key, strlen(key), &added);
@@ -116,7 +116,7 @@ static void print_headers(log_t *log, bool declare) {
 		if (declare) {
 			LOG(log, "extern const hq_header HQ%s%s;", k->c.c_str, v ? v->c.c_str : "");
 		} else {
-			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, HQ_HEADER_COMPRESSED, %u, %u, %u, 0 };", k->c.c_str, v->c.c_str, k->off, v->off, v->sz, k->sz, k->hash);
+			LOG(log, "const hq_header HQ%s%s = { HUF+%u, HUF+%u, %u, %u, %u, %u, 0 };", k->c.c_str, v->c.c_str, k->off, v->off, (h->index<<5)|1, v->sz, k->sz, k->hash);
 		}
 	}
 }
@@ -228,11 +228,13 @@ int main(int argc, const char *argv[]) {
 	EXPECT_EQ(-1, hq_verify_http2_key(custom_key, sizeof(custom_key) - 1));
 
 	LOG(log, "static const uint8_t HUF[] = {");
+	insert_header(log, -1, "connection", "");
 	insert_header(log, 0, ":authority", "");
 	insert_header(log, 1, ":path", "");
 	insert_header(log, 1, ":path", "/");
 	insert_header(log, 2, "age", "0");
 	insert_header(log, 3, "content-disposition", "");
+	insert_header(log, 4, "content-length", "");
 	insert_header(log, 4, "content-length", "0");
 	insert_header(log, 5, "cookie", "");
 	insert_header(log, 6, "date", "");

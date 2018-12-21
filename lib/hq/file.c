@@ -3,15 +3,14 @@
 #include <cutils/path.h>
 #include <cutils/char-array.h>
 
-static ssize_t read_file(const hq_stream_class **vt, const hq_stream_class **notify, size_t off, const void **pdata) {
+static ssize_t read_file(const hq_stream_class **vt, const hq_stream_class **notify, const void **pdata) {
 	hq_file_source *s = container_of(vt, hq_file_source, vtable);
 	assert(s->file);
-	assert(off <= s->have);
-	if (off < s->have) {
-		*pdata = s->buf + off;
-		return s->have - off;
+	if (s->have) {
+		*pdata = s->buf;
+		return s->have;
 	} else {
-		return (s->bufsz == s->have) ? HQ_PENDING : 0;
+		return feof(s->file) ? 0 : HQ_PENDING;
 	}
 }
 
@@ -23,7 +22,7 @@ static void populate_buffer(hq_file_source *s) {
 static void finish_read(const hq_stream_class **vt, ssize_t sz) {
 	hq_file_source *s = container_of(vt, hq_file_source, vtable);
 	assert(s->file);
-	if (sz <= 0) {
+	if (sz < 0) {
 		fclose(s->file);
 		s->file = NULL;
 	} else {

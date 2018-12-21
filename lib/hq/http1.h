@@ -10,12 +10,13 @@ struct http1_connection {
 	const hq_stream_class **socket;
 	http_request *request;
 	const char *hostname;
-	uint64_t brecv;
+	uint64_t body_remaining;
+	size_t headers_to_finish;
 	bool is_client;
-	bool send_finished;
-	bool recv_finished;
+	bool headers_sent;
+	bool body_sent;
+	bool headers_received;
 	bool close_after_request;
-	bool recv_ignore;
 	struct {
 		size_t len, sent;
 		char c_str[4096];

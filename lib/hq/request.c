@@ -1,9 +1,15 @@
 #include "http.h"
 
-static ssize_t read_request(const hq_stream_class **vt, const hq_stream_class **sink, size_t off, const void **pdata) {
+static ssize_t read_request(const hq_stream_class **vt, const hq_stream_class **sink, const void **pdata) {
 	http_request *r = container_of(vt, http_request, vtable);
-	r->sink = sink;
-	return r->connection ? (*r->connection)->read_request(r->connection, r, off, pdata) : HQ_PENDING;
+	if (r->finished) {
+		return 0;
+	}
+	ssize_t n = r->connection ? (*r->connection)->read_request(r->connection, r, pdata) : HQ_PENDING;
+	if (n == HQ_PENDING) {
+		r->sink = sink;
+	}
+	return n;
 }
 
 static void finish_read_request(const hq_stream_class **vt, ssize_t sz) {
