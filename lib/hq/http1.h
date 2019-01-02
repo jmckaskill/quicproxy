@@ -8,15 +8,16 @@ struct http1_connection {
 	const hq_stream_class *stream_vtable;
 	const hq_callback_class **cb;
 	const hq_stream_class **socket;
+	const hq_stream_class **app_sink;
 	http_request *request;
 	const char *hostname;
 	uint64_t body_remaining;
-	size_t headers_to_finish;
 	bool is_client;
 	bool headers_sent;
 	bool body_sent;
 	bool headers_received;
 	bool close_after_request;
+	bool socket_pending;
 	struct {
 		size_t len, sent;
 		char c_str[4096];

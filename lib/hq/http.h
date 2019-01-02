@@ -4,10 +4,10 @@
 #include <cutils/apc.h>
 
 #define HQ_ERR_SUCCESS 0
-#define HQ_ERR_TCP_RESET -1
-#define HQ_ERR_INVALID_REQUEST -2
-#define HQ_ERR_APP_RESET -3
-#define HQ_PENDING SSIZE_T_MIN
+#define HQ_PENDING -1
+#define HQ_ERR_TCP_RESET -2
+#define HQ_ERR_INVALID_REQUEST -3
+#define HQ_ERR_APP_RESET -4
 
 typedef struct hq_stream_class hq_stream_class;
 struct hq_stream_class {
@@ -27,7 +27,7 @@ struct hq_stream_class {
 	// 0   - end of file
 	// -ve - permanent error
 	// HQ_PENDING - try again after consuming data or after the notification
-	ssize_t(*read)(const hq_stream_class **vt, const hq_stream_class **sink, const void **pdata);
+	int(*start_read)(const hq_stream_class **vt, const hq_stream_class **sink, int minsz, const void **pdata);
 
 	// Some time after reading data, the sink will have consumed the buffer. At that
 	// point the sink will call this indicating the amount of data consumed. Data that
@@ -42,7 +42,7 @@ struct hq_stream_class {
 	// An example is a POST that returns a file independent of the POST content.
 	// As soon as we determine which file to use, we can stop the client from needing to
 	// send more POST content.
-	void(*finish_read)(const hq_stream_class **vt, ssize_t finished);
+	void(*finish_read)(const hq_stream_class **vt, int finished);
 
 
 	// Sink API - call these on a sink
@@ -59,7 +59,7 @@ struct hq_stream_class {
 	// for spurious notifications. This allows compression/filter streams to pass the notification
 	// all the way downstream without having to peek through the upstream data to see if there 
 	// is a full sync point or data after filtering.
-	void(*notify)(const hq_stream_class **vt, const hq_stream_class **source, int close);
+	void(*read_finished)(const hq_stream_class **vt, const hq_stream_class **source, int error);
 };
 
 typedef struct http_request http_request;
@@ -68,13 +68,15 @@ typedef struct hq_connection_class hq_connection_class;
 
 struct http_request {
 	const hq_stream_class *vtable;
-	const hq_stream_class **source, **sink;
+	const hq_stream_class **source;
+	const hq_stream_class **sink;
 	const hq_connection_class **connection;
-	hq_header_table req_hdrs, resp_hdrs;
+	hq_header_table rx_hdrs, tx_hdrs;
 	bool finished;
 };
 
 void init_http_request(http_request *r);
+void http_request_ready(http_request *r, int error);
 
 struct hq_callback_class {
 	void(*free_connection)(const hq_callback_class **vt, const hq_connection_class **c);
@@ -83,9 +85,9 @@ struct hq_callback_class {
 };
 
 struct hq_connection_class {
-	ssize_t(*read_request)(const hq_connection_class **vt, http_request *request, const void **pdata);
-	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, ssize_t finished);
-	void(*request_ready)(const hq_connection_class **vt, http_request *request, int close);
+	int(*start_read_request)(const hq_connection_class **vt, http_request *request, int minsz, const void **pdata);
+	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, int finished);
+	void(*request_ready)(const hq_connection_class **vt, http_request *request, int error);
 };
 
 typedef void(*hq_free_cb)(void*);

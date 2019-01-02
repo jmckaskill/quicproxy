@@ -1,18 +1,18 @@
 #include "http.h"
 
-static ssize_t read_request(const hq_stream_class **vt, const hq_stream_class **sink, const void **pdata) {
+static int start_read_request(const hq_stream_class **vt, const hq_stream_class **sink, int minsz, const void **pdata) {
 	http_request *r = container_of(vt, http_request, vtable);
+	r->sink = sink;
 	if (r->finished) {
 		return 0;
+	} else if (!r->connection) {
+		return HQ_PENDING;
+	} else {
+		return (*r->connection)->start_read_request(r->connection, r, minsz, pdata);
 	}
-	ssize_t n = r->connection ? (*r->connection)->read_request(r->connection, r, pdata) : HQ_PENDING;
-	if (n == HQ_PENDING) {
-		r->sink = sink;
-	}
-	return n;
 }
 
-static void finish_read_request(const hq_stream_class **vt, ssize_t sz) {
+static void finish_read_request(const hq_stream_class **vt, int sz) {
 	http_request *r = container_of(vt, http_request, vtable);
 	r->sink = NULL;
 	if (r->connection) {
@@ -20,7 +20,7 @@ static void finish_read_request(const hq_stream_class **vt, ssize_t sz) {
 	}
 }
 
-static void request_ready(const hq_stream_class **vt, const hq_stream_class **source, int close) {
+static void request_read_finished(const hq_stream_class **vt, const hq_stream_class **source, int close) {
 	http_request *r = container_of(vt, http_request, vtable);
 	r->source = source;
 	if (r->connection) {
@@ -29,9 +29,9 @@ static void request_ready(const hq_stream_class **vt, const hq_stream_class **so
 }
 
 static const hq_stream_class http_request_vtable = {
-	&read_request,
+	&start_read_request,
 	&finish_read_request,
-	&request_ready,
+	&request_read_finished,
 };
 
 void init_http_request(http_request *r) {
@@ -39,3 +39,10 @@ void init_http_request(http_request *r) {
 	r->vtable = &http_request_vtable;
 }
 
+void http_request_ready(http_request *r, int error) {
+	const hq_stream_class **sink = r->sink;
+	if (sink) {
+		r->sink = NULL;
+		(*sink)->read_finished(sink, &r->vtable, error);
+	}
+}

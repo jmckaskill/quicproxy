@@ -42,7 +42,7 @@ static void notify_log_sink(const hq_stream_class **vt, const hq_stream_class **
 	LOG(s->log, "notify %d", close);
 	while (source) {
 		const void *data;
-		ssize_t n = (*source)->read(source, vt, &data);
+		int n = (*source)->start_read(source, &s->vtable, 1, &data);
 		if (n == HQ_PENDING) {
 			return;
 		} else if (n < 0) {
@@ -80,10 +80,10 @@ int main(int argc, const char *argv[]) {
 
 	http_request r;
 	init_http_request(&r);
-	hq_hdr_set(&r.req_hdrs, &HQ_PATH_SLASH, NULL, 0, 0);
-	hq_hdr_set(&r.req_hdrs, &HQ_AUTHORITY, "192.168.168.1", strlen("192.168.168.1"), 0);
-	hq_hdr_set(&r.req_hdrs, &HQ_SCHEME_HTTP, NULL, 0, 0);
-	hq_hdr_set(&r.req_hdrs, &HQ_METHOD_GET, NULL, 0, 0);
+	hq_hdr_set(&r.tx_hdrs, &HQ_PATH_SLASH, NULL, 0, 0);
+	hq_hdr_set(&r.tx_hdrs, &HQ_AUTHORITY, "192.168.168.1", strlen("192.168.168.1"), 0);
+	hq_hdr_set(&r.tx_hdrs, &HQ_SCHEME_HTTP, NULL, 0, 0);
+	hq_hdr_set(&r.tx_hdrs, &HQ_METHOD_GET, NULL, 0, 0);
 
 
 	char rxbuf[4096];
