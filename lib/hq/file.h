@@ -2,11 +2,11 @@
 #include "http.h"
 #include <stdio.h>
 
-extern const hq_stream_class hq_file_source_vtable;
+extern const hq_source_class hq_file_source_vtable;
 
 typedef struct hq_file_source hq_file_source;
 struct hq_file_source {
-	const hq_stream_class *vtable;
+	const hq_source_class *vtable;
 	FILE *file;
 	char *buf;
 	size_t bufsz, have;

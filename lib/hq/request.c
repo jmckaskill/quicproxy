@@ -1,37 +1,36 @@
 #include "http.h"
 
-static int start_read_request(const hq_stream_class **vt, const hq_stream_class **sink, int minsz, const void **pdata) {
+static void close_read_request(const hq_source_class **vt, int error) {
 	http_request *r = container_of(vt, http_request, vtable);
-	r->sink = sink;
+	assert(!r->notify);
+	// TODO ... now what?
+}
+
+static ssize_t start_read_request(const hq_source_class **vt, size_t off, size_t minsz, const void **pdata, hq_notify_fn notify, void *user) {
+	http_request *r = container_of(vt, http_request, vtable);
+	r->notify = notify;
+	r->notify_user = user;
 	if (r->finished) {
 		return 0;
 	} else if (!r->connection) {
 		return HQ_PENDING;
 	} else {
-		return (*r->connection)->start_read_request(r->connection, r, minsz, pdata);
+		return (*r->connection)->start_read_request(r->connection, r, off, minsz, pdata);
 	}
 }
 
-static void finish_read_request(const hq_stream_class **vt, int sz) {
+static void finish_read_request(const hq_source_class **vt, size_t seek) {
 	http_request *r = container_of(vt, http_request, vtable);
-	r->sink = NULL;
+	r->notify = NULL;
 	if (r->connection) {
-		(*r->connection)->finish_read_request(r->connection, r, sz);
+		(*r->connection)->finish_read_request(r->connection, r, seek);
 	}
 }
 
-static void request_read_finished(const hq_stream_class **vt, const hq_stream_class **source, int close) {
-	http_request *r = container_of(vt, http_request, vtable);
-	r->source = source;
-	if (r->connection) {
-		(*r->connection)->request_ready(r->connection, r, close);
-	}
-}
-
-static const hq_stream_class http_request_vtable = {
+static const hq_source_class http_request_vtable = {
+	&close_read_request,
 	&start_read_request,
 	&finish_read_request,
-	&request_read_finished,
 };
 
 void init_http_request(http_request *r) {
@@ -39,10 +38,3 @@ void init_http_request(http_request *r) {
 	r->vtable = &http_request_vtable;
 }
 
-void http_request_ready(http_request *r, int error) {
-	const hq_stream_class **sink = r->sink;
-	if (sink) {
-		r->sink = NULL;
-		(*sink)->read_finished(sink, &r->vtable, error);
-	}
-}

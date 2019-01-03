@@ -5,61 +5,26 @@
 
 #define HQ_ERR_SUCCESS 0
 #define HQ_PENDING -1
-#define HQ_ERR_TCP_RESET -2
-#define HQ_ERR_INVALID_REQUEST -3
-#define HQ_ERR_APP_RESET -4
+#define HQ_ERR_CLEAN_SHUTDOWN -2
+#define HQ_ERR_TCP_RESET -3
+#define HQ_ERR_INVALID_REQUEST -4
+#define HQ_ERR_APP_RESET -5
 
-typedef struct hq_stream_class hq_stream_class;
-struct hq_stream_class {
-	// The stream class abstracts both a source and sink of data. Data is pulled
-	// from the sink through many intermediate notes to an originating source.
-	// An HTTP client for example is just a sink that takes a source of data
-	// (the request body) and produces a source of data (the response body) that is
-	// fed into a sink. Likewise an HTTP server expects to both be a source (the 
-	// request body) and a sink (the place to put the response body).
+typedef void(*hq_notify_fn)(void* user, int error);
 
-	// Source API - call these on a source node
+static inline void hq_notify(hq_notify_fn *pfn, void *user, int error) {
+	hq_notify_fn fn = *pfn;
+	if (fn) {
+		*pfn = NULL;
+		fn(user, error);
+	}
+}
 
-	// Data is read from the source. The source is responsible for
-	// buffering that data. Returned buffers MUST not be modified until a call to <seek>.
-	// This call can return:
-	// +ve - number of bytes available in the returned pointer
-	// 0   - end of file
-	// -ve - permanent error
-	// HQ_PENDING - try again after consuming data or after the notification
-	int(*start_read)(const hq_stream_class **vt, const hq_stream_class **sink, int minsz, const void **pdata);
-
-	// Some time after reading data, the sink will have consumed the buffer. At that
-	// point the sink will call this indicating the amount of data consumed. Data that
-	// is consumed no longer needs to be buffered. At the same time the source
-	// may compact any other data. Buffer pointers from previous <peek> calls are no longer
-	// valid.
-
-	// The sink MAY stop reading from the source at any point. If reads
-	// are not going to resume at a later time, the sink SHOULD call this. The source
-	// then MAY stop buffering data and SHOULD tell upstream sources likewise.
-	// This is not an error condition and MUST not stop the response from appearing.
-	// An example is a POST that returns a file independent of the POST content.
-	// As soon as we determine which file to use, we can stop the client from needing to
-	// send more POST content.
-	void(*finish_read)(const hq_stream_class **vt, int finished);
-
-
-	// Sink API - call these on a sink
-
-	// This is used to notify a sink of an asynchronous error. The read functions (<peek>, <seek>,
-	// and <finished>) MUST not be called after this point. The sink MUST push this further down
-	// the chain so that the end sink is notified. The sink MUST synchronously cancel any pending
-	// usage of buffers from the source. To avoid reentrancy issues, this MUST not be called 
-	// in a <peek> or <seek> callback. Instead a synchronous error MUST be returned.
-
-	// This is used to notify the sink that more data can be read. Sinks must be
-	// prepared for both edge and level triggered notifications. To get a notification, the
-	// sink must read enough to get a TRY_AGAIN. Sinks must also be prepared
-	// for spurious notifications. This allows compression/filter streams to pass the notification
-	// all the way downstream without having to peek through the upstream data to see if there 
-	// is a full sync point or data after filtering.
-	void(*read_finished)(const hq_stream_class **vt, const hq_stream_class **source, int error);
+typedef struct hq_source_class hq_source_class;
+struct hq_source_class {
+	void(*close)(const hq_source_class **vt, int error);
+	ssize_t(*start_read)(const hq_source_class **vt, size_t off, size_t minsz, const void **pdata, hq_notify_fn cb, void *user);
+	void(*finish_read)(const hq_source_class **vt, size_t seek);
 };
 
 typedef struct http_request http_request;
@@ -67,16 +32,16 @@ typedef struct hq_callback_class hq_callback_class;
 typedef struct hq_connection_class hq_connection_class;
 
 struct http_request {
-	const hq_stream_class *vtable;
-	const hq_stream_class **source;
-	const hq_stream_class **sink;
+	const hq_source_class *vtable;
+	const hq_source_class **source;
 	const hq_connection_class **connection;
+	hq_notify_fn notify;
+	void *notify_user;
 	hq_header_table rx_hdrs, tx_hdrs;
 	bool finished;
 };
 
 void init_http_request(http_request *r);
-void http_request_ready(http_request *r, int error);
 
 struct hq_callback_class {
 	void(*free_connection)(const hq_callback_class **vt, const hq_connection_class **c);
@@ -85,17 +50,23 @@ struct hq_callback_class {
 };
 
 struct hq_connection_class {
-	int(*start_read_request)(const hq_connection_class **vt, http_request *request, int minsz, const void **pdata);
-	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, int finished);
-	void(*request_ready)(const hq_connection_class **vt, http_request *request, int error);
+	ssize_t(*start_read_request)(const hq_connection_class **vt, http_request *request, size_t off, size_t minsz, const void **pdata);
+	void(*finish_read_request)(const hq_connection_class **vt, http_request *request, size_t seek);
 };
 
 typedef void(*hq_free_cb)(void*);
 
+typedef struct hq_listen_class hq_listen_class;
+struct hq_listen_class {
+	void(*close)(const hq_listen_class **vt);
+	const hq_source_class **(*accept)(const hq_listen_class **vt, char *buf, size_t bufsz, struct sockaddr *remote, socklen_t *salen, const hq_source_class **source, hq_notify_fn cb, void *user);
+};
+
 typedef struct hq_poll_class hq_poll_class;
 struct hq_poll_class {
-	void(*poll)(const hq_poll_class **vt, dispatcher_t *d, tick_t time_us);
-	const hq_stream_class **(*connect_tcp)(const hq_poll_class **vt, const struct sockaddr *sa, socklen_t len, char *rxbuf, size_t bufsz, hq_free_cb free, void *user);
+	int(*poll)(const hq_poll_class **vt);
+	const hq_source_class **(*connect_tcp)(const hq_poll_class **vt, char *buf, size_t bufsz, const struct sockaddr *sa, socklen_t len, const hq_source_class **source);
+	const hq_listen_class **(*listen_tcp)(const hq_poll_class **vt, char *buf, size_t bufsz, const struct sockaddr *sa, socklen_t len);
 };
 
 typedef struct hq_poll hq_poll;
@@ -104,7 +75,9 @@ struct hq_poll {
 	size_t num;
 	struct hq_poll_socket *sockets[256];
 	struct pollfd pfd[256];
+	dispatcher_t dispatcher;
 	bool dirty;
 };
 
 void hq_init_poll(hq_poll *p);
+

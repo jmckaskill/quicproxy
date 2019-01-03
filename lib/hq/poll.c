@@ -1,96 +1,118 @@
 #include "http.h"
 #include <cutils/endian.h>
 #include <cutils/char-array.h>
+#include <cutils/timer.h>
 #include <assert.h>
 #include <limits.h>
 
 struct hq_poll_socket {
-	const hq_stream_class *vtable;
-	const hq_stream_class **source;
-	const hq_stream_class **read_cb;
-	hq_free_cb free;
-	void *free_user;
+	hq_notify_fn sink;
+	void *user;
 	hq_poll *poll;
 	struct pollfd *pfd;
-	bool *pdirty;
-	int fd;
-	bool recv_finished;
-	bool recv_ignore;
-	bool send_finished;
-	int rxbufsz, rxhave, rxused;
+	const hq_source_class **source;
+};
+
+struct hq_poll_listen {
+	struct hq_poll_socket hdr;
+	const hq_listen_class *vtable;
+};
+
+struct hq_poll_connect {
+	struct hq_poll_socket hdr;
+	const hq_source_class *vtable;
+	bool recv_fin;
+	size_t rxbufsz, rxhave, rxused;
 	char rxbuf[1];
 };
 
-static void remove_socket(struct hq_poll_socket *s, int errnum) {
-	assert(s->fd >= 0);
-	closesocket(s->fd);
+tick_t get_tick() {
+	return (tick_t)(monotonic_ns() / 1000);
+}
+
+static void add_socket(hq_poll *p, struct hq_poll_socket *s, int fd) {
+	s->poll = p;
+	s->pfd = &p->pfd[p->num];
+	s->pfd->events = 0;
+	s->pfd->fd = fd;
+	p->sockets[p->num++] = s;
+}
+
+static void remove_socket(struct hq_poll_socket *s) {
+	assert(!s->sink);
+	assert(s->pfd->fd >= 0);
+	closesocket(s->pfd->fd);
 	s->pfd->fd = (SOCKET)-1;
 	s->pfd->events = 0;
-	*s->pdirty = true;
-	if (s->free) {
-		s->free(s->free_user);
+	s->poll->dirty = true;
+}
+
+static void check_connected(struct hq_poll_connect *s) {
+	if (!s->hdr.source && s->recv_fin && s->rxused == s->rxhave) {
+		remove_socket(&s->hdr);
 	}
 }
 
-static void check_socket(struct hq_poll_socket *s) {
-	if (s->recv_finished && s->send_finished && !s->rxhave) {
-		assert(!s->source && !s->read_cb);
-		remove_socket(s, 0);
+static void do_abort(struct hq_poll_connect *s, int errnum) {
+	assert(errnum < 0);
+	hq_notify_fn sink = s->hdr.sink;
+	if (sink) {
+		s->hdr.sink = NULL;
+		sink(s->hdr.user, errnum);
+	}
+	const hq_source_class **src = s->hdr.source;
+	if (src) {
+		s->hdr.source = NULL;
+		(*src)->close(src, errnum);
+	}
+	remove_socket(&s->hdr);
+}
+
+static void write_socket(struct hq_poll_connect *s);
+
+static void source_has_data(void *user, int error) {
+	struct hq_poll_connect *s = user;
+	if (error) {
+		do_abort(s, error);
+	} else {
+		write_socket(s);
 	}
 }
 
-static void do_abort(struct hq_poll_socket *s, int errnum) {
-	assert(errnum);
-	if (s->read_cb) {
-		(*s->read_cb)->read_finished(s->read_cb, NULL, errnum);
-		s->read_cb = NULL;
-	}
-	if (s->source) {
-		(*s->source)->finish_read(s->source, errnum);
-		s->source = NULL;
-	}
-	remove_socket(s, errnum);
-}
-
-static void write_socket(struct hq_poll_socket *s) {
+static void write_socket(struct hq_poll_connect *s) {
+	const hq_source_class **src = s->hdr.source;
+	s->hdr.pfd->events &= ~POLLOUT;
 	for (;;) {
-		// source can change from one loop to the next
-		const hq_stream_class **src = s->source;
-		if (!src) {
-			return;
-		}
-
 		const void *data;
-		int r = (*src)->start_read(src, &s->vtable, 1, &data);
+		ssize_t r = (*src)->start_read(src, 0, 1, &data, &source_has_data, s);
 		if (r == HQ_PENDING) {
 			return;
 		} else if (!r) {
-			s->send_finished = true;
-			s->source = NULL;
-			shutdown(s->fd, SHUT_WR);
-			check_socket(s);
+			s->hdr.source = NULL;
+			shutdown(s->hdr.pfd->fd, SHUT_WR);
+			check_connected(s);
 			return;
 		} else if (r < 0) {
-			s->source = NULL;
-			do_abort(s, r);
+			do_abort(s, (int)r);
 			return;
 		}
 
-		int w = send(s->fd, data, r, 0);
+		int w = send(s->hdr.pfd->fd, data, r > INT_MAX ? INT_MAX : (int)r, 0);
 		if (w < 0 && would_block()) {
-			s->pfd->events |= POLLOUT;
+			s->hdr.pfd->events |= POLLOUT;
 			return;
 		} else if (w <= 0) {
 			do_abort(s, HQ_ERR_TCP_RESET);
 			return;
 		}
-		(*s->source)->finish_read(s->source, w);
+		(*src)->finish_read(src, w);
 	}
 }
 
-static int app_start_read(const hq_stream_class **vt, const hq_stream_class **sink, int minsz, const void **pdata) {
-	struct hq_poll_socket *s = (struct hq_poll_socket*)vt;
-	assert(!s->read_cb);
+static ssize_t app_start_read(const hq_source_class **vt, size_t off, size_t minsz, const void **pdata, hq_notify_fn cb, void *user) {
+	struct hq_poll_connect *s = container_of(vt, struct hq_poll_connect, vtable);
+	s->hdr.sink = cb;
+	s->hdr.user = user;
 
 	if (s->rxused + minsz <= s->rxhave) {
 		*pdata = s->rxbuf + s->rxused;
@@ -100,70 +122,63 @@ static int app_start_read(const hq_stream_class **vt, const hq_stream_class **si
 	if (0 < s->rxused && s->rxused < s->rxhave) {
 		s->rxhave -= s->rxused;
 		memmove(s->rxbuf, s->rxbuf + s->rxused, s->rxhave);
-		s->rxused = 0;
+	} else {
+		s->rxhave = 0;
 	}
+	s->rxused = 0;
 
-	int r = recv(s->fd, s->rxbuf + s->rxhave, s->rxbufsz - s->rxhave, 0);
+	int r = recv(s->hdr.pfd->fd, s->rxbuf + s->rxhave, (int)(s->rxbufsz - s->rxhave), 0);
 	if (r < 0 && would_block()) {
-		s->pfd->events |= POLLIN;
-		s->read_cb = sink;
+		s->hdr.pfd->events |= POLLIN;
 		return HQ_PENDING;
 	} else if (r < 0) {
 		do_abort(s, HQ_ERR_TCP_RESET);
 		return HQ_ERR_TCP_RESET;
 	}
 
-	*pdata = s->rxbuf;
-
 	if (r == 0) {
-		s->recv_finished = true;
-		return s->rxhave;
-	} else if (!s->recv_ignore) {
+		s->recv_fin = true;
+	} else {
 		s->rxhave += r;
-		return s->rxhave;
-	} else {
-		return HQ_PENDING;
 	}
+
+	*pdata = s->rxbuf;
+	return s->rxhave;
 }
 
-static void app_finish_read(const hq_stream_class **vt, int finished) {
-	struct hq_poll_socket *s = (struct hq_poll_socket*)vt;
-	s->read_cb = NULL;
-	s->pfd->events &= ~POLLIN;
-	if (finished < 0) {
-		s->rxhave = 0;
-		s->rxused = 0;
-		s->recv_ignore = true;
-	} else {
-		s->rxused += finished;
-		assert(s->rxused <= s->rxhave);
-	}
-	check_socket(s);
+static void app_close_read(const hq_source_class **vt, int error) {
+	struct hq_poll_connect *s = container_of(vt, struct hq_poll_connect, vtable);
+	// even if we haven't seen a fin yet, pretend like we have
+	// any remaining data can remain in the kernel buffer until we close the socket
+	s->hdr.sink = NULL;
+	s->hdr.pfd->events &= ~POLLIN;
+	s->rxused = s->rxhave;
+	s->recv_fin = true;
+	check_connected(s);
 }
 
-static void app_read_finished(const hq_stream_class **vt, const hq_stream_class **source, int error) {
-	struct hq_poll_socket *s = (struct hq_poll_socket*)vt;
-	s->source = source;
-	if (error) {
-		do_abort(s, error);
-	} else if (source && !(s->pfd->events & POLLOUT)) {
-		write_socket(s);
-	}
+static void app_finish_read(const hq_source_class **vt, size_t seek) {
+	struct hq_poll_connect *s = container_of(vt, struct hq_poll_connect, vtable);
+	s->hdr.sink = NULL;
+	s->hdr.pfd->events &= ~POLLIN;
+	s->rxused += seek;
+#ifndef NDEBUG
+	memset(s->rxbuf, 0xEE, s->rxused);
+	assert(s->rxused <= s->rxhave);
+#endif
+	check_connected(s);
 }
 
-static const hq_stream_class poll_socket_vtable = {
+static const hq_source_class poll_socket_vtable = {
+	&app_close_read,
 	&app_start_read,
 	&app_finish_read,
-	&app_read_finished,
 };
 
-static int poll_poll(const hq_poll_class **vt, dispatcher_t *d, tick_t now) {
+static int poll_poll(const hq_poll_class **vt) {
 	hq_poll *p = (hq_poll*)vt;
 
-	int timeout = -1;
-	if (d) {
-		timeout = dispatch_apcs(d, now, 1000);
-	}
+	int timeout = dispatch_apcs(&p->dispatcher, get_tick(), 1000);
 
 	if (p->dirty) {
 		size_t j = 0;
@@ -188,22 +203,21 @@ static int poll_poll(const hq_poll_class **vt, dispatcher_t *d, tick_t now) {
 		struct hq_poll_socket *s = p->sockets[i];
 		struct pollfd *fd = &p->pfd[i];
 		if (fd->fd > 0 && fd->revents && s) {
-			if (fd->revents & POLLOUT) {
-				fd->events &= ~POLLOUT;
-				write_socket(s);
-			}
 			if (fd->revents & POLLIN) {
 				fd->events &= ~POLLIN;
-				const hq_stream_class **cb = s->read_cb;
-				if (cb) {
-					s->read_cb = NULL;
-					(*cb)->read_finished(cb, &s->vtable, 0);
-				} else if (s->recv_ignore) {
-					const void *data;
-					if (app_start_read(&s->vtable, NULL, 1, &data) == 0) {
-						check_socket(s);
-					}
+				hq_notify(&s->sink, s->user, 0);
+			}
+			if (fd->revents & POLLOUT) {
+				write_socket((struct hq_poll_connect*)s);
+			}
+			if (fd->revents & POLLERR) {
+				const hq_source_class **src = s->source;
+				if (src) {
+					s->source = NULL;
+					(*src)->finish_read(src, 0);
+					(*src)->close(src, HQ_ERR_TCP_RESET);
 				}
+				hq_notify(&s->sink, s->user, HQ_ERR_TCP_RESET);
 			}
 		}
 	}
@@ -224,44 +238,119 @@ static int create_socket(int family, int type) {
 #endif
 }
 
-static const hq_stream_class **poll_new_connection(const hq_poll_class **vt, const struct sockaddr *sa, socklen_t len, char *rxbuf, size_t bufsz, hq_free_cb free, void *user) {
-	hq_poll *p = (hq_poll*)vt;
+static struct hq_poll_connect *init_connected(hq_poll *p, char *buf, size_t bufsz, const hq_source_class **src) {
 	if (p->num == ARRAYSZ(p->sockets)) {
 		return NULL;
 	}
-	char *start = (char*)ALIGN_UP((uintptr_t)rxbuf, (uintptr_t)8);
-	if (start + sizeof(struct hq_poll_socket) > rxbuf + bufsz) {
+
+	char *start = (char*)ALIGN_UP((uintptr_t)buf, (uintptr_t)8);
+	if (start + sizeof(struct hq_poll_socket) > buf + bufsz) {
 		return NULL;
 	}
-	struct hq_poll_socket *s = (struct hq_poll_socket*)start;
+
+	struct hq_poll_connect *s = (struct hq_poll_connect*)start;
 	memset(s, 0, sizeof(*s));
-	s->rxbufsz = (int)(rxbuf + bufsz - s->rxbuf);
+	s->rxbufsz = (int)(buf + bufsz - s->rxbuf);
 	s->vtable = &poll_socket_vtable;
-	s->pfd = &p->pfd[p->num];
-	
-	s->fd = create_socket(sa->sa_family, SOCK_STREAM);
-	if (s->fd < 0) {
-		goto err;
-	} else if (connect(s->fd, sa, len) < 0 && !would_block()) {
-		goto err;
+	s->hdr.source = src;
+	return s;
+}
+
+static const hq_source_class **poll_connect_tcp(const hq_poll_class **vt, char *buf, size_t bufsz, const struct sockaddr *sa, socklen_t len, const hq_source_class **source) {
+	hq_poll *p = container_of(vt, hq_poll, vtable);
+	struct hq_poll_connect *s = init_connected(p, buf, bufsz, source);
+	if (!s) {
+		return NULL;
 	}
 
-	p->pfd[p->num].events = POLLOUT;
-	p->pfd[p->num].fd = s->fd;
-	p->sockets[p->num++] = s;
+	int fd = create_socket(sa->sa_family, SOCK_STREAM);
+	if (fd < 0) {
+		return NULL;
+	} else if (connect(fd, sa, len) && !would_block()) {
+		closesocket(fd);
+		return NULL;
+	}
+
+	add_socket(p, &s->hdr, fd);
+	write_socket(s);
 	return &s->vtable;
+}
 
-err:
-	closesocket(s->fd);
-	if (free) {
-		free(user);
+static void poll_close_listen(const hq_listen_class **vt) {
+	struct hq_poll_listen *s = container_of(vt, struct hq_poll_listen, vtable);
+	s->hdr.sink = NULL;
+	remove_socket(&s->hdr);
+}
+
+static const hq_source_class **poll_accept_tcp(const hq_listen_class **vt, char *buf, size_t bufsz, struct sockaddr *remote, socklen_t *salen, const hq_source_class **source, hq_notify_fn cb, void *user) {
+	struct hq_poll_listen *ln = container_of(vt, struct hq_poll_listen, vtable);
+	hq_poll *p = ln->hdr.poll;
+
+	struct hq_poll_connect *s = init_connected(p, buf, bufsz, source);
+	if (!s) {
+		return NULL;
 	}
-	return NULL;
+
+#ifdef __linux__
+	int fd = accept4(ln->hdr.pfd->fd, remote, salen, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#else
+	int fd = (int)accept(ln->hdr.pfd->fd, remote, salen);
+#endif
+
+	if (fd < 0 && would_block()) {
+		ln->hdr.pfd->events |= POLLIN;
+		ln->hdr.sink = cb;
+		ln->hdr.user = user;
+		return NULL;
+	}
+
+#ifndef __linux__
+	if (set_non_blocking(fd) || set_cloexec(fd)) {
+		closesocket(fd);
+		return NULL;
+	}
+#endif
+
+	add_socket(p, &s->hdr, fd);
+	write_socket(s);
+	return &s->vtable;
+}
+
+static const hq_listen_class poll_listen_vtable = {
+	&poll_close_listen,
+	&poll_accept_tcp,
+};
+
+static const hq_listen_class **poll_listen_tcp(const hq_poll_class **vt, char *buf, size_t bufsz, const struct sockaddr *sa, socklen_t len) {
+	hq_poll *p = container_of(vt, hq_poll, vtable);
+	if (p->num == ARRAYSZ(p->sockets)) {
+		return NULL;
+	}
+
+	char *start = (char*)ALIGN_UP((uintptr_t)buf, (uintptr_t)8);
+	if (start + sizeof(struct hq_poll_listen) > buf + bufsz) {
+		return NULL;
+	}
+
+	struct hq_poll_listen *s = (struct hq_poll_listen*)start;
+	memset(s, 0, sizeof(*s));
+	s->vtable = &poll_listen_vtable;
+
+	int fd = create_socket(sa->sa_family, SOCK_STREAM);
+	if (fd < 0) {
+		return NULL;
+	} else if (bind(fd, sa, len) || listen(fd, SOMAXCONN)) {
+		closesocket(fd);
+		return NULL;
+	}
+
+	add_socket(p, &s->hdr, fd);
+	return &s->vtable;
 }
 
 const hq_poll_class async_poll_vtable = {
 	&poll_poll,
-	&poll_new_connection,
+	&poll_connect_tcp,
 };
 
 void hq_init_poll(hq_poll *p) {
@@ -271,5 +360,6 @@ void hq_init_poll(hq_poll *p) {
 #endif
 	p->vtable = &async_poll_vtable;
 	p->num = 0;
+	init_dispatcher(&p->dispatcher, get_tick());
 }
 

@@ -68,6 +68,12 @@ build $bin/http-client.exe: clink $
  $obj/hq.lib $
  $obj/cutils.lib $
 
+build $obj/http-server/http-server.o: cc src/http-server/http-server.c
+build $bin/http-server.exe: clink $
+ $obj/http-server/http-server.o $
+ $obj/hq.lib $
+ $obj/cutils.lib $
+
 build $obj/quic/quic_test.o: cc lib/quic/quic_test.c
 build $bin/test_quic.exe: clink $
  $obj/quic/quic_test.o $

@@ -3,7 +3,7 @@
 #include <cutils/path.h>
 #include <cutils/char-array.h>
 
-static ssize_t read_file(const hq_stream_class **vt, const hq_stream_class **notify, const void **pdata) {
+static ssize_t read_file(const hq_source_class **vt, const hq_source_class **notify, const void **pdata) {
 	hq_file_source *s = container_of(vt, hq_file_source, vtable);
 	assert(s->file);
 	if (s->have) {
@@ -19,7 +19,7 @@ static void populate_buffer(hq_file_source *s) {
 	fseek(s->file, -(long)s->have, SEEK_CUR);
 }
 
-static void finish_read(const hq_stream_class **vt, ssize_t sz) {
+static void finish_read(const hq_source_class **vt, ssize_t sz) {
 	hq_file_source *s = container_of(vt, hq_file_source, vtable);
 	assert(s->file);
 	if (sz < 0) {
@@ -31,7 +31,7 @@ static void finish_read(const hq_stream_class **vt, ssize_t sz) {
 	}
 }
 
-const hq_stream_class hq_file_source_vtable = {
+const hq_source_class hq_file_source_vtable = {
 	&read_file,
 	&finish_read,
 	NULL,

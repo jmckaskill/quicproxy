@@ -96,11 +96,6 @@ dirs = [
 ]
 
 [[project]]
-name =  "test - qpack"
-file = "lib/hq/qpack_test.vcxproj"
-target = "bin/{TGT}/test_qpack.exe"
-
-[[project]]
 name =  "bin - qproxy-server"
 file = "src/server/server.vcxproj"
 target = "bin/{TGT}/qproxy-server.exe"
@@ -122,6 +117,14 @@ file = "src/http-client/http-client.vcxproj"
 target = "bin/{TGT}/http-client.exe"
 dirs = [
 	"src/http-client"
+]
+
+[[project]]
+name =  "bin - http-server"
+file = "src/http-server/http-server.vcxproj"
+target = "bin/{TGT}/http-server.exe"
+dirs = [
+	"src/http-server"
 ]
 
 [[project]]

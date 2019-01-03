@@ -24,9 +24,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="file.c" />
-    <ClCompile Include="http1.c" />
     <ClCompile Include="header.c" />
     <ClCompile Include="header_test.c" />
+    <ClCompile Include="http1.c" />
     <ClCompile Include="poll.c" />
     <ClCompile Include="qpack.c" />
     <ClCompile Include="qpack_test.c" />
@@ -35,9 +35,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="file.h" />
-    <ClInclude Include="http1.h" />
     <ClInclude Include="header.h" />
     <ClInclude Include="http.h" />
+    <ClInclude Include="http1.h" />
     <ClInclude Include="qpack.h" />
   </ItemGroup>
   <ItemGroup>

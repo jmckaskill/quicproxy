@@ -1,19 +1,20 @@
 #include "lib/hq/http.h"
 #include "lib/hq/http1.h"
-#include "lib/hq/file.h"
 #include <cutils/flag.h>
 #include <cutils/apc.h>
 #include <cutils/timer.h>
 #include <cutils/log.h>
 
-tick_t get_tick() {
-	return (tick_t)(monotonic_ns() / 1000);
-}
 
 struct client {
 	const hq_callback_class *vtable;
 	http_request *request;
 };
+
+static void free_connection(const hq_callback_class **vt, const hq_connection_class **cvt) {
+	http1_connection *c = container_of(cvt, http1_connection, vtable);
+	memset(c, 0xEE, sizeof(*c));
+}
 
 static void request_finished(const hq_callback_class **vt, http_request *r, int errnum) {
 	LOG(&stderr_log, "request finished %d", errnum);
@@ -27,22 +28,22 @@ static http_request *next_request(const hq_callback_class **vt) {
 }
 
 static const hq_callback_class cb_class = {
-	NULL,
+	&free_connection,
 	&next_request,
 	&request_finished,
 };
 
 struct log_sink {
-	const hq_stream_class *vtable;
+	http_request *request;
 	log_t *log;
 };
 
-static void notify_log_sink(const hq_stream_class **vt, const hq_stream_class **source, int close) {
-	struct log_sink *s = container_of(vt, struct log_sink, vtable);
-	LOG(s->log, "notify %d", close);
-	while (source) {
+static void log_request(void *user, int error) {
+	struct log_sink *s = user;
+	LOG(s->log, "notify %d", error);
+	for (;;) {
 		const void *data;
-		int n = (*source)->start_read(source, &s->vtable, 1, &data);
+		ssize_t n = s->request->vtable->start_read(&s->request->vtable, 0, 1, &data, &log_request, s);
 		if (n == HQ_PENDING) {
 			return;
 		} else if (n < 0) {
@@ -53,25 +54,16 @@ static void notify_log_sink(const hq_stream_class **vt, const hq_stream_class **
 			return;
 		}
 		LOG(s->log, "read %d", (int)n);
-		fwrite(data, 1, n, stderr);
-		(*source)->finish_read(source, n);
+		fprintf(stderr, "%.*s\n", (int)n, (char*)data);
+		s->request->vtable->finish_read(&s->request->vtable, (size_t)n);
 	}
 }
-
-static const hq_stream_class log_sink_vtable = {
-	NULL,
-	NULL,
-	&notify_log_sink,
-};
 
 int main(int argc, const char *argv[]) {
 	flag_parse(&argc, argv, "[arguments]", 0);
 
 	hq_poll p;
 	hq_init_poll(&p);
-
-	dispatcher_t d;
-	init_dispatcher(&d, get_tick());
 
 	struct sockaddr_in sa = { 0 };
 	sa.sin_family = AF_INET;
@@ -85,19 +77,17 @@ int main(int argc, const char *argv[]) {
 	hq_hdr_set(&r.tx_hdrs, &HQ_SCHEME_HTTP, NULL, 0, 0);
 	hq_hdr_set(&r.tx_hdrs, &HQ_METHOD_GET, NULL, 0, 0);
 
-
-	char rxbuf[4096];
-	const hq_stream_class **sock = p.vtable->connect_tcp(&p.vtable, (struct sockaddr*)&sa, sizeof(sa), rxbuf, sizeof(rxbuf), NULL, NULL);
-
 	struct client client = { &cb_class, &r };
-	struct log_sink sink = { &log_sink_vtable, &stderr_log };
+	struct log_sink sink = { &r, &stderr_log };
 
 	http1_connection c;
-	start_http1_client(&c, &client.vtable, "192.168.168.1", sock);
-	notify_log_sink(&sink.vtable, &r.vtable, 0);
+	const hq_source_class **ctx = init_http1_client(&c, &client.vtable, "192.168.168.1");
 
-	for (;;) {
-		p.vtable->poll(&p.vtable, &d, get_tick());
+	char rxbuf[4096];
+	start_http1(&c, p.vtable->connect_tcp(&p.vtable, rxbuf, sizeof(rxbuf), (struct sockaddr*)&sa, sizeof(sa), ctx));
+	log_request(&sink, 0);
+
+	while (!p.vtable->poll(&p.vtable)) { 
 	}
 
 	return 0;
