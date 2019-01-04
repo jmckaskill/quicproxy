@@ -6,11 +6,9 @@ typedef struct http1_connection http1_connection;
 struct http1_connection {
 	const hq_connection_class *vtable;
 	const hq_source_class *stream_vtable;
-	const hq_callback_class **cb;
 	const hq_source_class **socket;
-	const hq_source_class **app_sink;
-	hq_notify_fn notify_socket;
-	void *notify_socket_user;
+	hq_continuation notify_socket;
+	hq_continuation notify_app;
 	http_request *request;
 	const char *hostname;
 	uint64_t body_remaining;
@@ -29,9 +27,9 @@ struct http1_connection {
 	} rxbuf;
 };
 
-const hq_source_class **init_http1_client(http1_connection *c, const hq_callback_class **cb, const char *hostname);
-const hq_source_class **init_http1_server(http1_connection *c, const hq_callback_class **cb);
-void start_http1(http1_connection *c, const hq_source_class **source);
+const hq_source_class **init_http1_client(http1_connection *c, const char *hostname);
+const hq_source_class **init_http1_server(http1_connection *c);
+void set_http1_source(http1_connection *c, const hq_source_class **source);
 
 
 

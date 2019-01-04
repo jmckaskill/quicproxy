@@ -128,28 +128,14 @@ static int check_headers(http1_connection *c, http_request *r) {
 	return 0;
 }
 
-static int shutdown_connection(http1_connection *c, int errnum) {
-	assert(errnum < 0);
-
-	// free the pending request
-	http_request *r = c->request;
-	if (r) {
-		c->request = NULL;
-		r->connection = NULL;
-		(*c->cb)->request_finished(c->cb, r, errnum);
+static ssize_t copy_string(http1_connection *c, const char **begin, const char *end) {
+	size_t off = c->rxbuf.len;
+	size_t len = end - *begin;
+	if (ca_add2(&c->rxbuf, *begin, len) || ca_addch(&c->rxbuf, '\0')) {
+		return -1;
 	}
-
-	// shut down the transmit side
-	hq_notify(&c->notify_socket, c->notify_socket_user, errnum);
-
-	// shut down the receive side
-	(*c->socket)->finish_read(c->socket, 0);
-	(*c->socket)->close(c->socket, errnum);
-
-	// free the connection - this may leave c dangling
-	(*c->cb)->free_connection(c->cb, &c->vtable);
-
-	return errnum;
+	*begin = c->rxbuf.c_str + off;
+	return len;
 }
 
 static ssize_t read_headers(http1_connection *c, http_request *r) {
@@ -157,11 +143,11 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 
 	for (;;) {
 		const void *data;
-		ssize_t n = (*c->socket)->start_read(c->socket, 0, minsz, &data, r->notify, r->notify_user);
+		ssize_t n = (*c->socket)->read(c->socket, 0, minsz, &data, r->notify.fn, r->notify.user);
 		if (n < 0) {
 			return n;
 		} else if (!n) {
-			return shutdown_connection(c, r->rx_hdrs.size ? HQ_ERR_TCP_RESET : HQ_ERR_CLEAN_SHUTDOWN);
+			return r->rx_hdrs.size ? HQ_ERR_TCP_RESET : 0;
 		}
 
 		const char *next = data;
@@ -171,7 +157,7 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 			const char *line = next;
 			const char *nl = memchr(next, '\n', end - next);
 			if (!nl) {
-				(*c->socket)->finish_read(c->socket, line - (char*)data);
+				(*c->socket)->seek(c->socket, line - (char*)data);
 				minsz = end + 1 - line;
 				break;
 			}
@@ -180,9 +166,9 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 
 			if (nl == line || (nl == line + 1 && line[0] == '\r')) {
 				if (check_headers(c, r)) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+					return HQ_ERR_INVALID_REQUEST;
 				}
-				(*c->socket)->finish_read(c->socket, (int)(next - (char*)data));
+				(*c->socket)->seek(c->socket, (int)(next - (char*)data));
 				return 0;
 			}
 
@@ -190,34 +176,34 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 			if (r->rx_hdrs.size) {
 				const char *colon = memchr(line, ':', nl - line);
 				if (!colon) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+					return HQ_ERR_INVALID_REQUEST;
 				}
 				const char *key_end = trim_right(line, colon);
 
 				uint8_t *key = (uint8_t*)c->rxbuf.c_str + c->rxbuf.len;
 				ssize_t keysz = hq_encode_http1_key(key, sizeof(c->rxbuf.c_str) - c->rxbuf.len, line, key_end - line);
 				if (keysz <= 0 || keysz > UINT8_MAX) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+					return HQ_ERR_INVALID_REQUEST;
 				}
 				hq_header h;
 				h.key = key;
 				h.key_len = (uint8_t)keysz;
 				c->rxbuf.len += keysz;
 
-				size_t buf_len = c->rxbuf.len;
 				const char *val_start = trim_left(colon + 1, nl);
 				const char *val_end = trim_right(val_start, nl);
-				if (ca_add2(&c->rxbuf, val_start, val_end - val_start)) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+				ssize_t valsz = copy_string(c, &val_start, val_end);
+				if (valsz < 0) {
+					return HQ_ERR_INVALID_REQUEST;
 				}
-				h.value = c->rxbuf.c_str + buf_len;
-				h.value_len = (uint16_t)(c->rxbuf.len - buf_len);
+				h.value = val_start;
+				h.value_len = (uint16_t)valsz;
 				h.flags = 0;
 				h.next = 0;
 				h.hash = hq_compute_hash(h.key, h.key_len);
 
-				if (ca_addch(&c->rxbuf, '\0') || hq_hdr_add(&r->rx_hdrs, &h, NULL, 0, 0)) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+				if (hq_hdr_add(&r->rx_hdrs, &h, NULL, 0, 0)) {
+					return HQ_ERR_INVALID_REQUEST;
 				}
 
 			} else if (c->is_client) {
@@ -227,8 +213,9 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 				const char *version_end = skip_word(version, nl);
 				const char *status = trim_left(version_end, nl);
 				const char *status_end = skip_word(status, nl);
-				if (version == version_end || status == status_end || hq_hdr_add(&r->rx_hdrs, &HQ_STATUS, status, status_end - status, 0)) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+				ssize_t stlen = copy_string(c, &status, status_end);
+				if (version == version_end || stlen <= 0 || hq_hdr_add(&r->rx_hdrs, &HQ_STATUS, status, (size_t)stlen, 0)) {
+					return HQ_ERR_INVALID_REQUEST;
 				}
 
 			} else {
@@ -240,8 +227,10 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 				const char *path_end = skip_word(path, nl);
 				const char *version = trim_left(path_end, nl);
 				const char *version_end = skip_word(version, nl);
-				if (method == method_end || path == path_end || version == version_end) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+				ssize_t mlen = copy_string(c, &method, method_end);
+				ssize_t plen = copy_string(c, &path, path_end);
+				if (version == version_end || mlen <= 0 || plen <= 0) {
+					return HQ_ERR_INVALID_REQUEST;
 				}
 
 				slice_t ver = { version, version_end - version };
@@ -252,10 +241,10 @@ static ssize_t read_headers(http1_connection *c, http_request *r) {
 				// TODO parse host as authority
 				// parse authority from URL
 
-				if (hq_hdr_add(&r->rx_hdrs, &HQ_PATH, path, path_end - path, 0)
-					|| hq_hdr_add(&r->rx_hdrs, &HQ_METHOD, method, method_end - method, 0)
+				if (hq_hdr_add(&r->rx_hdrs, &HQ_PATH, path, plen, 0)
+					|| hq_hdr_add(&r->rx_hdrs, &HQ_METHOD, method, mlen, 0)
 					|| hq_hdr_add(&r->rx_hdrs, &HQ_SCHEME_HTTP, NULL, 0, 0)) {
-					return shutdown_connection(c, HQ_ERR_INVALID_REQUEST);
+					return HQ_ERR_INVALID_REQUEST;
 				}
 			}
 		}
@@ -272,21 +261,21 @@ static void finish_request(http1_connection *c, int errnum) {
 	const hq_source_class **src = r->source;
 	if (src) {
 		r->source = NULL;
-		(*src)->close(src, errnum);
+		(*src)->stop(src, errnum);
 	}
 
 	// finish request rx body
-	hq_notify(&r->notify, r->notify_user, errnum);
+	hq_continue(&r->notify, errnum);
 
 	// notify socket so it can try for the next request
-	hq_notify(&c->notify_socket, c->notify_socket_user, 0);
+	hq_continue(&c->notify_socket, 0);
 }
 
 static bool is_request_finished(http1_connection *c) {
 	return c->body_sent && c->headers_received && !c->body_remaining;
 }
 
-static ssize_t app_start_read(const hq_connection_class **vt, http_request *r, size_t off, size_t minsz, const void **pdata) {
+static ssize_t app_read(const hq_connection_class **vt, http_request *r, size_t off, size_t minsz, const void **pdata) {
 	http1_connection *c = container_of(vt, http1_connection, vtable);
 	assert(r == c->request);
 
@@ -303,11 +292,11 @@ static ssize_t app_start_read(const hq_connection_class **vt, http_request *r, s
 	}
 
 	if (c->body_remaining) {
-		ssize_t n = (*c->socket)->start_read(c->socket, off, minsz, pdata, r->notify, r->notify_user);
+		ssize_t n = (*c->socket)->read(c->socket, off, minsz, pdata, r->notify.fn, r->notify.user);
 		if (n < 0) {
 			return n;
 		} else if (!n) {
-			return shutdown_connection(c, HQ_ERR_TCP_RESET);
+			return HQ_ERR_TCP_RESET;
 		}
 		return (ssize_t)MIN((uint64_t)n, c->body_remaining);
 	} else {
@@ -316,142 +305,180 @@ static ssize_t app_start_read(const hq_connection_class **vt, http_request *r, s
 	}
 }
 
-static void app_finish_read(const hq_connection_class **vt, http_request *r, size_t seek) {
+static void app_seek(const hq_connection_class **vt, http_request *r, size_t seek) {
 	http1_connection *c = container_of(vt, http1_connection, vtable);
 	assert(r == c->request);
 	assert(seek <= c->body_remaining);
 	c->body_remaining -= seek;
 	if (c->socket) {
-		(*c->socket)->finish_read(c->socket, seek);
+		(*c->socket)->seek(c->socket, seek);
 	}
 	if (is_request_finished(c)) {
 		finish_request(c, 0);
 	}
 }
 
-static int read_next_request(http1_connection *c, const void **pdata) {
-	if (!c->close_after_request) {
-		c->request = (*c->cb)->next_request(c->cb);
-	}
-	if (!c->request) {
-		shutdown_connection(c, HQ_ERR_APP_RESET);
-		return 0;
-	}
+static void app_set_source(const hq_connection_class **vt, http_request *r) {
+	http1_connection *c = container_of(vt, http1_connection, vtable);
+	assert(r == c->request);
+	hq_continue(&c->notify_socket, 0);
+}
+
+static void stop_connection(const hq_source_class **vt, int error) {
+	http1_connection *c = container_of(vt, http1_connection, stream_vtable);
+	hq_cancel(&c->notify_socket);
+
 	http_request *r = c->request;
-	r->connection = &c->vtable;
-	c->headers_received = false;
-	c->headers_sent = false;
-
-	// kick off reading the request
-	hq_notify(&r->notify, r->notify_user, 0);
-
-	// kick off sending the headers
-	if (!r->tx_hdrs.size) {
-		return HQ_PENDING;
-	} else if (build_headers(c, r)) {
-		return HQ_ERR_INVALID_REQUEST;
-	} else {
-		*pdata = c->txbuf.c_str;
-		return (int)c->txbuf.len;
+	if (r && r->source) {
+		(*r->source)->stop(r->source, error);
 	}
 }
 
-static void socket_close_read(const hq_source_class **vt, int error) {
+static void seek_connection(const hq_source_class **vt, size_t seek) {
 	http1_connection *c = container_of(vt, http1_connection, stream_vtable);
-	http_request *r = c->request;
-	if (r) {
-		finish_request(c, error ? error : HQ_ERR_TCP_RESET);
-	}
-}
+	hq_cancel(&c->notify_socket);
 
-static ssize_t socket_start_read(const hq_source_class **vt, size_t off, size_t minsz, const void **pdata, hq_notify_fn fn, void *user) {
-	http1_connection *c = container_of(vt, http1_connection, stream_vtable);
-	http_request *r = c->request;
-
-	ssize_t n = 0;
-	if (!r) {
-		n = read_next_request(c, pdata);
-	} else if (c->txbuf.sent < c->txbuf.len) {
-		*pdata = c->txbuf.c_str + c->txbuf.sent;
-		n = c->txbuf.len - c->txbuf.sent;
-	} else {
-		if (r->source) {
-			n = (*r->source)->start_read(r->source, off, minsz, pdata, fn, user);
-			if (n == HQ_PENDING || n > 0) {
-				goto end;
-			}
-		}
-		// source returned eof or permanent error
-		c->body_sent = true;
-		r->source = NULL;
-		if (!n && !is_request_finished(c)) {
-			n = HQ_PENDING;
-		} else {
-			finish_request(c, 0);
-			n = n ? n : read_next_request(c, pdata);
-		}
-	}
-
-end:
-	if (n == HQ_PENDING) {
-		c->notify_socket = fn;
-		c->notify_socket_user = user;
-	}
-	return n;
-}
-
-static void socket_finish_read(const hq_source_class **vt, size_t seek) {
-	http1_connection *c = container_of(vt, http1_connection, stream_vtable);
-	http_request *r = c->request;
-	c->notify_socket = NULL;
 	if (c->txbuf.sent < c->txbuf.len) {
 		size_t use = MIN(c->txbuf.len - c->txbuf.sent, seek);
 		c->txbuf.sent += use;
 		seek -= use;
 	}
-	if (r->source) {
-		(*r->source)->finish_read(r->source, seek);
+
+	http_request *r = c->request;
+	if (r && r->source) {
+		(*r->source)->seek(r->source, seek);
 	}
+}
+
+static ssize_t read_connection(const hq_source_class **vt, size_t off, size_t minsz, const void **pdata, hq_continue_fn fn, void *user) {
+	http1_connection *c = container_of(vt, http1_connection, stream_vtable);
+	assert(!c->notify_socket.fn);
+
+	while (c->request) {
+		http_request *r = c->request;
+
+		// make sure the request has headers to send
+		if (!r->tx_hdrs.size) {
+			break;
+		} else if (!c->txbuf.len && build_headers(c, r)) {
+			return HQ_ERR_INVALID_REQUEST;
+		}
+
+		// send header data
+		if (c->txbuf.sent < c->txbuf.len) {
+			*pdata = c->txbuf.c_str + c->txbuf.sent;
+			return c->txbuf.len - c->txbuf.sent;
+		}
+
+		// send the body
+		ssize_t n = 0;
+		if (r->source) {
+			n = (*r->source)->read(r->source, off, minsz, pdata, fn, user);
+			if (n == HQ_PENDING) {
+				break;
+			} else if (n > 0) {
+				return n;
+			}
+		}
+
+		// source returned eof or permanent error
+		c->body_sent = true;
+		r->source = NULL;
+
+		if (n) {
+			// permanent error
+			finish_request(c, (int)n);
+			return n;
+		} else if (!n && !is_request_finished(c)) {
+			// rx not finished yet
+			break;
+		}
+
+		// request finished
+		finish_request(c, 0);
+		if (c->close_after_request) {
+			return 0;
+		}
+		hq_continue(&c->notify_app, 0);
+	}
+
+	c->notify_socket.fn = fn;
+	c->notify_socket.user = user;
+	return HQ_PENDING;
+}
+
+static void close_connection(const hq_connection_class **vt) {
+	http1_connection *c = container_of(vt, http1_connection, vtable);
+	hq_cancel(&c->notify_socket);
+
+	http_request *r = c->request;
+	if (r) {
+		finish_request(c, HQ_ERR_APP_RESET);
+	}
+
+	hq_stop(&c->socket, HQ_ERR_APP_RESET);
+}
+
+static int accept_request(const hq_connection_class **vt, http_request *r, hq_continue_fn cb, void *user) {
+	http1_connection *c = container_of(vt, http1_connection, vtable);
+	if (c->request) {
+		c->notify_app.fn = cb;
+		c->notify_app.user = user;
+		return HQ_PENDING;
+	} else if (c->close_after_request) {
+		return HQ_ERR_APP_RESET;
+	}
+	c->request = r;
+	r->connection = &c->vtable;
+	c->headers_received = false;
+	c->headers_sent = false;
+
+	// kick off the request
+	hq_continue(&r->notify, 0);
+	hq_continue(&c->notify_socket, 0);
+	return 0;
 }
 
 // This is the interface between the connection and the socket
 static const hq_source_class http1_stream_vtable = {
-	&socket_close_read,
-	&socket_start_read,
-	&socket_finish_read,
+	&stop_connection,
+	&read_connection,
+	&seek_connection,
 };
 
 // This is the interface between the connection and the application
 static const hq_connection_class http1_connection_vtable = {
-	&app_start_read,
-	&app_finish_read,
+	&close_connection,
+	&app_read,
+	&app_seek,
+	&app_set_source,
+	&accept_request,
 };
 
-const hq_source_class **init_http1_client(http1_connection *c, const hq_callback_class **cb, const char *hostname) {
+const hq_source_class **init_http1_client(http1_connection *c, const char *hostname) {
 	memset(c, 0, sizeof(*c));
 	c->vtable = &http1_connection_vtable;
 	c->stream_vtable = &http1_stream_vtable;
-	c->cb = cb;
 	c->hostname = hostname;
 	c->is_client = true;
 	return &c->stream_vtable;
 }
 
-const hq_source_class **init_http1_server(http1_connection *c, const hq_callback_class **cb) {
+const hq_source_class **init_http1_server(http1_connection *c) {
 	memset(c, 0, sizeof(*c));
 	c->vtable = &http1_connection_vtable;
 	c->stream_vtable = &http1_stream_vtable;
-	c->cb = cb;
 	c->is_client = false;
 	return &c->stream_vtable;
 }
 
-void start_http1(http1_connection *c, const hq_source_class **source) {
+void set_http1_source(http1_connection *c, const hq_source_class **source) {
 	c->socket = source;
 	if (c->request) {
-		hq_notify(&c->request->notify, c->request->notify_user, 0);
+		hq_continue(&c->request->notify, 0);
 	}
 }
+
 
 
 
