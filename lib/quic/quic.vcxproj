@@ -50,6 +50,7 @@
     <ClInclude Include="kdf.h" />
     <ClInclude Include="pem.h" />
     <ClInclude Include="signature.h" />
+    <ClInclude Include="source.h" />
     <ClInclude Include="stream.h" />
   </ItemGroup>
   <ItemGroup>

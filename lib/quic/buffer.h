@@ -1,5 +1,6 @@
 #pragma once
 #include "common.h"
+#include "source.h"
 
 // Circular buffer that comprises a series of blocks and gaps.
 // Head points to the start of the first block. Tail points to the end of the last complete block.
@@ -48,11 +49,10 @@
 
 typedef struct qbuffer qbuffer_t;
 struct qbuffer {
-	uint64_t head;
-	uint64_t tail;
-	uint64_t ext_off;
+	uint64_t off;
+	size_t used;
+	size_t have;
 	const char *ext_data;
-	size_t ext_len;
 	char *data;
 	size_t size;
 	uint32_t *valid;
@@ -61,19 +61,13 @@ struct qbuffer {
 void qbuf_init(qbuffer_t *b, void *buf, size_t size);
 
 // returns the limits we can accept data within
-static inline uint64_t qbuf_min(const qbuffer_t *b) {return b->head;}
-static inline uint64_t qbuf_max(const qbuffer_t *b) {return b->head + b->size - 1;}
+static inline uint64_t qbuf_max(const qbuffer_t *b) {return b->off + (b->used &~ 31) + b->size;}
 
 // returns how far the tail has moved
 size_t qbuf_insert(qbuffer_t *b, uint64_t off, const void *data, size_t len);
 void qbuf_fold(qbuffer_t *b);
-
-void qbuf_mark_invalid(qbuffer_t *b, uint64_t off, size_t len);
-void qbuf_mark_valid(qbuffer_t *b, uint64_t off, size_t len);
 void qbuf_consume(qbuffer_t *b, size_t consume);
+size_t qbuf_data(const qbuffer_t *b, uint64_t *poff, const void **pdata);
 
-size_t qbuf_data(const qbuffer_t *b, uint64_t off, uint64_t max, const void **pdata);
-size_t qbuf_copy(const qbuffer_t *b, uint64_t off, void *buf, size_t sz);
-uint64_t qbuf_next_valid(const qbuffer_t *b, uint64_t off, uint64_t max);
 
 
